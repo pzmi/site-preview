@@ -1,0 +1,9 @@
+[package]
+name = "preview-adapter-fs"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+preview-application = { path = "../preview-application" }
+preview-testkit = { path = "../preview-testkit" }

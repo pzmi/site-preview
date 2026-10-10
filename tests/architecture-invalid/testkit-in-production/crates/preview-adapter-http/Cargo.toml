@@ -1,0 +1,10 @@
+[package]
+name = "preview-adapter-http"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+preview-application = { path = "../preview-application" }
+preview-domain = { path = "../preview-domain" }
+preview-testkit = { path = "../preview-testkit" }

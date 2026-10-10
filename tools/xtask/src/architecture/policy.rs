@@ -79,8 +79,20 @@ impl Categories {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Dependencies {
-    /// `[dependencies.normal]`: crate to the workspace crates it may depend on.
+    /// `[dependencies.normal]`: crate to the workspace crates it may depend on. A crate
+    /// without an entry may depend on none. Dev-dependencies need no table: they may target
+    /// a test_only crate or a crate in this list.
     pub normal: BTreeMap<String, Vec<String>>,
+    /// `[dependencies.build]`: crate to the workspace crates it may build-depend on.
+    #[serde(default)]
+    pub build: BTreeMap<String, Vec<String>>,
+}
+
+impl Dependencies {
+    /// Each kind's table with its key, in a fixed order.
+    pub fn tables(&self) -> [(&'static str, &BTreeMap<String, Vec<String>>); 2] {
+        [("normal", &self.normal), ("build", &self.build)]
+    }
 }
 
 /// Third-party crate name to the features it may enable.

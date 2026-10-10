@@ -1,0 +1,3 @@
+rule: ARCH-production-closure
+at: crates/preview-adapter-http/Cargo.toml
+contains: preview-adapter-http -> preview-testkit

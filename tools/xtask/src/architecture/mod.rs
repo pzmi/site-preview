@@ -7,10 +7,12 @@
 //! only that workspace, whose root must hold `architecture.toml` and a `Cargo.lock`.
 
 mod fixtures;
+mod graph;
 mod inventory;
 mod policy;
 mod report;
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -127,6 +129,15 @@ fn check_into(manifest: &Path, out: &mut Vec<Diagnostic>) -> usize {
         Ok(disk) => out.extend(inventory::check_crates(&policy, &members, &disk)),
         Err(diagnostic) => out.push(diagnostic),
     }
+    let manifests: BTreeMap<String, String> = members
+        .iter()
+        .map(|c| (c.name.clone(), c.manifest.clone()))
+        .collect();
+    out.extend(graph::check(
+        &policy,
+        &graph::Graph::from_metadata(&metadata),
+        &manifests,
+    ));
     members.len()
 }
 

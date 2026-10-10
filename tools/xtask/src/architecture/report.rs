@@ -24,6 +24,16 @@ pub enum Rule {
     EmptySelector,
     /// A crate is listed in more than one category, or twice in one.
     DuplicateCategory,
+    /// A normal workspace edge is not in `[dependencies.normal]`.
+    ForbiddenEdge,
+    /// A build edge to a workspace crate is not in `[dependencies.build]`.
+    UndeclaredBuildDep,
+    /// A dev edge targets a crate that is neither test_only nor in the normal allowlist.
+    ForbiddenDevEdge,
+    /// A production crate reaches a test_only or tool_only crate over normal or build edges.
+    ProductionClosure,
+    /// The `[dependencies]` allowlist contains a cycle.
+    PolicyCycle,
 }
 
 impl Rule {
@@ -38,6 +48,11 @@ impl Rule {
             Self::MissingCrate => "ARCH-missing-crate",
             Self::EmptySelector => "ARCH-empty-selector",
             Self::DuplicateCategory => "ARCH-duplicate-category",
+            Self::ForbiddenEdge => "ARCH-forbidden-edge",
+            Self::UndeclaredBuildDep => "ARCH-undeclared-build-dep",
+            Self::ForbiddenDevEdge => "ARCH-forbidden-dev-edge",
+            Self::ProductionClosure => "ARCH-production-closure",
+            Self::PolicyCycle => "ARCH-policy-cycle",
         }
     }
 }

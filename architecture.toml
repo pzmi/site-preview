@@ -8,6 +8,9 @@ production = [
 test_only = ["preview-testkit", "preview-conformance"]
 tool_only = ["xtask"]
 
+# Allowed workspace edges (foundation.md section 2.1). A dev-dependency may target a
+# test_only crate or a crate in the dependent's normal list. No production crate may reach a
+# test_only or tool_only crate over normal or build edges, and the lists must be acyclic.
 [dependencies.normal]
 preview-domain = []
 preview-application = ["preview-domain"]
@@ -24,6 +27,9 @@ preview-conformance = [
   "preview-adapter-fs", "preview-adapter-http",
 ]
 xtask = []
+
+# Workspace build-dependencies; none are allowed unless listed here.
+[dependencies.build]
 
 # Third-party crates each workspace crate may use directly, by dependency kind (ADR 0013,
 # ADR 0033). The value lists the features the dependency may enable ("default" stands for

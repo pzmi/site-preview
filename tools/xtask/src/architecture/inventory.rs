@@ -116,10 +116,12 @@ fn policy_names(policy: &Policy) -> BTreeSet<(String, &str)> {
             out.insert((format!("[workspace] {}", category.key()), name.as_str()));
         }
     }
-    for (krate, deps) in &policy.dependencies.normal {
-        out.insert(("[dependencies.normal]".to_owned(), krate.as_str()));
-        for dep in deps {
-            out.insert((format!("[dependencies.normal] {krate}"), dep.as_str()));
+    for (kind, table) in policy.dependencies.tables() {
+        for (krate, deps) in table {
+            out.insert((format!("[dependencies.{kind}]"), krate.as_str()));
+            for dep in deps {
+                out.insert((format!("[dependencies.{kind}] {krate}"), dep.as_str()));
+            }
         }
     }
     for (kind, table) in policy.external.tables() {

@@ -1,0 +1,8 @@
+[package]
+name = "preview-domain"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dev-dependencies]
+preview-application = { path = "../preview-application" }
