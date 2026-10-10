@@ -73,7 +73,9 @@ version = "0.33.0"
 method = "lockfile"
 lockfile = "formal/package-lock.json"
 
+# Pinned to the 1.56.x line, the release matching the preinstalled Chromium 1194 (D15, ADR 0016);
+# a newer release would need a newer browser build. 1.56.1 is the latest 1.56 patch.
 [tools."@playwright/test"]
-version = "1.64.0"
+version = "1.56.1"
 method = "lockfile"
 lockfile = "tests/e2e/browser/package-lock.json"

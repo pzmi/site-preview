@@ -74,18 +74,12 @@ mod tests {
     #[test]
     fn should_skip_later_stages_when_an_earlier_stage_fails() {
         // given
-        let dir = std::env::temp_dir().join(format!("xtask-stage-{}", std::process::id()));
-        let marker = dir.join("ran");
+        let dir = tempfile::TempDir::new().unwrap();
+        let marker = dir.path().join("ran");
+        let marker_arg = marker.to_str().unwrap();
         let stages = [
             sh("bad", "exit 4"),
-            sh(
-                "later",
-                &format!(
-                    "mkdir -p {d} && touch {m}",
-                    d = dir.display(),
-                    m = marker.display()
-                ),
-            ),
+            Stage::new("later", "sh", &["-c", "touch \"$1\"", "sh", marker_arg]),
         ];
 
         // when

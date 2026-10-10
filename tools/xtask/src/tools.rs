@@ -217,12 +217,10 @@ pub fn doctor() -> i32 {
             continue;
         }
         let status = check_with_path(tool, None);
-        if status == Status::Ok {
-            println!("{}", describe(tool, &status));
-        } else {
+        if status != Status::Ok {
             bad += 1;
-            println!("{}", describe(tool, &status));
         }
+        println!("{}", describe(tool, &status));
     }
     if bad > 0 {
         eprintln!("xtask: doctor: {bad} tool(s) missing or at the wrong version");
@@ -327,11 +325,10 @@ mod tests {
     fn should_fail_with_install_hint_when_tool_missing() {
         // given
         let tools = manifest().unwrap();
-        let empty = std::env::temp_dir().join(format!("xtask-empty-path-{}", std::process::id()));
-        std::fs::create_dir_all(&empty).unwrap();
+        let empty = tempfile::TempDir::new().unwrap();
 
         // when
-        let result = require_in(&tools, "cargo-nextest", Some(empty.as_os_str()));
+        let result = require_in(&tools, "cargo-nextest", Some(empty.path().as_os_str()));
 
         // then
         let err = result.unwrap_err();
@@ -340,7 +337,6 @@ mod tests {
                 && err.contains("run 'cargo xtask install-tools cargo-nextest'"),
             "{err}"
         );
-        std::fs::remove_dir_all(&empty).unwrap();
     }
 
     #[test]

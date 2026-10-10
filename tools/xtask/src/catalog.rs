@@ -12,7 +12,8 @@ pub struct Check {
     pub command: &'static str,
     /// Task id that introduces (or will introduce) the implementation.
     pub owner: &'static str,
-    /// Whether `cargo xtask check` includes it.
+    /// Whether `cargo xtask check` includes it. A stage that is not yet implemented is `false`
+    /// (D18, ADR 0019); the owning task flips it when it registers the stage.
     pub in_check: bool,
 }
 
@@ -32,7 +33,7 @@ const fn row(
     }
 }
 
-/// All rows. Stage rows (`fmt-check`, `clippy`, `unit-tests`) are what `quick` runs.
+/// All rows. Stage rows (`fmt-check`, `clippy`, `unit-tests`, `doctests`) are what `quick` runs.
 pub const CATALOG: &[Check] = &[
     row(
         "fmt-check",
@@ -69,29 +70,29 @@ pub const CATALOG: &[Check] = &[
         "architecture",
         "cargo xtask architecture",
         "ARCH-01",
-        true,
+        false,
     ),
-    row("test", "integration", "cargo xtask test", "OPS-01", true),
+    row("test", "integration", "cargo xtask test", "OPS-01", false),
     row(
         "conformance",
         "conformance",
         "cargo xtask conformance",
         "FORMAL-01",
-        true,
+        false,
     ),
     row(
         "coverage",
         "coverage",
         "cargo xtask coverage",
         "TEST-06",
-        true,
+        false,
     ),
     row(
         "security",
         "security",
         "cargo xtask security",
         "SEC-01",
-        true,
+        false,
     ),
     row("check", "gate", "cargo xtask check", "OPS-01", false),
     row(

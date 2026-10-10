@@ -1,12 +1,12 @@
-//! `cargo xtask quick`: formatter check, Clippy and the unit/component tests.
+//! `cargo xtask quick`: formatter check, Clippy, the unit/component tests and the doctests.
 //!
 //! This is not the full gate; `check` (OPS-01) is.
 
 use crate::process::{Stage, run_stages};
 use crate::tools;
 
-/// The stages `quick` runs, in order. Their ids match the `fmt-check`, `clippy` and
-/// `unit-tests` catalog rows.
+/// The stages `quick` runs, in order. Their ids match the `fmt-check`, `clippy`,
+/// `unit-tests` and `doctests` catalog rows.
 pub fn stages() -> Vec<Stage> {
     vec![
         Stage::new("fmt-check", "cargo", &["fmt", "--all", "--check"]),
