@@ -37,3 +37,4 @@ This directory holds the decisions behind site-preview, one file per decision, i
 | [0031](0031-hot-reload-protocol-details.md) | Hot-reload protocol details | Proposed |
 | [0032](0032-whole-plan-on-main.md) | The whole plan is integrated on main | Accepted |
 | [0033](0033-architecture-policy-external-and-dev-dependencies.md) | Architecture policy: external allowlist shape and dev-dependencies | Proposed |
+| [0034](0034-cargo-bylaw-qualification.md) | cargo-bylaw is not qualified; semantic rules use syn | Proposed |
