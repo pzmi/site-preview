@@ -79,7 +79,8 @@ skipped-but-green check.
   body says why. Use the trailer block your instructions give, exactly; add none of your own.
 - Stage only your own files (never `git add -A`). Never `--no-verify`, never force-push, never
   push tags; `checkpoint-*` tags are local.
-- No model ids in repo content (code, docs, commit messages).
+- No model ids in repo content (code, docs, commit message bodies). The attribution trailer block the
+  session supplies (`Co-Authored-By`, `Claude-Session`) is the only exception.
 
 ## Sandbox
 
