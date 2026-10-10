@@ -1,0 +1,3 @@
+rule: ARCH-fs-authority
+at: crates/preview-application/src/lib.rs:6
+contains: `std::fs::File::open` (written `File::open`)

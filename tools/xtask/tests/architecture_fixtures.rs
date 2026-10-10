@@ -118,6 +118,11 @@ fn should_have_fixture_when_task_names_it() {
         "missing-crate",
         "empty-selector",
         "duplicate-category",
+        "domain-std-fs",
+        "domain-aliased-fs",
+        "domain-tokio-via-macro-path",
+        "http-names-fs-adapter",
+        "ambient-fs-in-application",
     ]
     .into_iter()
     .filter(|name| !cases.iter().any(|c| c == name))

@@ -678,7 +678,9 @@ version = "0.1.0"
 dependencies = [
  "cargo_metadata",
  "clap",
+ "proc-macro2",
  "serde",
+ "syn",
  "tempfile",
  "toml",
 ]

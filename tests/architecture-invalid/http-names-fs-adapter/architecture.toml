@@ -1,0 +1,7 @@
+schema = 1
+
+[workspace]
+production = ["preview-adapter-http"]
+
+[dependencies.normal]
+preview-adapter-http = []

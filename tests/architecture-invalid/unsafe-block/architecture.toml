@@ -1,0 +1,7 @@
+schema = 1
+
+[workspace]
+production = ["preview-adapter-fs"]
+
+[dependencies.normal]
+preview-adapter-fs = []

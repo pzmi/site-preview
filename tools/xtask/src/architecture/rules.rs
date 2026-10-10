@@ -88,6 +88,21 @@ rules! {
     ExternalSource => "ARCH-external-source",
         "A package is not from crates.io and has no [exceptions.sources] entry citing an existing ADR.",
         ["git-dependency", "path-outside-workspace", "source-exception-missing-adr"];
+    SourceParse => "ARCH-source-parse",
+        "A reachable source file cannot be analysed: it does not parse, a module file is missing, or an include!/#[path] is not a literal.",
+        ["include-non-literal", "unparseable-source"];
+    DomainPurity => "ARCH-domain-purity",
+        "preview-domain production code names I/O, process, env, thread, clock, randomness, a runtime, HTTP or an outer layer.",
+        ["domain-aliased-fs", "domain-std-fs", "domain-tokio-via-macro-path"];
+    FsAuthority => "ARCH-fs-authority",
+        "Production code outside preview-adapter-fs and preview-composition/src/bootstrap.rs names filesystem authority.",
+        ["ambient-fs-in-application"];
+    LayerIsolation => "ARCH-layer-isolation",
+        "An adapter names a sibling adapter, composition or watcher, or the application names adapter technology.",
+        ["http-names-fs-adapter"];
+    UnsafeCode => "ARCH-unsafe-code",
+        "Owned code contains an unsafe block, fn, impl, trait, extern block or unsafe attribute.",
+        ["unsafe-block"];
 }
 
 /// Compares the catalog with the negative fixtures in `dir`: every rule has fixtures, each

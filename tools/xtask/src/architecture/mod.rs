@@ -1,6 +1,7 @@
 //! `cargo xtask architecture`: the versioned dependency policy (foundation.md section 3.2)
-//! checked against `cargo metadata` and the source tree, plus the negative fixtures of
-//! section 3.4.
+//! checked against `cargo metadata` and the source tree, the semantic rules of section 3.3
+//! checked against the parsed sources (`semantic`), plus the negative fixtures of section
+//! 3.4.
 //!
 //! Without `--manifest-path` it checks this repository, confirms that every fixture under
 //! [`FIXTURES_DIR`] fails with the rule its `expected.txt` names, that every fixture under
@@ -15,6 +16,7 @@ mod inventory;
 mod policy;
 mod report;
 mod rules;
+mod semantic;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -218,6 +220,7 @@ fn check_into(manifest: &Path, out: &mut Vec<Diagnostic>) -> usize {
             found.entry(diagnostic).or_default().insert(target);
         }
     }
+    out.extend(semantic::check(&per_target[0].1, &policy));
     for (mut diagnostic, targets) in found {
         if targets.len() < TARGETS.len() {
             let names: Vec<&str> = targets.into_iter().collect();
