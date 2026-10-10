@@ -1,0 +1,8 @@
+schema = 1
+
+[workspace]
+production = ["app"]
+tool_only = ["app"]
+
+[dependencies.normal]
+app = []

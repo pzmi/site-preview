@@ -2,24 +2,70 @@
 
 use std::process::Command;
 
-/// One command to run as part of a gate.
+/// One gate stage: an external command, or a function of this binary.
 #[derive(Debug, Clone)]
 pub struct Stage {
-    /// Short name printed in the progress line.
+    /// Short name printed in the progress line; equals its catalog id.
     pub name: &'static str,
-    /// Program to execute.
-    pub program: String,
-    /// Arguments passed to the program.
-    pub args: Vec<String>,
+    /// What runs.
+    pub action: Action,
+}
+
+/// How a stage runs.
+#[derive(Debug, Clone)]
+pub enum Action {
+    /// A program and its arguments.
+    Command {
+        /// Program to execute.
+        program: String,
+        /// Arguments passed to the program.
+        args: Vec<String>,
+    },
+    /// An xtask function returning an exit code, shown as `display` in the progress line.
+    InProcess {
+        /// The equivalent command line, for the progress line.
+        display: &'static str,
+        /// The function.
+        run: fn() -> i32,
+    },
 }
 
 impl Stage {
-    /// Builds a stage from string slices.
+    /// Builds an external-command stage from string slices.
     pub fn new(name: &'static str, program: &str, args: &[&str]) -> Self {
         Self {
             name,
-            program: program.to_owned(),
-            args: args.iter().map(|a| (*a).to_owned()).collect(),
+            action: Action::Command {
+                program: program.to_owned(),
+                args: args.iter().map(|a| (*a).to_owned()).collect(),
+            },
+        }
+    }
+
+    /// Builds a stage that calls `run` in this process.
+    pub fn in_process(name: &'static str, display: &'static str, run: fn() -> i32) -> Self {
+        Self {
+            name,
+            action: Action::InProcess { display, run },
+        }
+    }
+
+    fn execute(&self) -> i32 {
+        match &self.action {
+            Action::Command { program, args } => {
+                eprintln!("xtask: stage {}: {program} {}", self.name, args.join(" "));
+                match Command::new(program).args(args).status() {
+                    Ok(status) => status.code().unwrap_or(1),
+                    Err(err) => {
+                        eprintln!("xtask: cannot run {program}: {err}");
+                        1
+                    }
+                }
+            }
+            Action::InProcess { display, run } => {
+                eprintln!("xtask: stage {}: {display}", self.name);
+                run()
+            }
         }
     }
 }
@@ -30,19 +76,7 @@ impl Stage {
 /// killed by a signal or could not be spawned).
 pub fn run_stages(stages: &[Stage]) -> i32 {
     for stage in stages {
-        eprintln!(
-            "xtask: stage {}: {} {}",
-            stage.name,
-            stage.program,
-            stage.args.join(" ")
-        );
-        let code = match Command::new(&stage.program).args(&stage.args).status() {
-            Ok(status) => status.code().unwrap_or(1),
-            Err(err) => {
-                eprintln!("xtask: cannot run {}: {err}", stage.program);
-                1
-            }
-        };
+        let code = stage.execute();
         if code != 0 {
             eprintln!("xtask: stage {} FAILED with exit code {code}", stage.name);
             return code;
@@ -100,6 +134,21 @@ mod tests {
 
         // then
         assert_eq!(code, 0);
+    }
+
+    #[test]
+    fn should_return_function_exit_code_when_in_process_stage_fails() {
+        // given
+        let stages = [
+            sh("ok", "exit 0"),
+            Stage::in_process("inner", "inner", || 5),
+        ];
+
+        // when
+        let code = run_stages(&stages);
+
+        // then
+        assert_eq!(code, 5);
     }
 
     #[test]

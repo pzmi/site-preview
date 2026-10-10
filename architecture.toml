@@ -25,8 +25,18 @@ preview-conformance = [
 ]
 xtask = []
 
-[external]
-preview-cli = ["clap"]
-xtask = ["clap", "toml", "tempfile"]
+# Third-party crates each workspace crate may use directly, by dependency kind (ADR 0013,
+# ADR 0033). The value lists the features the dependency may enable ("default" stands for
+# its default features), or is "*" for any. A crate allowed under `normal` is also allowed
+# as a dev-dependency.
+[external.normal]
+preview-cli = { clap = ["default", "derive", "std", "help", "usage", "error-context"] }
+xtask = { cargo_metadata = ["default"], clap = ["default", "derive"], serde = ["default", "derive"], toml = ["default"] }
+
+[external.dev]
+preview-cli = { assert_cmd = ["default"], predicates = ["default"] }
+xtask = { tempfile = ["default"] }
+
+[external.build]
 
 [exceptions]

@@ -33,7 +33,8 @@ const fn row(
     }
 }
 
-/// All rows. Stage rows (`fmt-check`, `clippy`, `unit-tests`, `doctests`) are what `quick` runs.
+/// All rows. `quick` runs the stage rows `fmt-check`, `architecture`, `clippy`, `unit-tests`
+/// and `doctests`.
 pub const CATALOG: &[Check] = &[
     row(
         "fmt-check",
@@ -70,7 +71,7 @@ pub const CATALOG: &[Check] = &[
         "architecture",
         "cargo xtask architecture",
         "ARCH-01",
-        false,
+        true,
     ),
     row("test", "integration", "cargo xtask test", "OPS-01", false),
     row(

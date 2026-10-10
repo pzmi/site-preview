@@ -1,5 +1,6 @@
 //! Repository automation entry point, invoked as `cargo xtask`.
 
+mod architecture;
 mod catalog;
 mod cli;
 mod process;
@@ -19,6 +20,7 @@ fn main() -> ExitCode {
     let code = match &cli.command {
         Command::Quick => quick::run(),
         Command::Fmt => run_fmt(),
+        Command::Architecture { manifest_path } => architecture::run(manifest_path.as_deref()),
         Command::ListChecks => {
             print!("{}", catalog::to_json(catalog::CATALOG));
             0

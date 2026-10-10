@@ -1,6 +1,8 @@
 //! Command-line surface of `cargo xtask`, from foundation.md section 9 plus `doctor` and
 //! `install-tools`.
 
+use std::path::PathBuf;
+
 use clap::{Parser, Subcommand};
 
 /// Repository automation: gate, architecture checker and tool management.
@@ -17,10 +19,15 @@ pub struct Cli {
 pub enum Command {
     /// Apply formatting.
     Fmt,
-    /// Formatter check, Clippy and fast tests. Not equivalent to `check`.
+    /// Formatter check, architecture policy, Clippy and fast tests. Not equivalent to `check`.
     Quick,
     /// Crate and module policy plus negative fixtures.
-    Architecture,
+    Architecture {
+        /// Check only the workspace with this root manifest (no fixtures); its root holds
+        /// `architecture.toml` and `Cargo.lock`.
+        #[arg(long, value_name = "PATH")]
+        manifest_path: Option<PathBuf>,
+    },
     /// All ordinary test levels including docs and E2E.
     Test,
     /// Quint model, scenarios and traces plus Rust replay.
@@ -56,7 +63,7 @@ impl Command {
         match self {
             Self::Fmt => "fmt",
             Self::Quick => "quick",
-            Self::Architecture => "architecture",
+            Self::Architecture { .. } => "architecture",
             Self::Test => "test",
             Self::Conformance => "conformance",
             Self::Coverage => "coverage",

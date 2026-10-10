@@ -1,0 +1,149 @@
+//! Black-box harness for the architecture checker (foundation.md section 3.4): every mini
+//! workspace under `tests/architecture-invalid/<case>/` must make `xtask architecture` exit
+//! non-zero with a diagnostic line that names the rule and path in its `expected.txt`.
+//!
+//! `expected.txt` holds `rule: <id>`, `at: <path substring>` and optional
+//! `contains: <message substring>` lines; one diagnostic line must satisfy all of them.
+
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
+
+fn repository_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(2)
+        .expect("xtask lives two levels below the repository root")
+        .to_path_buf()
+}
+
+fn fixtures_dir() -> PathBuf {
+    repository_root().join("tests/architecture-invalid")
+}
+
+fn xtask(args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_xtask"))
+        .args(args)
+        .output()
+        .expect("xtask runs")
+}
+
+fn cases() -> Vec<String> {
+    let mut cases: Vec<String> = fs::read_dir(fixtures_dir())
+        .expect("fixture directory exists")
+        .map(|e| e.expect("readable entry"))
+        .filter(|e| e.path().is_dir())
+        .map(|e| e.file_name().into_string().expect("UTF-8 name"))
+        .collect();
+    cases.sort();
+    cases
+}
+
+/// Whether one line of `output` is a diagnostic satisfying `expected`.
+fn matches(output: &str, expected: &str) -> Result<bool, String> {
+    let (mut rule, mut at, mut contains) = (None, None, Vec::new());
+    for line in expected.lines().filter(|l| !l.trim().is_empty()) {
+        match line.split_once(':').map(|(k, v)| (k.trim(), v.trim())) {
+            Some(("rule", v)) => rule = Some(v),
+            Some(("at", v)) => at = Some(v),
+            Some(("contains", v)) => contains.push(v),
+            _ => return Err(format!("bad expected.txt line: {line}")),
+        }
+    }
+    let rule = rule.ok_or("expected.txt has no rule")?;
+    let at = at.ok_or("expected.txt has no at")?;
+    Ok(output.lines().any(|line| {
+        let Some((message, location)) = line.rsplit_once(" (at ") else {
+            return false;
+        };
+        message.starts_with(&format!("{rule}: "))
+            && location.contains(at)
+            && contains.iter().all(|c| message.contains(c))
+    }))
+}
+
+#[test]
+fn should_fail_with_expected_rule_and_path_when_fixture_is_checked() {
+    // given
+    let cases = cases();
+    assert!(!cases.is_empty(), "no negative fixtures");
+    let mut failures = Vec::new();
+
+    // when
+    for case in &cases {
+        let dir = fixtures_dir().join(case);
+        let expected = fs::read_to_string(dir.join("expected.txt")).expect("expected.txt");
+        let manifest = dir.join("Cargo.toml");
+        let output = xtask(&[
+            "architecture",
+            "--manifest-path",
+            manifest.to_str().unwrap(),
+        ]);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        match matches(&stderr, &expected) {
+            Ok(true) if !output.status.success() => {}
+            Ok(_) => failures.push(format!(
+                "{case}: status {}, stderr:\n{stderr}",
+                output.status
+            )),
+            Err(err) => failures.push(format!("{case}: {err}")),
+        }
+    }
+
+    // then
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn should_have_fixture_when_task_names_it() {
+    // given
+    let cases = cases();
+
+    // when
+    let missing: Vec<_> = [
+        "unknown-crate",
+        "missing-crate",
+        "empty-selector",
+        "duplicate-category",
+    ]
+    .into_iter()
+    .filter(|name| !cases.iter().any(|c| c == name))
+    .collect();
+
+    // then
+    assert!(missing.is_empty(), "missing fixtures: {missing:?}");
+}
+
+#[test]
+fn should_exit_zero_when_repository_and_fixtures_are_checked() {
+    // given
+    let args = ["architecture"];
+
+    // when
+    let output = xtask(&args);
+
+    // then
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "stdout:\n{stdout}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        stdout.contains("negative fixtures fail as expected"),
+        "{stdout}"
+    );
+}
+
+#[test]
+fn should_reject_line_when_rule_matches_but_path_differs() {
+    // given
+    let output = "ARCH-unknown-crate: crate `x` (at crates/x/Cargo.toml)\n";
+    let expected = "rule: ARCH-unknown-crate\nat: crates/y\n";
+
+    // when
+    let matched = matches(output, expected).unwrap();
+
+    // then
+    assert!(!matched);
+}

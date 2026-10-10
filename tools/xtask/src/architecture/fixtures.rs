@@ -1,0 +1,166 @@
+//! Negative fixtures (foundation.md section 3.4): each directory is a mini workspace with an
+//! `expected.txt` that names the rule it must violate.
+//!
+//! `expected.txt` holds `key: value` lines: `rule:` (required, a rule id), `at:` (required, a
+//! substring of the diagnostic's path) and any number of `contains:` (substrings of the
+//! message). One diagnostic must satisfy all of them; other diagnostics may also appear.
+
+use std::fs;
+use std::path::Path;
+
+use super::check;
+use super::report::Diagnostic;
+
+/// What one fixture must produce.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Expected {
+    /// Rule id, for example `ARCH-unknown-crate`.
+    pub rule: String,
+    /// Substring of the diagnostic's path.
+    pub at: String,
+    /// Substrings of the diagnostic's message.
+    pub contains: Vec<String>,
+}
+
+impl Expected {
+    /// Parses `expected.txt`.
+    pub fn parse(text: &str) -> Result<Self, String> {
+        let (mut rule, mut at, mut contains) = (None, None, Vec::new());
+        for line in text.lines().map(str::trim).filter(|l| !l.is_empty()) {
+            let (key, value) = line
+                .split_once(':')
+                .ok_or_else(|| format!("line without `key: value`: {line}"))?;
+            let value = value.trim().to_owned();
+            match key.trim() {
+                "rule" => rule = Some(value),
+                "at" => at = Some(value),
+                "contains" => contains.push(value),
+                other => return Err(format!("unknown key `{other}`")),
+            }
+        }
+        Ok(Self {
+            rule: rule.ok_or("missing `rule:`")?,
+            at: at.ok_or("missing `at:`")?,
+            contains,
+        })
+    }
+
+    /// Whether `diagnostic` satisfies every expectation.
+    pub fn matches(&self, diagnostic: &Diagnostic) -> bool {
+        diagnostic.rule.id() == self.rule
+            && diagnostic.at.contains(&self.at)
+            && self.contains.iter().all(|c| diagnostic.message.contains(c))
+    }
+}
+
+/// Checks every fixture under `dir`; returns how many passed, or one error per failure.
+pub fn verify(dir: &Path) -> Result<usize, Vec<String>> {
+    let cases = list_cases(dir).map_err(|e| vec![e])?;
+    let mut errors = Vec::new();
+    for case in &cases {
+        if let Err(err) = verify_case(&dir.join(case)) {
+            errors.push(format!("fixture `{case}`: {err}"));
+        }
+    }
+    if errors.is_empty() {
+        Ok(cases.len())
+    } else {
+        Err(errors)
+    }
+}
+
+fn list_cases(dir: &Path) -> Result<Vec<String>, String> {
+    let entries = fs::read_dir(dir).map_err(|e| format!("cannot list negative fixtures: {e}"))?;
+    let mut cases: Vec<String> = entries
+        .filter_map(Result::ok)
+        .filter(|e| e.path().is_dir())
+        .filter_map(|e| e.file_name().to_str().map(str::to_owned))
+        .collect();
+    cases.sort();
+    if cases.is_empty() {
+        return Err("no negative fixtures found".to_owned());
+    }
+    Ok(cases)
+}
+
+fn verify_case(case: &Path) -> Result<(), String> {
+    let text = fs::read_to_string(case.join("expected.txt"))
+        .map_err(|e| format!("cannot read expected.txt: {e}"))?;
+    let expected = Expected::parse(&text).map_err(|e| format!("expected.txt: {e}"))?;
+    let outcome = check(&case.join("Cargo.toml"));
+    if outcome.diagnostics.iter().any(|d| expected.matches(d)) {
+        return Ok(());
+    }
+    let got: Vec<String> = outcome
+        .diagnostics
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    Err(format!(
+        "expected `{}` at `{}`, got: {}",
+        expected.rule,
+        expected.at,
+        if got.is_empty() {
+            "no diagnostics".to_owned()
+        } else {
+            got.join("; ")
+        }
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::architecture::report::Rule;
+
+    #[test]
+    fn should_match_diagnostic_when_rule_path_and_message_agree() {
+        // given
+        let expected =
+            Expected::parse("rule: ARCH-unknown-crate\nat: crates/x\ncontains: `x`\n").unwrap();
+        let diagnostic = Diagnostic::new(Rule::UnknownCrate, "crate `x`", "crates/x/Cargo.toml");
+
+        // when
+        let matched = expected.matches(&diagnostic);
+
+        // then
+        assert!(matched);
+    }
+
+    #[test]
+    fn should_not_match_diagnostic_when_rule_differs() {
+        // given
+        let expected = Expected::parse("rule: ARCH-missing-crate\nat: crates/x\n").unwrap();
+        let diagnostic = Diagnostic::new(Rule::UnknownCrate, "crate `x`", "crates/x/Cargo.toml");
+
+        // when
+        let matched = expected.matches(&diagnostic);
+
+        // then
+        assert!(!matched);
+    }
+
+    #[test]
+    fn should_reject_expectation_when_key_is_unknown() {
+        // given
+        let text = "rule: ARCH-x\nat: y\npath: z\n";
+
+        // when
+        let err = Expected::parse(text).unwrap_err();
+
+        // then
+        assert!(err.contains("unknown key `path`"), "{err}");
+    }
+
+    #[test]
+    fn should_fail_closed_when_fixture_directory_is_empty() {
+        // given
+        let dir = tempfile::TempDir::new().unwrap();
+
+        // when
+        let result = verify(dir.path());
+
+        // then
+        assert_eq!(result, Err(vec!["no negative fixtures found".to_owned()]));
+    }
+}

@@ -1,0 +1,7 @@
+schema = 1
+
+[workspace]
+production = ["app", "gone"]
+
+[dependencies.normal]
+app = []
