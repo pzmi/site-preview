@@ -123,6 +123,13 @@ fn should_have_fixture_when_task_names_it() {
         "domain-tokio-via-macro-path",
         "http-names-fs-adapter",
         "ambient-fs-in-application",
+        "ignored-test",
+        "unjustified-allow",
+        "allow-with-missing-adr",
+        "sleep-in-test",
+        "badly-named-test",
+        "missing-given-when-then",
+        "todo-in-production",
     ]
     .into_iter()
     .filter(|name| !cases.iter().any(|c| c == name))

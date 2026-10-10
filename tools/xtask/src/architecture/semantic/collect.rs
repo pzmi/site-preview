@@ -11,8 +11,8 @@ use syn::{Attribute, Item, Meta};
 
 use super::paths::{self, Scopes, TokenScan, Written, scan_tokens, use_leaves};
 use super::{
-    Context, Facts, RefKind, Reference, Site, Unit, include_path, is_include, is_test_only,
-    non_literal, relative,
+    AttributeUse, Context, Facts, RefKind, Reference, Site, TestFn, Unit, effective_metas,
+    include_path, is_include, is_test_attribute, is_test_only, non_literal, relative,
 };
 
 /// Collects the facts of one target into `facts`.
@@ -28,6 +28,9 @@ pub fn collect_target(
             scopes: &mut scopes,
             module: unit.module.clone(),
         };
+        for attr in &unit.attrs {
+            binder.visit_attribute(attr);
+        }
         for item in &unit.items {
             binder.visit_item(item);
         }
@@ -43,6 +46,9 @@ pub fn collect_target(
             facts: &mut *facts,
             depth: 0,
         };
+        for attr in &unit.attrs {
+            collector.visit_attribute(attr);
+        }
         for item in &unit.items {
             collector.visit_item(item);
         }
@@ -138,7 +144,11 @@ impl Collector<'_> {
     }
 
     fn reference(&mut self, path: &Written, line: usize, kind: RefKind, open_tail: bool) {
-        let resolved = self.scopes.resolve(&self.module, path);
+        // An unbound macro name is a prelude macro (`todo!`), not a local value.
+        let resolved = match kind {
+            RefKind::Macro => self.scopes.resolve_import(&self.module, path),
+            RefKind::Path => self.scopes.resolve(&self.module, path),
+        };
         self.push(path, resolved, line, kind, open_tail);
     }
 
@@ -210,6 +220,51 @@ impl Collector<'_> {
         for line in scan.unsafe_lines {
             self.unsafe_site(line, "`unsafe` in a macro");
         }
+        for (meta, line) in &scan.attributes {
+            self.attribute(meta, *line);
+        }
+        for (name, line) in scan.test_fns {
+            let site = self.site(line);
+            self.facts.tests.push(TestFn {
+                site,
+                name,
+                body: None,
+            });
+        }
+    }
+
+    /// Records `meta` when it, or a `cfg_attr` branch of it, is `allow`, `expect`,
+    /// `coverage` or `ignore`.
+    fn attribute(&mut self, meta: &Meta, line: usize) {
+        for meta in effective_metas(meta) {
+            let Some(name) = meta.path().get_ident().map(paths::name) else {
+                continue;
+            };
+            let lints = match (name.as_str(), &meta) {
+                ("allow" | "expect", Meta::List(list)) => list
+                    .parse_args_with(
+                        syn::punctuated::Punctuated::<Meta, syn::Token![,]>::parse_terminated,
+                    )
+                    .map(|args| {
+                        args.iter()
+                            .filter_map(|m| match m {
+                                Meta::Path(p) => Some(Written::from_syn(p).render()),
+                                _ => None,
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_else(|_| vec![list.tokens.to_string()]),
+                ("coverage", Meta::List(list)) if list.tokens.to_string().contains("off") => {
+                    vec!["coverage".to_owned()]
+                }
+                ("ignore", _) => Vec::new(),
+                _ => continue,
+            };
+            let site = self.site(line);
+            self.facts
+                .attributes
+                .push(AttributeUse { site, name, lints });
+        }
     }
 
     /// Runs `f` with the test context switched on when `attrs` make the item test-only.
@@ -241,10 +296,12 @@ impl Collector<'_> {
                 syn::parse_file(&text)
                     .map(Included::Items)
                     .or_else(|_| syn::parse_str::<syn::Expr>(&text).map(Included::Expr))
+                    .map(|included| (included, text))
                     .map_err(|e| format!("`{rel}` does not parse: {e}"))
             });
         match parsed {
-            Ok(included) => {
+            Ok((included, text)) => {
+                self.facts.sources.insert(rel.clone(), text);
                 let (outer_file, outer_rel) = (
                     std::mem::replace(&mut self.file, file),
                     std::mem::replace(&mut self.rel, rel),
@@ -356,6 +413,7 @@ impl<'ast> Visit<'ast> for Collector<'_> {
     }
 
     fn visit_attribute(&mut self, attr: &'ast Attribute) {
+        self.attribute(&attr.meta, attr.pound_token.span.start().line);
         if let Meta::List(list) = &attr.meta {
             if list.path.is_ident("unsafe") {
                 self.unsafe_site(first_line(&list.path), "an `#[unsafe(..)]` attribute");
@@ -363,6 +421,19 @@ impl<'ast> Visit<'ast> for Collector<'_> {
             self.tokens(&list.tokens);
         }
         visit::visit_attribute(self, attr);
+    }
+
+    fn visit_item_fn(&mut self, item: &'ast syn::ItemFn) {
+        if item.attrs.iter().any(is_test_attribute) {
+            let site = self.site(item.sig.ident.span().start().line);
+            let braces = item.block.brace_token.span;
+            self.facts.tests.push(TestFn {
+                site,
+                name: paths::name(&item.sig.ident),
+                body: Some((braces.open().start().line, braces.close().end().line)),
+            });
+        }
+        visit::visit_item_fn(self, item);
     }
 
     fn visit_expr_unsafe(&mut self, expr: &'ast syn::ExprUnsafe) {

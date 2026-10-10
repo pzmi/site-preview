@@ -7,7 +7,10 @@
 #   by a listed one (tokio "full"), "*"; dev through the normal list and through
 #   [external.dev]; build through [external.build];
 # - a listed Linux-only dependency and an unlisted Windows-only one (Windows not evaluated);
-# - a git source approved in [exceptions.sources] by an ADR that exists.
+# - a git source approved in [exceptions.sources] by an ADR that exists;
+# - semantic constructs that pass: filesystem authority in the fs adapter and bootstrap,
+#   test-only code, literal include!, macro_rules, cfg branches, the testkit poll helper's
+#   sleep, todo! in test code, and a lint suppression approved in [[exceptions.lints]].
 # Third-party crates are empty stubs behind .cargo/config.toml; Cargo.lock is committed.
 schema = 1
 
@@ -55,3 +58,8 @@ preview-adapter-fs = { cc = ["default"] }
 
 [exceptions.sources]
 "git+https://example.invalid/gitdep.git" = { adr = "0001" }
+
+[[exceptions.lints]]
+path = "crates/preview-adapter-http/src/lib.rs"
+lint = "clippy::type_complexity"
+adr = "0002"

@@ -1,0 +1,3 @@
+rule: ARCH-test-sleep
+at: crates/preview-application/tests/wait.rs:12
+contains: `std::thread::sleep`

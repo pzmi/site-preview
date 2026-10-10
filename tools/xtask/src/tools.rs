@@ -341,8 +341,11 @@ mod tests {
 
     #[test]
     fn should_parse_every_tool_when_manifest_is_loaded() {
-        // given / when
-        let tools = manifest().unwrap();
+        // given
+        let loaded = manifest();
+
+        // when
+        let tools = loaded.unwrap();
 
         // then
         let names: Vec<_> = tools.iter().map(|t| t.name.as_str()).collect();
@@ -387,10 +390,15 @@ mod tests {
         // given
         let output = "cargo-nextest 0.9.148 (abc 2026-10-01)";
 
-        // when / then
-        assert!(version_matches(output, "0.9.148", false));
-        assert!(!version_matches(output, "0.9.14", false));
-        assert!(version_matches("v8.30.1", "8.30.1", false));
+        // when
+        let exact = version_matches(output, "0.9.148", false);
+        let prefix = version_matches(output, "0.9.14", false);
+        let tagged = version_matches("v8.30.1", "8.30.1", false);
+
+        // then
+        assert!(exact);
+        assert!(!prefix);
+        assert!(tagged);
     }
 
     #[test]

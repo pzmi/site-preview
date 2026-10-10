@@ -25,8 +25,10 @@ use std::thread;
 
 use cargo_metadata::{Metadata, MetadataCommand};
 
+pub use rules::Rule;
+
 use inventory::Crate;
-use report::{Diagnostic, Rule};
+use report::Diagnostic;
 
 /// The policy file at the workspace root.
 pub const POLICY_FILE: &str = "architecture.toml";
@@ -220,7 +222,7 @@ fn check_into(manifest: &Path, out: &mut Vec<Diagnostic>) -> usize {
             found.entry(diagnostic).or_default().insert(target);
         }
     }
-    out.extend(semantic::check(&per_target[0].1, &policy));
+    out.extend(semantic::check(&per_target[0].1, &policy, &adr_exists));
     for (mut diagnostic, targets) in found {
         if targets.len() < TARGETS.len() {
             let names: Vec<&str> = targets.into_iter().collect();

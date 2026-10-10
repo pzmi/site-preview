@@ -8,12 +8,14 @@
 //! analysed fails instead of passing: a file that does not parse, a module file that does
 //! not exist, and an `include!` or `#[path]` whose path is not a literal.
 //!
-//! The collector records facts (resolved path references, `unsafe` sites) with their file,
-//! line and context (production or test code); the rule modules turn facts into
+//! The collector records facts (resolved path references, `unsafe` sites, lint and
+//! `ignore` attributes, test functions) with their file, line and context (production or
+//! test code); `rules_purity` (ADR 0035) and `rules_hygiene` (ADR 0036) turn facts into
 //! diagnostics.
 
 mod collect;
 mod paths;
+mod rules_hygiene;
 mod rules_purity;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -94,6 +96,34 @@ pub struct Facts {
     pub unsafe_sites: Vec<(Site, &'static str)>,
     /// Code that cannot be analysed, with the reason.
     pub problems: Vec<(String, String)>,
+    /// `allow`, `expect`, `coverage` and `ignore` attributes.
+    pub attributes: Vec<AttributeUse>,
+    /// Test functions.
+    pub tests: Vec<TestFn>,
+    /// Text of every analysed file, by workspace-relative path.
+    pub sources: BTreeMap<String, String>,
+}
+
+/// One attribute the hygiene rules look at, after `cfg_attr` expansion.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AttributeUse {
+    /// Where its `#` is.
+    pub site: Site,
+    /// `allow`, `expect`, `coverage` or `ignore`.
+    pub name: String,
+    /// The lints it names (`coverage` for `coverage(off)`; empty for `ignore`).
+    pub lints: Vec<String>,
+}
+
+/// One function marked as a test.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TestFn {
+    /// Where its name is (for a test in a macro body, where the attribute is).
+    pub site: Site,
+    /// Its name.
+    pub name: String,
+    /// First and last line of its body; `None` for a test in a macro body.
+    pub body: Option<(usize, usize)>,
 }
 
 impl Facts {
@@ -106,10 +136,16 @@ impl Facts {
     }
 }
 
-/// Checks every workspace package of `metadata` against the semantic rules.
-pub fn check(metadata: &Metadata, policy: &Policy) -> Vec<Diagnostic> {
+/// Checks every workspace package of `metadata` against the semantic rules. `adr_exists`
+/// says whether an ADR number names a file under `doc/adr/`.
+pub fn check(
+    metadata: &Metadata,
+    policy: &Policy,
+    adr_exists: &dyn Fn(&str) -> bool,
+) -> Vec<Diagnostic> {
     let root = metadata.workspace_root.as_std_path();
     let mut out = Vec::new();
+    let mut hygiene = rules_hygiene::Hygiene::new(policy, adr_exists);
     for package in metadata.workspace_packages() {
         let facts = collect_package(root, package);
         for (at, problem) in &facts.problems {
@@ -120,7 +156,9 @@ pub fn check(metadata: &Metadata, policy: &Policy) -> Vec<Diagnostic> {
             ));
         }
         out.extend(rules_purity::check(&facts, policy));
+        out.extend(hygiene.check(&facts));
     }
+    out.extend(hygiene.finish());
     // Line numbers are computed; the parsed sources need not stay in this thread's span map.
     proc_macro2::extra::invalidate_current_thread_spans();
     out
@@ -148,7 +186,10 @@ fn collect_package(root: &Path, package: &Package) -> Facts {
         .collect();
     for target in &package.targets {
         let units = match load_target(root, target) {
-            Ok(units) => units,
+            Ok((units, texts)) => {
+                facts.sources.extend(texts);
+                units
+            }
             Err(problems) => {
                 facts.problems.extend(problems);
                 continue;
@@ -168,41 +209,52 @@ pub struct Unit {
     pub file: PathBuf,
     /// Whether the whole module is test-only.
     pub test: bool,
+    /// The file's inner attributes (`#![..]`), on the unit that starts the file.
+    pub attrs: Vec<Attribute>,
     /// The items, with inline and out-of-line child modules moved to their own units.
     pub items: Vec<Item>,
 }
 
 /// Parses a target's module tree. Problems are reported per file; one problem anywhere
 /// fails the target.
-fn load_target(root: &Path, target: &Target) -> Result<Vec<Unit>, Vec<(String, String)>> {
+fn load_target(root: &Path, target: &Target) -> Result<Loaded, Vec<(String, String)>> {
     let test = target
         .kind
         .iter()
         .any(|k| matches!(k.to_string().as_str(), "test" | "bench" | "example"));
     let file = target.src_path.as_std_path().to_path_buf();
-    let mut loader = Loader {
-        root,
-        units: Vec::new(),
-        problems: Vec::new(),
-        seen: BTreeSet::new(),
-    };
+    let mut loader = Loader::new(root);
     let mod_dir = file.parent().map(Path::to_path_buf).unwrap_or_default();
     loader.load_file(&file, Vec::new(), &mod_dir, test, 0, None);
     if loader.problems.is_empty() {
-        Ok(loader.units)
+        Ok((loader.units, loader.texts))
     } else {
         Err(loader.problems)
     }
 }
+
+/// A target's units and the text of each file, by workspace-relative path.
+type Loaded = (Vec<Unit>, BTreeMap<String, String>);
 
 struct Loader<'a> {
     root: &'a Path,
     units: Vec<Unit>,
     problems: Vec<(String, String)>,
     seen: BTreeSet<(PathBuf, Vec<String>)>,
+    texts: BTreeMap<String, String>,
 }
 
-impl Loader<'_> {
+impl<'a> Loader<'a> {
+    fn new(root: &'a Path) -> Self {
+        Self {
+            root,
+            units: Vec::new(),
+            problems: Vec::new(),
+            seen: BTreeSet::new(),
+            texts: BTreeMap::new(),
+        }
+    }
+
     fn problem(&mut self, at: String, message: String) {
         self.problems.push((at, message));
     }
@@ -230,6 +282,7 @@ impl Loader<'_> {
                 return;
             }
         };
+        self.texts.insert(rel.clone(), text.clone());
         match syn::parse_file(&text) {
             Ok(parsed) => {
                 let base = file.parent().map(Path::to_path_buf).unwrap_or_default();
@@ -239,10 +292,10 @@ impl Loader<'_> {
                     module,
                     mod_dir: mod_dir.to_path_buf(),
                     path_base: base,
-                    test,
+                    test: test || is_test_only(&parsed.attrs),
                     depth,
                 };
-                self.load_items(parsed.items, &mut ctx);
+                self.load_items(parsed.attrs, parsed.items, &mut ctx);
             }
             Err(err) => {
                 let line = err.span().start().line;
@@ -255,7 +308,7 @@ impl Loader<'_> {
     }
 
     /// Moves `items` into units: child modules get their own, the rest stays in `ctx`.
-    fn load_items(&mut self, items: Vec<Item>, ctx: &mut Place) {
+    fn load_items(&mut self, attrs: Vec<Attribute>, items: Vec<Item>, ctx: &mut Place) {
         let mut kept = Vec::new();
         for item in items {
             match item {
@@ -279,7 +332,7 @@ impl Loader<'_> {
                             test,
                             ..ctx.clone()
                         };
-                        self.load_items(inner, &mut inner_ctx);
+                        self.load_items(Vec::new(), inner, &mut inner_ctx);
                     } else {
                         self.load_module_file(ctx, &name, child, test, line, &paths);
                     }
@@ -316,6 +369,7 @@ impl Loader<'_> {
             module: ctx.module.clone(),
             file: ctx.file.clone(),
             test: ctx.test,
+            attrs,
             items: kept,
         });
     }
@@ -561,12 +615,7 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let file = dir.path().join("lib.rs");
         fs::write(&file, "pub fn ok() {}\npub fn broken( {\n").unwrap();
-        let mut loader = Loader {
-            root: dir.path(),
-            units: Vec::new(),
-            problems: Vec::new(),
-            seen: BTreeSet::new(),
-        };
+        let mut loader = Loader::new(dir.path());
 
         // when
         loader.load_file(&file, Vec::new(), dir.path(), false, 0, None);
@@ -593,18 +642,13 @@ mod tests {
             "mod a;\n#[cfg(test)]\nmod t { mod inner; }\n#[path = \"other.rs\"]\nmod o;\ninclude!(\"gen.rs\");\n",
         )
         .unwrap();
-        fs::write(root.join("a.rs"), "mod b;\n").unwrap();
+        fs::write(root.join("a.rs"), "#![cfg(test)]\nmod b;\n").unwrap();
         fs::write(root.join("a/b.rs"), "").unwrap();
         fs::create_dir_all(root.join("t")).unwrap();
         fs::write(root.join("t/inner.rs"), "").unwrap();
         fs::write(root.join("other.rs"), "").unwrap();
         fs::write(root.join("gen.rs"), "fn generated() {}\n").unwrap();
-        let mut loader = Loader {
-            root,
-            units: Vec::new(),
-            problems: Vec::new(),
-            seen: BTreeSet::new(),
-        };
+        let mut loader = Loader::new(root);
 
         // when
         loader.load_file(&root.join("lib.rs"), Vec::new(), root, false, 0, None);
@@ -622,8 +666,8 @@ mod tests {
             [
                 (String::new(), "gen.rs".to_owned(), false),
                 (String::new(), "lib.rs".to_owned(), false),
-                ("a".to_owned(), "a.rs".to_owned(), false),
-                ("a::b".to_owned(), "a/b.rs".to_owned(), false),
+                ("a".to_owned(), "a.rs".to_owned(), true),
+                ("a::b".to_owned(), "a/b.rs".to_owned(), true),
                 ("o".to_owned(), "other.rs".to_owned(), false),
                 ("t".to_owned(), "lib.rs".to_owned(), true),
                 ("t::inner".to_owned(), "t/inner.rs".to_owned(), true),
@@ -641,12 +685,7 @@ mod tests {
             "mod gone;\ninclude!(concat!(env!(\"OUT_DIR\"), \"/gen.rs\"));\n",
         )
         .unwrap();
-        let mut loader = Loader {
-            root,
-            units: Vec::new(),
-            problems: Vec::new(),
-            seen: BTreeSet::new(),
-        };
+        let mut loader = Loader::new(root);
 
         // when
         loader.load_file(&root.join("lib.rs"), Vec::new(), root, false, 0, None);

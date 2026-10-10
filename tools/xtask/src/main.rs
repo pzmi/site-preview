@@ -22,7 +22,7 @@ fn main() -> ExitCode {
         Command::Fmt => run_fmt(),
         Command::Architecture { manifest_path } => architecture::run(manifest_path.as_deref()),
         Command::ListChecks => {
-            print!("{}", catalog::to_json(catalog::CATALOG));
+            print!("{}", catalog::to_json(&catalog::all_rows()));
             0
         }
         Command::Doctor => tools::doctor(),

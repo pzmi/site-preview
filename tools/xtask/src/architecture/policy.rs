@@ -172,6 +172,24 @@ pub struct Exceptions {
     /// or `#revision`, for example `git+https://host/repo`) to the approval.
     #[serde(default)]
     pub sources: BTreeMap<String, SourceException>,
+    /// `[[exceptions.lints]]`: approved lint suppressions (`#[allow]`, `#[expect]`,
+    /// `#[coverage(off)]`) and production `todo!`/`unimplemented!`/`dbg!` calls, by file.
+    #[serde(default)]
+    pub lints: Vec<LintException>,
+}
+
+/// One approved suppression. Every entry must match at least one suppression.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LintException {
+    /// The file, relative to the workspace root, for example `crates/x/src/lib.rs`.
+    pub path: String,
+    /// The lint as written in the attribute (`clippy::too_many_lines`, `dead_code`), or
+    /// `coverage` for `#[coverage(off)]`. `todo!`, `unimplemented!` and `dbg!` are the
+    /// clippy lints `clippy::todo`, `clippy::unimplemented` and `clippy::dbg_macro`.
+    pub lint: String,
+    /// The approving ADR's number; `doc/adr/<adr>-*.md` must exist.
+    pub adr: String,
 }
 
 /// One approved package source.
@@ -284,6 +302,27 @@ mod tests {
 
         // then
         assert!(err.contains("\"*\" or a list of feature names"), "{err}");
+    }
+
+    #[test]
+    fn should_parse_lint_exceptions_when_entries_are_complete() {
+        // given
+        let text = format!(
+            "{MINIMAL}[[exceptions.lints]]\npath = \"crates/a/src/lib.rs\"\nlint = \"dead_code\"\nadr = \"0042\"\n"
+        );
+
+        // when
+        let policy = parse(&text).unwrap();
+
+        // then
+        assert_eq!(
+            policy.exceptions.lints,
+            [LintException {
+                path: "crates/a/src/lib.rs".to_owned(),
+                lint: "dead_code".to_owned(),
+                adr: "0042".to_owned(),
+            }]
+        );
     }
 
     #[test]

@@ -1,0 +1,7 @@
+schema = 1
+
+[workspace]
+production = ["preview-application"]
+
+[dependencies.normal]
+preview-application = []

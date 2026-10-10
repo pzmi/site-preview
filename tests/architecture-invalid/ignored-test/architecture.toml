@@ -1,0 +1,7 @@
+schema = 1
+
+[workspace]
+production = ["preview-domain"]
+
+[dependencies.normal]
+preview-domain = []

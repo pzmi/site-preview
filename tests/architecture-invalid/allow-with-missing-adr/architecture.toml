@@ -1,0 +1,12 @@
+schema = 1
+
+[workspace]
+production = ["preview-domain"]
+
+[dependencies.normal]
+preview-domain = []
+
+[[exceptions.lints]]
+path = "crates/preview-domain/src/lib.rs"
+lint = "clippy::too_many_lines"
+adr = "0099"

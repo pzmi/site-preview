@@ -135,6 +135,22 @@ pub const CATALOG: &[Check] = &[
     ),
 ];
 
+/// Every catalog row, then one row per architecture rule id (ARCH-01..07): each runs in the
+/// `architecture` stage, owned by the task that introduced it. `list-checks` prints these.
+pub fn all_rows() -> Vec<Check> {
+    let mut rows = CATALOG.to_vec();
+    rows.extend(crate::architecture::Rule::ALL.iter().map(|rule| {
+        row(
+            rule.id(),
+            "architecture",
+            "cargo xtask architecture",
+            rule.owner(),
+            true,
+        )
+    }));
+    rows
+}
+
 /// Finds a row by id.
 pub fn find(id: &str) -> Option<&'static Check> {
     CATALOG.iter().find(|c| c.id == id)
@@ -212,6 +228,24 @@ mod tests {
             missing.is_empty(),
             "subcommands missing from catalog: {missing:?}"
         );
+    }
+
+    #[test]
+    fn should_list_every_architecture_rule_when_checks_are_listed() {
+        // given
+        let rules = crate::architecture::Rule::ALL;
+
+        // when
+        let json = to_json(&all_rows());
+
+        // then
+        let mut seen = HashSet::new();
+        assert!(all_rows().iter().all(|c| seen.insert(c.id)), "{json}");
+        for rule in rules {
+            let line = format!("\"id\": \"{}\"", rule.id());
+            assert!(json.contains(&line), "{line} missing from {json}");
+            assert!(rule.owner().starts_with("ARCH-0"), "{}", rule.owner());
+        }
     }
 
     #[test]

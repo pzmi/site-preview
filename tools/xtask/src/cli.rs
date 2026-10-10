@@ -99,7 +99,14 @@ mod tests {
 
     #[test]
     fn should_have_valid_definition_when_clap_asserts_it() {
-        // given / when / then
-        Cli::command().debug_assert();
+        // given
+        let command = Cli::command();
+
+        // when
+        let name = command.get_name().to_owned();
+
+        // then
+        command.debug_assert();
+        assert_eq!(name, "xtask");
     }
 }

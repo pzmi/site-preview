@@ -9,7 +9,7 @@ use std::path::Path;
 use super::fixtures::Expected;
 
 macro_rules! rules {
-    ($($variant:ident => $id:literal, $description:literal, [$($fixture:literal),+ $(,)?];)+) => {
+    ($($variant:ident => $id:literal, $owner:literal, $description:literal, [$($fixture:literal),+ $(,)?];)+) => {
         /// Every rule the checker enforces. The id is what a diagnostic line starts with and
         /// what a negative fixture's `expected.txt` names.
         #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -26,6 +26,11 @@ macro_rules! rules {
                 match self { $(Rule::$variant => $id,)+ }
             }
 
+            /// The task that introduced the rule.
+            pub fn owner(self) -> &'static str {
+                match self { $(Rule::$variant => $owner,)+ }
+            }
+
             /// One line saying what the rule rejects.
             pub fn description(self) -> &'static str {
                 match self { $(Rule::$variant => $description,)+ }
@@ -40,69 +45,87 @@ macro_rules! rules {
 }
 
 rules! {
-    PolicySchema => "ARCH-policy-schema",
+    PolicySchema => "ARCH-policy-schema", "ARCH-01",
         "architecture.toml is missing, malformed, has an unknown field or another schema version.",
         ["policy-schema-version", "policy-unknown-field"];
-    Metadata => "ARCH-metadata",
+    Metadata => "ARCH-metadata", "ARCH-01",
         "cargo metadata or a crate manifest cannot be read, including a cyclic workspace.",
         ["normal-cycle", "unreadable-member-manifest"];
-    MissingMember => "ARCH-missing-member",
+    MissingMember => "ARCH-missing-member", "ARCH-01",
         "A [workspace] members entry has no Cargo.toml on disk.",
         ["missing-member"];
-    NotAMember => "ARCH-not-a-member",
+    NotAMember => "ARCH-not-a-member", "ARCH-01",
         "A crate under crates/ or tools/ is not a workspace member.",
         ["not-a-member"];
-    UnknownCrate => "ARCH-unknown-crate",
+    UnknownCrate => "ARCH-unknown-crate", "ARCH-01",
         "A workspace crate is in no policy category.",
         ["unknown-crate"];
-    MissingCrate => "ARCH-missing-crate",
+    MissingCrate => "ARCH-missing-crate", "ARCH-01",
         "The policy names a crate that is not in the workspace.",
         ["missing-crate"];
-    EmptySelector => "ARCH-empty-selector",
+    EmptySelector => "ARCH-empty-selector", "ARCH-01",
         "A policy category is present but empty.",
         ["empty-selector"];
-    DuplicateCategory => "ARCH-duplicate-category",
+    DuplicateCategory => "ARCH-duplicate-category", "ARCH-01",
         "A crate is listed in more than one category, or twice in one.",
         ["duplicate-category"];
-    ForbiddenEdge => "ARCH-forbidden-edge",
+    ForbiddenEdge => "ARCH-forbidden-edge", "ARCH-02",
         "A normal workspace edge is not in [dependencies.normal].",
         ["cli-bypasses-composition", "reversed-edge"];
-    UndeclaredBuildDep => "ARCH-undeclared-build-dep",
+    UndeclaredBuildDep => "ARCH-undeclared-build-dep", "ARCH-02",
         "A build edge to a workspace crate is not in [dependencies.build].",
         ["undeclared-build-dep"];
-    ForbiddenDevEdge => "ARCH-forbidden-dev-edge",
+    ForbiddenDevEdge => "ARCH-forbidden-dev-edge", "ARCH-02",
         "A dev edge targets a crate that is neither test_only nor in the normal allowlist.",
         ["forbidden-dev-edge"];
-    ProductionClosure => "ARCH-production-closure",
+    ProductionClosure => "ARCH-production-closure", "ARCH-02",
         "A production crate reaches a test_only or tool_only crate over normal or build edges.",
         ["testkit-in-production", "transitive-test-only"];
-    PolicyCycle => "ARCH-policy-cycle",
+    PolicyCycle => "ARCH-policy-cycle", "ARCH-02",
         "The [dependencies] allowlist contains a cycle.",
         ["policy-cycle"];
-    UnlistedExternal => "ARCH-unlisted-external",
+    UnlistedExternal => "ARCH-unlisted-external", "ARCH-03",
         "A direct third-party dependency is not in [external.<kind>] for its crate.",
         ["domain-uses-tokio", "target-specific-external", "unlisted-build-external", "unlisted-external"];
-    ExternalFeature => "ARCH-external-feature",
+    ExternalFeature => "ARCH-external-feature", "ARCH-03",
         "A third-party edge enables a feature outside its [external.<kind>] list.",
         ["application-tokio-rt-feature"];
-    ExternalSource => "ARCH-external-source",
+    ExternalSource => "ARCH-external-source", "ARCH-03",
         "A package is not from crates.io and has no [exceptions.sources] entry citing an existing ADR.",
         ["git-dependency", "path-outside-workspace", "source-exception-missing-adr"];
-    SourceParse => "ARCH-source-parse",
+    SourceParse => "ARCH-source-parse", "ARCH-06",
         "A reachable source file cannot be analysed: it does not parse, a module file is missing, or an include!/#[path] is not a literal.",
         ["include-non-literal", "unparseable-source"];
-    DomainPurity => "ARCH-domain-purity",
+    DomainPurity => "ARCH-domain-purity", "ARCH-06",
         "preview-domain production code names I/O, process, env, thread, clock, randomness, a runtime, HTTP or an outer layer.",
         ["domain-aliased-fs", "domain-std-fs", "domain-tokio-via-macro-path"];
-    FsAuthority => "ARCH-fs-authority",
+    FsAuthority => "ARCH-fs-authority", "ARCH-06",
         "Production code outside preview-adapter-fs and preview-composition/src/bootstrap.rs names filesystem authority.",
         ["ambient-fs-in-application"];
-    LayerIsolation => "ARCH-layer-isolation",
+    LayerIsolation => "ARCH-layer-isolation", "ARCH-06",
         "An adapter names a sibling adapter, composition or watcher, or the application names adapter technology.",
         ["http-names-fs-adapter"];
-    UnsafeCode => "ARCH-unsafe-code",
+    UnsafeCode => "ARCH-unsafe-code", "ARCH-06",
         "Owned code contains an unsafe block, fn, impl, trait, extern block or unsafe attribute.",
         ["unsafe-block"];
+    UnfinishedCode => "ARCH-unfinished-code", "ARCH-07",
+        "Production code calls todo!, unimplemented! or dbg! without an [exceptions.lints] entry.",
+        ["todo-in-production"];
+    IgnoredTest => "ARCH-ignored-test", "ARCH-07",
+        "Code carries an #[ignore] attribute.",
+        ["ignored-test"];
+    LintSuppression => "ARCH-lint-suppression", "ARCH-07",
+        "An allow, expect or coverage(off) attribute lacks an [exceptions.lints] entry citing an existing ADR, or an entry matches nothing.",
+        ["allow-with-missing-adr", "stale-lint-exception", "unjustified-allow"];
+    TestSleep => "ARCH-test-sleep", "ARCH-07",
+        "Test code sleeps outside the bounded poll helper preview-testkit/src/poll.rs.",
+        ["sleep-in-test"];
+    TestName => "ARCH-test-name", "ARCH-07",
+        "A test function's name does not match should_<outcome>_when_<condition>, or a macro hides a test.",
+        ["badly-named-test"];
+    TestStructure => "ARCH-test-structure", "ARCH-07",
+        "A test function's body lacks the // given, // when and // then comments in that order.",
+        ["missing-given-when-then"];
 }
 
 /// Compares the catalog with the negative fixtures in `dir`: every rule has fixtures, each

@@ -393,6 +393,10 @@ pub struct TokenScan {
     pub extern_crates: Vec<ItemExternCrate>,
     /// Lines of `unsafe` keywords.
     pub unsafe_lines: Vec<usize>,
+    /// Attributes (`#[..]` and `#![..]`) that parse, with the line of their `#`.
+    pub attributes: Vec<(syn::Meta, usize)>,
+    /// Functions after a test attribute: name and line of the attribute.
+    pub test_fns: Vec<(String, usize)>,
 }
 
 /// Scans `tokens` (a macro body or invocation) for paths, `use` and `extern crate` items and
@@ -420,6 +424,10 @@ fn scan_into(tokens: &TokenStream, scan: &mut TokenScan) {
                 parse_item_at(&trees, i, scan);
                 i += 1;
             }
+            TokenTree::Punct(p) if p.as_char() == '#' => {
+                attribute_at(&trees, i, scan);
+                i += 1;
+            }
             _ => match path_at(&trees, i) {
                 Some((path, next)) => {
                     scan.paths.push(path);
@@ -429,6 +437,41 @@ fn scan_into(tokens: &TokenStream, scan: &mut TokenScan) {
             },
         }
     }
+}
+
+/// Records the attribute whose `#` is at `start`, and the test function it may mark.
+fn attribute_at(trees: &[TokenTree], start: usize, scan: &mut TokenScan) {
+    let line = trees[start].span().start().line;
+    let bang = usize::from(is_punct(trees.get(start + 1), '!'));
+    let Some(TokenTree::Group(group)) = trees.get(start + 1 + bang) else {
+        return;
+    };
+    if group.delimiter() != Delimiter::Bracket {
+        return;
+    }
+    let Ok(meta) = syn::parse2::<syn::Meta>(group.stream()) else {
+        return;
+    };
+    let is_test = meta
+        .path()
+        .segments
+        .last()
+        .is_some_and(|s| s.ident == "test");
+    scan.attributes.push((meta, line));
+    if !is_test {
+        return;
+    }
+    let after = start + 2 + bang;
+    let fn_at = trees[after..]
+        .iter()
+        .take(16)
+        .position(|t| matches!(t, TokenTree::Ident(i) if i == "fn"));
+    let name = fn_at.and_then(|k| match trees.get(after + k + 1) {
+        Some(TokenTree::Ident(ident)) => Some(name(ident)),
+        _ => None,
+    });
+    scan.test_fns
+        .push((name.unwrap_or_else(|| "<generated>".to_owned()), line));
 }
 
 /// Parses `use ...;` or `extern crate ...;` starting at `start`, if it is one.
@@ -674,7 +717,7 @@ mod tests {
     }
 
     #[test]
-    fn should_resolve_extern_crate_alias_and_dependency_rename() {
+    fn should_resolve_through_alias_when_extern_crate_or_dependency_is_renamed() {
         // given
         let scopes = scopes_of("extern crate std as s; use fsa::Root;");
 
@@ -688,7 +731,7 @@ mod tests {
     }
 
     #[test]
-    fn should_treat_lone_unbound_name_as_local_value() {
+    fn should_treat_name_as_local_value_when_lone_and_unbound() {
         // given
         let scopes = scopes_of("struct Local;");
 

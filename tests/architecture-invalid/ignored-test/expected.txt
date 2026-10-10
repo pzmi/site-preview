@@ -1,0 +1,3 @@
+rule: ARCH-ignored-test
+at: crates/preview-domain/src/lib.rs:6
+contains: `#[ignore]`
