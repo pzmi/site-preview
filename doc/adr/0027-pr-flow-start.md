@@ -4,7 +4,7 @@ Date: 2026-10-10
 
 ## Status
 
-Proposed (planner default — owner may override)
+Superseded by [0032](0032-whole-plan-on-main.md)
 
 ## Context
 

@@ -12,7 +12,7 @@ Each decision is an ADR. Tasks cite the D-id, and D*n* is ADR *n*+1. ADR 0001 is
 | D2 | [0003](adr/0003-linux-and-macos-only.md) | P0 platforms are Linux and macOS only. Windows CI and Windows target checks are deferred. | Accepted |
 | D3 | [0004](adr/0004-rustix-openat-capability.md) | Confined file access uses `rustix` `openat` with `O_NOFOLLOW\|O_CLOEXEC` on every component, wrapped as a capability handle in `preview-adapter-fs`. `cap-std` is rejected because it allows in-root symlinks. `unsafe_code = "forbid"` still holds. | Accepted |
 | D4 | [0005](adr/0005-proportionate-foundation-and-early-vertical-slice.md) | Phasing: scaffold, architecture checker, domain/application, serving with an early thin slice, injection+SSE, watcher, CLI/lifecycle/JSON, formal+conformance, hardening, release. No milestone is scaffolding only. | Accepted |
-| D5 | [0006](adr/0006-bootstrap-integration-and-dco.md) | Bootstrap: one DCO-signed commit per task (`git commit -s`) with subject `<ID>: <summary>`, integrated onto `main` by the orchestrator. Implementing agents never push. The PR flow starts at OPS-04 (D26). | Accepted |
+| D5 | [0006](adr/0006-bootstrap-integration-and-dco.md) | One DCO-signed commit per task (`git commit -s`) with subject `<ID>: <summary>`, integrated onto `main` by the orchestrator for the whole plan. Implementing agents never push. | Accepted |
 | D6 | [0007](adr/0007-cargo-metadata-and-publishability.md) | `[workspace.package]` carries license `MIT OR Apache-2.0`, the repository URL, `rust-version`, keywords and categories, and `readme`. Only `preview-cli` (binary `site-preview`) is publishable; every other crate has `publish = false`. | Accepted |
 | D7 | [0008](adr/0008-pinned-stable-toolchain.md) | Toolchain pinned to stable `1.97.0` in `rust-toolchain.toml`, edition 2024, resolver 3. `Cargo.lock` is committed and CI uses `--locked`. | Accepted |
 | D8 | [0009](adr/0009-agent-sandbox-and-pinned-actions.md) | Agent sandbox: no Docker. Chromium is preinstalled at `/opt/pw-browsers`; never run `playwright install`. Node is used only for dev tooling (Quint, Playwright). GitHub Actions are pinned by SHA. | Accepted |
@@ -33,17 +33,18 @@ Each decision is an ADR. Tasks cite the D-id, and D*n* is ADR *n*+1. ADR 0001 is
 | D23 | [0024](adr/0024-p0-supply-chain-and-release-evidence.md) | P0 supply chain: `cargo-deny`, Gitleaks, actionlint, CodeQL (Rust), Dependabot (actions and cargo). Releases ship `SHA256SUMS`, GitHub build-provenance attestations and a CycloneDX SBOM. `cargo-vet`, `cargo-machete` and detached signatures are deferred (plan §14 item 10). | Proposed |
 | D24 | [0025](adr/0025-crates-io-publishing-deferred.md) | Publishing to crates.io is out of scope for v0.1.0, because `preview-cli` cannot be published while its path dependencies have `publish = false`. Distribution is GitHub release archives. | Proposed |
 | D25 | [0026](adr/0026-nightly-fuzz-miri-and-concurrency-proof-scope.md) | One dated nightly is pinned for `cargo-fuzz` and Miri only. `fuzz/` stays outside the workspace and is listed as `fuzz_only` in `architecture.toml`. Loom, Shuttle and Kani are not adopted in P0 unless code adds a custom synchronization primitive (P0 uses only tokio `watch` and `Semaphore`). | Proposed |
-| D26 | [0027](adr/0027-pr-flow-start.md) | Branch protection and the PR flow start at OPS-04, once the Linux+macOS CI matrix (OPS-03) is green on `main` twice in a row. | Proposed |
+| D26 | [0027](adr/0027-pr-flow-start.md) | Superseded by D31: the planned switch to branch protection and a PR flow at OPS-04 is dropped. | Superseded |
 | D27 | [0028](adr/0028-composition-owns-runtime-and-processes.md) | `preview-composition` builds the Tokio runtime, installs signal handlers and launches the browser opener (`open`/`xdg-open`, no shell). `preview-cli` parses flags, renders output and maps errors to exit codes. | Proposed |
 | D28 | [0029](adr/0029-performance-targets-measured-not-gating.md) | The targets in plan §13 are measured by a reproducible non-blocking xtask procedure and recorded in `doc/performance.md`. They become blocking only after the owner approves a budget (fnd §12 phase 5). | Proposed |
 | D29 | [0030](adr/0030-css-js-asset-hot-reload-in-p0.md) | CSS, JS and asset hot reload are **P0**, overriding plan §7.3 "always full-page reload" and plan §14 item 1. A debounced revision carries the changed eligible paths; the SSE `reload` event is `{instance_id, revision, changes:[{path, kind}], full}`. CSS swaps in place, assets are cache-busted, JS reloads with scroll restore or uses an opt-in hot-accept API, and HTML reloads fully. Anything unknown or unmatched falls back to a full reload. The render-time baseline/instance logic is unchanged. | Accepted |
 | D30 | [0031](adr/0031-hot-reload-protocol-details.md) | Hot-reload details. Kinds by extension: `css` (`.css`), `js` (`.js`, `.mjs`), `html` (`.html`, `.htm`), `asset` (images, fonts, media), `other`. At most 64 changes per revision; above that `full = true`. `full = true` also for overflow/rescan, directory changes, any `html`/`other` change, and whenever the SSE connection's previous sent revision ≠ `revision − 1` (no hot apply across a coalesced gap). The scroll position is carried across a JS reload in `history.state` (key `__sitePreview`, merged only into object or null state, removed after restore). No cookies, `localStorage` or `sessionStorage`. Form state is not restored in P0. Same-origin iframes are handled by their own injected client. | Proposed |
+| D31 | [0032](adr/0032-whole-plan-on-main.md) | The whole plan is integrated directly on `main`: one DCO-signed commit per task, pushed by the orchestrator. No task switches to a PR flow or enables branch protection; a PR flow may follow only after the plan is complete, via a new ADR. Review checkpoints and CI on `main` are the quality net, and red CI on `main` is fixed immediately on `main`. | Accepted |
 
 ## Rules for every task
 
 1. **Read first:** this file's Decisions table, then the sections the task cites, then any existing file it changes. Do not read either spec document whole. If a cited section contradicts a Decision, the Decision wins; say so in the commit message.
 2. **Green after every task:** `cargo xtask quick` passes (fmt check, Clippy `-D warnings` on all targets, `architecture` once ARCH-01 lands, fast nextest). **From OPS-01 on**, `cargo xtask check` must pass instead. A gate that cannot run in the sandbox because a pinned tool is missing fails with the D9 message. Report it as a tooling blocker; never fake a pass and never remove the stage.
-3. **Commit:** exactly one DCO-signed commit per task, `git commit -s`, with subject `<ID>: <summary>` (for example `FS-01: rustix openat root capability`). The orchestrator integrates onto `main`. **Implementing agents never push**, never create tags and never change remote settings. Only the orchestrator runs `gh`.
+3. **Commit:** exactly one DCO-signed commit per task, `git commit -s`, with subject `<ID>: <summary>` (for example `FS-01: rustix openat root capability`). The orchestrator integrates onto `main` for the whole plan (D5, D31) and pushes after each merged task. **Implementing agents never push**, never create tags and never change remote settings. Only the orchestrator runs `gh`.
 4. **Tests:** name them `should_<outcome>_when_<condition>`, with `// given`, `// when`, `// then` comments. Deterministic tests never sleep: use injected clocks, `tokio::time::pause`, channels or readiness signals. Real-OS watcher and black-box tests may poll a condition, but only through the shared bounded helper (with a reason) introduced in TEST-01. Use `tempfile` and port `0`; never a fixed path or a fixed port.
 5. **No silencing:** no `#[ignore]`, no `#[allow]`/`#[expect]`, no coverage exclusions, no production `todo!()`/`unimplemented!()`/`dbg!()` without an entry in `architecture.toml`'s `[exceptions]` that cites an ADR. Never delete a failing test, weaken a modeled invariant or rewrite a golden fixture just to get green.
 6. **New crate:** a new crate is added to `members` in `Cargo.toml` and to `architecture.toml` in the same commit. A new third-party dependency is added to the crate's external allowlist (D12) in the same commit, using the latest stable compatible version, locked in `Cargo.lock`. Never invent a version number.
@@ -55,7 +56,7 @@ Each decision is an ADR. Tasks cite the D-id, and D*n* is ADR *n*+1. ADR 0001 is
 
 **Model key:** `opus` covers design, security boundaries, concurrency, formal models and the architecture checker. `sonnet` covers well-specified implementation. `haiku` covers mechanical docs and config.
 
-**Review checkpoints (⛳):** after a ⛳ task, the orchestrator runs `/code-review` over the diff since the previous checkpoint and tags `checkpoint-<ID>` before work builds on top. The checkpoints are **FND-05** (scaffold+CI), **ARCH-07** (architecture checker), **APP-04** (domain+application core, including the change set), **E2E-01** (M1 secure serving), **E2E-02** (M2 injection+SSE), **E2E-03** (M3 watcher), **E2E-07** (M4 agent workflow), **FORMAL-10** (formal+conformance), **SEC-05** (hardening), **OPS-04** (switch to PR flow) and **OPS-06** (release pipeline, before the first tag).
+**Review checkpoints (⛳):** after a ⛳ task, the orchestrator runs `/code-review` over the diff since the previous checkpoint and tags `checkpoint-<ID>` before work builds on top. The checkpoints are **FND-05** (scaffold+CI), **ARCH-07** (architecture checker), **APP-04** (domain+application core, including the change set), **E2E-01** (M1 secure serving), **E2E-02** (M2 injection+SSE), **E2E-03** (M3 watcher), **E2E-07** (M4 agent workflow), **FORMAL-10** (formal+conformance), **SEC-05** (hardening), **OPS-04** (CI matrix green twice, required checks documented) and **OPS-06** (release pipeline, before the first tag).
 
 ## Overview
 
@@ -160,7 +161,7 @@ Each decision is an ADR. Tasks cite the D-id, and D*n* is ADR *n*+1. ADR 0001 is
 | E2E-08 | Soak and performance measurement | SEC-05 | sonnet | | OPS-02 |
 | OPS-02 | CI job topology and failure evidence | SEC-05, TEST-08 | sonnet | | E2E-08 |
 | OPS-03 | Linux+macOS native matrix | OPS-02 | sonnet | | |
-| OPS-04 | Switch to PR flow: branch rules, `doc/sdlc.md` | OPS-03 | sonnet | ⛳ | |
+| OPS-04 | CI matrix green twice on `main`, `doc/sdlc.md`, required checks | OPS-03 | sonnet | ⛳ | |
 | OPS-05 | `release-check`: packaged-binary smoke | OPS-04 | sonnet | | DOC-05 |
 | DOC-05 | Documentation consistency check | OPS-04 | sonnet | | OPS-05 |
 | OPS-06 | `release.yml`: archives, SHA256SUMS, provenance, SBOM | OPS-05, DOC-05 | opus | ⛳ | |
@@ -808,7 +809,7 @@ Each decision is an ADR. Tasks cite the D-id, and D*n* is ADR *n*+1. ADR 0001 is
 ### FORMAL-09: Trace corpus, `conformance` stage, `formal.yml`
 - **Depends on:** FORMAL-08. **Model:** opus. **Size:** M.
 - **Read:** fnd §6.4 (whole), fnd §10 ("Conformance (Quint)" bullet); D13, D18.
-- **Create/Change:** `cargo xtask conformance` (full) runs typecheck, `quint test` scenarios, bounded random simulation with invariants, **regression freshness** (regenerate each named-scenario ITF with its fixed seed and compare byte for byte with `formal/traces/regression/`; a stale fixture fails), generated traces (the seed, Quint version, family, count and max steps are recorded in `formal/traces/generated/manifest.json`), replay of both sets, and the negative controls. Register the `conformance` stage in `check`. Add `.github/workflows/formal.yml`: a PR job running `cargo xtask conformance` and uploading failing ITFs as artifacts, plus a `schedule` job placeholder for FORMAL-10 and TEST-09. Add `doc/formal-models.md` covering models, stimuli, observations, invariants, scope, how to promote a counterexample, and the D13 rule (model-first from now on).
+- **Create/Change:** `cargo xtask conformance` (full) runs typecheck, `quint test` scenarios, bounded random simulation with invariants, **regression freshness** (regenerate each named-scenario ITF with its fixed seed and compare byte for byte with `formal/traces/regression/`; a stale fixture fails), generated traces (the seed, Quint version, family, count and max steps are recorded in `formal/traces/generated/manifest.json`), replay of both sets, and the negative controls. Register the `conformance` stage in `check`. Add `.github/workflows/formal.yml`: a job running `cargo xtask conformance` and uploading failing ITFs as artifacts, plus a `schedule` job placeholder for FORMAL-10 and TEST-09. Add `doc/formal-models.md` covering models, stimuli, observations, invariants, scope, how to promote a counterexample, and the D13 rule (model-first from now on).
 - **Accept:** `cargo xtask conformance` exits 0. Editing one committed trace byte makes it fail with `stale regression trace <file>`. `check` includes the stage. The workflow passes `actionlint`.
 - **Impact:** model (gate).
 
@@ -993,7 +994,7 @@ Each decision is an ADR. Tasks cite the D-id, and D*n* is ADR *n*+1. ADR 0001 is
 ### OPS-02: CI job topology and failure evidence
 - **Depends on:** SEC-05, TEST-08. **Model:** sonnet. **Size:** M. Parallel with E2E-08.
 - **Read:** fnd §10 "PR blocking (Linux)" (whole), fnd §9 (last paragraph).
-- **Create/Change:** split `ci.yml` into the jobs `architecture`, `static`, `fast-tests`, `integration`, `conformance`, `coverage` (with the changed-line gate on PRs), `security`, `browser` and `artifact-smoke` (a release build, run outside the repo on the fixture; extended in OPS-05). Each job calls one xtask stage (`cargo xtask check --only <stage>`, added here) so local and CI behavior stay in parity. Upload JUnit, LCOV, Playwright traces and failing ITFs as artifacts. Caches are keyed by lockfile and toolchain. A final `required` job `needs:` all of them.
+- **Create/Change:** split `ci.yml` into the jobs `architecture`, `static`, `fast-tests`, `integration`, `conformance`, `coverage` (with the changed-line gate on the pushed commit range), `security`, `browser` and `artifact-smoke` (a release build, run outside the repo on the fixture; extended in OPS-05). Each job calls one xtask stage (`cargo xtask check --only <stage>`, added here) so local and CI behavior stay in parity. Upload JUnit, LCOV, Playwright traces and failing ITFs as artifacts. Caches are keyed by lockfile and toolchain. A final `required` job `needs:` all of them.
 - **Accept:** `actionlint` passes. `cargo xtask check --only coverage` works locally. The orchestrator confirms all jobs are green on `main`.
 - **Impact:** none.
 
@@ -1004,11 +1005,11 @@ Each decision is an ADR. Tasks cite the D-id, and D*n* is ADR *n*+1. ADR 0001 is
 - **Accept:** all 4 platforms are green on `main` twice in a row (confirmed by the orchestrator). `grep -i windows .github/workflows/*.yml` finds nothing.
 - **Impact:** none.
 
-### OPS-04: Switch to PR flow: branch rules, `doc/sdlc.md` ⛳
+### OPS-04: CI matrix green twice on `main`, `doc/sdlc.md`, required checks ⛳
 - **Depends on:** OPS-03. **Model:** sonnet. **Size:** S.
-- **Read:** fnd §11 (whole); D5, D26.
-- **Create/Change:** `doc/sdlc.md` covers the Definition of Ready, the agent procedure, the Definition of Done, the gate list and PR flow from this task on (branch per task, the `required` check, signed-off commits, no force-push to main, review at ⛳). Add `CONTRIBUTING.md` (DCO, `cargo xtask check`, ADR rule) and `.github/pull_request_template.md` (Impact line, gates run, evidence). Add `doc/branch-protection.md` with the exact settings for the orchestrator or owner to apply via `gh api`: required status `required`, linear history, DCO check, no direct pushes. **Agents never apply these settings.**
-- **Accept:** the files exist. After the owner or orchestrator applies the settings, a direct push to `main` is rejected (confirmed by the orchestrator). From the next task on, every task is a PR.
+- **Read:** fnd §11 (whole); D5, D31.
+- **Create/Change:** `doc/sdlc.md` covers the Definition of Ready, the agent procedure, the Definition of Done, the gate list and the integration procedure (direct on `main`, one signed-off commit per task, the `required` check as the CI result to watch, no force-push, review at ⛳, red CI on `main` fixed immediately on `main`). Add `CONTRIBUTING.md` content for outside contributors (DCO, `cargo xtask check`, ADR rule, pull-request guidance) and `.github/pull_request_template.md` (Impact line, gates run, evidence) for outside contributions. Add `doc/required-checks.md` documenting the checks that must be green on `main` (the `required` aggregate job and its members). It enables no branch protection and no rulesets.
+- **Accept:** the files exist, and the `required` check is green on `main` for two consecutive pushes (confirmed by the orchestrator). Integration stays direct on `main`.
 - **Impact:** none.
 
 ### OPS-05: `release-check`: packaged-binary smoke
@@ -1191,7 +1192,7 @@ Each decision is an ADR. Tasks cite the D-id, and D*n* is ADR *n*+1. ADR 0001 is
 | 2 | Known mutation survivor visible | TEST-08 |
 | 2 | Failing test is non-zero locally and in CI; gate runs on clean checkout | OPS-01, OPS-02 |
 | 3 | Removing monotonicity / duplicate suppression fails at a named step; same seed reproduces | FORMAL-08 |
-| 3 | Committed corpus freshness and generated traces on every PR | FORMAL-09 |
+| 3 | Committed corpus freshness and generated traces on every push to `main` | FORMAL-09 |
 | 3 | Apalache baseline or reviewed tooling blocker | FORMAL-10 |
 | 4 | Fresh dir served by one binary; browser refreshes incl. atomic save | CLI-01, E2E-03, E2E-05 |
 | 4 | Path escapes and hostile origins rejected; source never changes | E2E-01, E2E-02 |

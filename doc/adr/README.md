@@ -30,8 +30,9 @@ This directory holds the decisions behind site-preview, one file per decision, i
 | [0024](0024-p0-supply-chain-and-release-evidence.md) | P0 supply-chain controls and release evidence | Proposed |
 | [0025](0025-crates-io-publishing-deferred.md) | crates.io publishing deferred | Proposed |
 | [0026](0026-nightly-fuzz-miri-and-concurrency-proof-scope.md) | Nightly scope, fuzz crate placement, concurrency proofs | Proposed |
-| [0027](0027-pr-flow-start.md) | When the PR flow starts | Proposed |
+| [0027](0027-pr-flow-start.md) | When the PR flow starts | Superseded by 0032 |
 | [0028](0028-composition-owns-runtime-and-processes.md) | Composition owns runtime, signals and process spawning | Proposed |
 | [0029](0029-performance-targets-measured-not-gating.md) | Performance targets are measured, not gating | Proposed |
 | [0030](0030-css-js-asset-hot-reload-in-p0.md) | CSS, JS and asset hot reload in P0 | Accepted |
 | [0031](0031-hot-reload-protocol-details.md) | Hot-reload protocol details | Proposed |
+| [0032](0032-whole-plan-on-main.md) | The whole plan is integrated on main | Accepted |

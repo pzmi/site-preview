@@ -22,6 +22,8 @@ Read [doc/foundation.md](doc/foundation.md) for architecture rules and [doc/plan
 
 ## Pull requests
 
+This section is for outside contributors. During initial development the maintainer integrates planned tasks directly on `main`.
+
 - Fill in the pull request template.
 - All gates must be green (`cargo xtask check`).
 - Do not suppress, skip, or delete tests or lints to get green; fix the cause.
