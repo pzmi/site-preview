@@ -1,0 +1,30 @@
+schema = 1
+
+[workspace]
+production = [
+  "preview-domain", "preview-application", "preview-adapter-fs",
+  "preview-adapter-http", "preview-composition", "preview-cli",
+]
+test_only = ["preview-testkit", "preview-conformance"]
+tool_only = ["xtask"]
+
+[dependencies.normal]
+preview-domain = []
+preview-application = ["preview-domain"]
+preview-adapter-fs = ["preview-application", "preview-domain"]
+preview-adapter-http = ["preview-application", "preview-domain"]
+preview-composition = [
+  "preview-domain", "preview-application",
+  "preview-adapter-fs", "preview-adapter-http",
+]
+preview-cli = ["preview-composition"]
+preview-testkit = ["preview-domain", "preview-application"]
+preview-conformance = [
+  "preview-domain", "preview-application", "preview-testkit",
+  "preview-adapter-fs", "preview-adapter-http",
+]
+xtask = []
+
+[external]
+
+[exceptions]

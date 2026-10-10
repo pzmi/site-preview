@@ -1,0 +1,36 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/preview-domain",
+    "crates/preview-application",
+    "crates/preview-adapter-fs",
+    "crates/preview-adapter-http",
+    "crates/preview-composition",
+    "crates/preview-cli",
+    "crates/preview-testkit",
+    "crates/preview-conformance",
+    "tools/xtask",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/pzmi/site-preview"
+readme = "README.md"
+keywords = ["live-reload", "static-site", "preview", "dev-server", "cli"]
+categories = ["development-tools", "web-programming::http-server", "command-line-utilities"]
+
+[workspace.dependencies]
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+unused_must_use = "deny"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+dbg_macro = "deny"
+todo = "deny"
+unimplemented = "deny"

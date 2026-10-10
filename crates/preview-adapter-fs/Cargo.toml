@@ -1,0 +1,16 @@
+[package]
+name = "preview-adapter-fs"
+description = "Capability-scoped filesystem access and the file watcher behind the application ports."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+preview-application = { path = "../preview-application" }
+preview-domain = { path = "../preview-domain" }

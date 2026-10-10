@@ -1,0 +1,21 @@
+[package]
+name = "preview-cli"
+description = "Zero-config local live-reload server for static sites."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[[bin]]
+name = "site-preview"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+preview-composition = { path = "../preview-composition" }

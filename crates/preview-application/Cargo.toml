@@ -1,0 +1,15 @@
+[package]
+name = "preview-application"
+description = "Commands, queries, use cases and port traits that orchestrate the domain."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+preview-domain = { path = "../preview-domain" }

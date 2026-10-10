@@ -1,0 +1,16 @@
+[package]
+name = "preview-adapter-http"
+description = "HTTP handlers, HTML injection and live-reload transport behind the application ports."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+preview-application = { path = "../preview-application" }
+preview-domain = { path = "../preview-domain" }

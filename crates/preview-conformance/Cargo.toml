@@ -1,0 +1,19 @@
+[package]
+name = "preview-conformance"
+description = "Drives the real code from Quint model traces and compares observable state; test only."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+preview-domain = { path = "../preview-domain" }
+preview-application = { path = "../preview-application" }
+preview-testkit = { path = "../preview-testkit" }
+preview-adapter-fs = { path = "../preview-adapter-fs" }
+preview-adapter-http = { path = "../preview-adapter-http" }
