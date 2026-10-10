@@ -1,0 +1,15 @@
+[package]
+name = "preview-composition"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+preview-domain = { path = "../preview-domain" }
+preview-application = { path = "../preview-application" }
+preview-adapter-fs = { path = "../preview-adapter-fs" }
+preview-adapter-http = { path = "../preview-adapter-http" }
+tokio = { version = "1", default-features = false, features = ["rt", "sync"] }
+
+[build-dependencies]
+preview-domain = { path = "../preview-domain" }

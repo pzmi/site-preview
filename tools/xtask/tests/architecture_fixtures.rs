@@ -1,4 +1,5 @@
-//! Black-box harness for the architecture checker (foundation.md section 3.4): every mini
+//! Black-box harness for the architecture checker (foundation.md section 3.4). The positive
+//! fixture `tests/architecture-valid/full-topology/` must pass, and every mini
 //! workspace under `tests/architecture-invalid/<case>/` must make `xtask architecture` exit
 //! non-zero with a diagnostic line that names the rule and path in its `expected.txt`.
 //!
@@ -158,4 +159,22 @@ fn should_reject_line_when_rule_matches_but_path_differs() {
 
     // then
     assert!(!matched);
+}
+
+#[test]
+fn should_pass_when_positive_fixture_is_checked() {
+    // given
+    let manifest = repository_root().join("tests/architecture-valid/full-topology/Cargo.toml");
+
+    // when
+    let output = xtask(&[
+        "architecture",
+        "--manifest-path",
+        manifest.to_str().unwrap(),
+    ]);
+
+    // then
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+    assert!(!stderr.contains("ARCH-"), "{stderr}");
 }

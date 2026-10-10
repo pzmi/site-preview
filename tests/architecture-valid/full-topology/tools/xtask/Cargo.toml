@@ -1,0 +1,11 @@
+[package]
+name = "xtask"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+toml = { version = "1", features = ["parse"] }
+
+[dev-dependencies]
+preview-testkit = { path = "../../crates/preview-testkit" }

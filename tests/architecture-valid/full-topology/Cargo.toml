@@ -1,0 +1,13 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/preview-domain",
+    "crates/preview-application",
+    "crates/preview-adapter-fs",
+    "crates/preview-adapter-http",
+    "crates/preview-composition",
+    "crates/preview-cli",
+    "crates/preview-testkit",
+    "crates/preview-conformance",
+    "tools/xtask",
+]

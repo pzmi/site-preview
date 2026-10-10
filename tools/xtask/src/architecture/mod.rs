@@ -2,9 +2,11 @@
 //! checked against `cargo metadata` and the source tree, plus the negative fixtures of
 //! section 3.4.
 //!
-//! Without `--manifest-path` it checks this repository and then confirms that every fixture
-//! under [`FIXTURES_DIR`] fails with the rule its `expected.txt` names. With it, it checks
-//! only that workspace, whose root must hold `architecture.toml` and a `Cargo.lock`.
+//! Without `--manifest-path` it checks this repository, confirms that every fixture under
+//! [`FIXTURES_DIR`] fails with the rule its `expected.txt` names, that every fixture under
+//! [`VALID_FIXTURES_DIR`] passes, and that every cataloged rule has a negative fixture. With
+//! it, it checks only that workspace, whose root must hold `architecture.toml` and a
+//! `Cargo.lock`.
 
 mod external;
 mod fixtures;
@@ -12,6 +14,7 @@ mod graph;
 mod inventory;
 mod policy;
 mod report;
+mod rules;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -37,6 +40,9 @@ pub const TARGETS: [&str; 4] = [
 
 /// Negative fixtures, relative to the repository root: one mini workspace per directory.
 pub const FIXTURES_DIR: &str = "tests/architecture-invalid";
+
+/// Positive fixtures, relative to the repository root: each must pass.
+pub const VALID_FIXTURES_DIR: &str = "tests/architecture-valid";
 
 /// The result of checking one workspace.
 #[derive(Debug)]
@@ -74,13 +80,29 @@ pub fn run(manifest_path: Option<&Path>) -> i32 {
         );
     }
     if with_fixtures {
-        match fixtures::verify(&workspace_root(&manifest).join(FIXTURES_DIR)) {
-            Ok(count) => println!("architecture: {count} negative fixtures fail as expected"),
-            Err(errors) => {
-                for error in errors {
-                    eprintln!("xtask: architecture: {error}");
+        let root = workspace_root(&manifest);
+        let results = [
+            fixtures::verify(&root.join(FIXTURES_DIR))
+                .map(|n| format!("{n} negative fixtures fail as expected")),
+            fixtures::verify_valid(&root.join(VALID_FIXTURES_DIR))
+                .map(|n| format!("{n} positive fixtures pass")),
+            match rules::completeness_problems(&root.join(FIXTURES_DIR)) {
+                problems if problems.is_empty() => Ok(format!(
+                    "{} rules each have a negative fixture",
+                    rules::Rule::ALL.len()
+                )),
+                problems => Err(problems),
+            },
+        ];
+        for result in results {
+            match result {
+                Ok(line) => println!("architecture: {line}"),
+                Err(errors) => {
+                    for error in errors {
+                        eprintln!("xtask: architecture: {error}");
+                    }
+                    failed = true;
                 }
-                failed = true;
             }
         }
     }
@@ -287,10 +309,15 @@ fn workspace_root(manifest: &Path) -> PathBuf {
     }
 }
 
-/// The root manifest of this repository, two levels above the xtask crate.
-fn repository_manifest() -> PathBuf {
+/// The root of this repository, two levels above the xtask crate.
+fn repository_root() -> PathBuf {
     let xtask = Path::new(env!("CARGO_MANIFEST_DIR"));
-    xtask.ancestors().nth(2).unwrap_or(xtask).join("Cargo.toml")
+    xtask.ancestors().nth(2).unwrap_or(xtask).to_path_buf()
+}
+
+/// The root manifest of this repository.
+fn repository_manifest() -> PathBuf {
+    repository_root().join("Cargo.toml")
 }
 
 #[cfg(test)]

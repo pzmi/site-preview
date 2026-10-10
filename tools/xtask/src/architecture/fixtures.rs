@@ -1,5 +1,6 @@
-//! Negative fixtures (foundation.md section 3.4): each directory is a mini workspace with an
-//! `expected.txt` that names the rule it must violate.
+//! Policy self-tests (foundation.md section 3.4). A negative fixture is a mini workspace with
+//! an `expected.txt` that names the rule it must violate; a positive fixture is a mini
+//! workspace that must pass with no diagnostic at all.
 //!
 //! `expected.txt` holds `key: value` lines: `rule:` (required, a rule id), `at:` (required, a
 //! substring of the diagnostic's path) and any number of `contains:` (substrings of the
@@ -55,9 +56,33 @@ impl Expected {
     }
 }
 
-/// Checks every fixture under `dir` on a few threads; returns how many passed, or one error
-/// per failure, in case order.
+/// Checks every negative fixture under `dir`; returns how many passed, or one error per
+/// failure, in case order.
 pub fn verify(dir: &Path) -> Result<usize, Vec<String>> {
+    verify_each(dir, verify_case)
+}
+
+/// Checks every positive fixture under `dir`: each must produce no diagnostic.
+pub fn verify_valid(dir: &Path) -> Result<usize, Vec<String>> {
+    verify_each(dir, |case| {
+        let got: Vec<String> = check(&case.join("Cargo.toml"))
+            .diagnostics
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        if got.is_empty() {
+            Ok(())
+        } else {
+            Err(format!("expected no diagnostics, got: {}", got.join("; ")))
+        }
+    })
+}
+
+/// Runs `verify_case` on every fixture under `dir` on a few threads.
+fn verify_each(
+    dir: &Path,
+    verify_case: impl Fn(&Path) -> Result<(), String> + Sync,
+) -> Result<usize, Vec<String>> {
     let cases = list_cases(dir).map_err(|e| vec![e])?;
     let next = AtomicUsize::new(0);
     let workers = thread::available_parallelism().map_or(2, |n| n.get().min(8));
@@ -96,7 +121,7 @@ pub fn verify(dir: &Path) -> Result<usize, Vec<String>> {
 }
 
 fn list_cases(dir: &Path) -> Result<Vec<String>, String> {
-    let entries = fs::read_dir(dir).map_err(|e| format!("cannot list negative fixtures: {e}"))?;
+    let entries = fs::read_dir(dir).map_err(|e| format!("cannot list fixtures: {e}"))?;
     let mut cases: Vec<String> = entries
         .filter_map(Result::ok)
         .filter(|e| e.path().is_dir())
@@ -104,7 +129,7 @@ fn list_cases(dir: &Path) -> Result<Vec<String>, String> {
         .collect();
     cases.sort();
     if cases.is_empty() {
-        return Err("no negative fixtures found".to_owned());
+        return Err("no fixtures found".to_owned());
     }
     Ok(cases)
 }
@@ -187,6 +212,6 @@ mod tests {
         let result = verify(dir.path());
 
         // then
-        assert_eq!(result, Err(vec!["no negative fixtures found".to_owned()]));
+        assert_eq!(result, Err(vec!["no fixtures found".to_owned()]));
     }
 }
