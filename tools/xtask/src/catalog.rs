@@ -1,0 +1,219 @@
+//! The check catalog: every gate stage and `xtask` command, with its level, owner and whether
+//! `check` includes it. `list-checks` prints it; `main` reads owners from it.
+
+/// One catalog row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Check {
+    /// Unique id. Equals the subcommand name for a command row.
+    pub id: &'static str,
+    /// Test or gate level, as named in foundation.md section 5.
+    pub level: &'static str,
+    /// The command line that runs it.
+    pub command: &'static str,
+    /// Task id that introduces (or will introduce) the implementation.
+    pub owner: &'static str,
+    /// Whether `cargo xtask check` includes it.
+    pub in_check: bool,
+}
+
+const fn row(
+    id: &'static str,
+    level: &'static str,
+    command: &'static str,
+    owner: &'static str,
+    in_check: bool,
+) -> Check {
+    Check {
+        id,
+        level,
+        command,
+        owner,
+        in_check,
+    }
+}
+
+/// All rows. Stage rows (`fmt-check`, `clippy`, `unit-tests`) are what `quick` runs.
+pub const CATALOG: &[Check] = &[
+    row(
+        "fmt-check",
+        "static",
+        "cargo fmt --all --check",
+        "FND-03",
+        true,
+    ),
+    row(
+        "clippy",
+        "static",
+        "cargo clippy --locked --workspace --all-targets -- -D warnings",
+        "FND-03",
+        true,
+    ),
+    row(
+        "unit-tests",
+        "unit",
+        "cargo test --locked --workspace",
+        "FND-03",
+        true,
+    ),
+    row("fmt", "tooling", "cargo xtask fmt", "FND-03", false),
+    row("quick", "gate", "cargo xtask quick", "FND-03", false),
+    row(
+        "architecture",
+        "architecture",
+        "cargo xtask architecture",
+        "ARCH-01",
+        true,
+    ),
+    row("test", "integration", "cargo xtask test", "OPS-01", true),
+    row(
+        "conformance",
+        "conformance",
+        "cargo xtask conformance",
+        "FORMAL-01",
+        true,
+    ),
+    row(
+        "coverage",
+        "coverage",
+        "cargo xtask coverage",
+        "TEST-06",
+        true,
+    ),
+    row(
+        "security",
+        "security",
+        "cargo xtask security",
+        "SEC-01",
+        true,
+    ),
+    row("check", "gate", "cargo xtask check", "OPS-01", false),
+    row(
+        "mutation",
+        "mutation",
+        "cargo xtask mutation",
+        "TEST-08",
+        false,
+    ),
+    row("fuzz", "fuzz", "cargo xtask fuzz", "SEC-04", false),
+    row(
+        "formal-verify",
+        "formal",
+        "cargo xtask formal-verify",
+        "FORMAL-10",
+        false,
+    ),
+    row(
+        "release-check",
+        "release",
+        "cargo xtask release-check",
+        "OPS-05",
+        false,
+    ),
+    row(
+        "list-checks",
+        "tooling",
+        "cargo xtask list-checks",
+        "FND-03",
+        false,
+    ),
+    row("doctor", "tooling", "cargo xtask doctor", "FND-04", false),
+    row(
+        "install-tools",
+        "tooling",
+        "cargo xtask install-tools",
+        "FND-04",
+        false,
+    ),
+];
+
+/// Finds a row by id.
+pub fn find(id: &str) -> Option<&'static Check> {
+    CATALOG.iter().find(|c| c.id == id)
+}
+
+/// Renders the catalog as a JSON array of objects.
+pub fn to_json(checks: &[Check]) -> String {
+    let rows: Vec<String> = checks
+        .iter()
+        .map(|c| {
+            format!(
+                "  {{\"id\": {}, \"level\": {}, \"command\": {}, \"owner\": {}, \"in_check\": {}}}",
+                json_str(c.id),
+                json_str(c.level),
+                json_str(c.command),
+                json_str(c.owner),
+                c.in_check
+            )
+        })
+        .collect();
+    format!("[\n{}\n]\n", rows.join(",\n"))
+}
+
+fn json_str(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for ch in s.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cli::Cli;
+    use clap::CommandFactory;
+    use std::collections::HashSet;
+
+    #[test]
+    fn should_have_unique_ids_when_catalog_is_listed() {
+        // given
+        let mut seen = HashSet::new();
+
+        // when
+        let duplicates: Vec<_> = CATALOG.iter().filter(|c| !seen.insert(c.id)).collect();
+
+        // then
+        assert!(
+            duplicates.is_empty(),
+            "duplicate catalog ids: {duplicates:?}"
+        );
+    }
+
+    #[test]
+    fn should_list_every_subcommand_when_catalog_is_checked() {
+        // given
+        let cmd = Cli::command();
+
+        // when
+        let missing: Vec<_> = cmd
+            .get_subcommands()
+            .map(|s| s.get_name())
+            .filter(|n| find(n).is_none())
+            .collect();
+
+        // then
+        assert!(
+            missing.is_empty(),
+            "subcommands missing from catalog: {missing:?}"
+        );
+    }
+
+    #[test]
+    fn should_escape_quotes_when_rendering_json() {
+        // given
+        let check = row("a", "b", "say \"hi\"\\", "T-1", true);
+
+        // when
+        let json = to_json(&[check]);
+
+        // then
+        assert!(json.contains(r#""command": "say \"hi\"\\""#), "{json}");
+    }
+}
