@@ -1,0 +1,17 @@
+/target
+**/*.rs.bk
+/fuzz/target
+/fuzz/corpus
+/fuzz/artifacts
+/formal/node_modules
+/formal/traces/generated/
+/.work/
+mutants.out*/
+lcov.info
+*.profraw
+.DS_Store
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
