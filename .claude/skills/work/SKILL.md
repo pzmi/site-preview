@@ -1,8 +1,8 @@
 ---
 name: work
 description: >
-  This skill should be used when the user asks to "work on S7", "pick up a task",
-  "implement task S12", "do the next task", or names a task id from doc/tasks.md
+  This skill should be used when the user asks to "work on FND-01", "pick up a task",
+  "implement task HTTP-03", "do the next task", or names a task id from doc/tasks.md
   (or a GitHub issue number). Runs the full station sequence: intake, plan,
   implement, test, polish, review, qa, ship, babysit. Ends with a DCO-signed-off
   commit, pushed when the caller owns the push.

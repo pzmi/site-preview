@@ -2,7 +2,7 @@
 name: orchestrate
 description: >
   This skill should be used when the owner asks to "run the next tasks", "orchestrate",
-  "work through the task list", "do S3-S5", "run lane X", "spawn agents for ...", or
+  "work through the task list", "do FS-01 to FS-03", "run lane X", "spawn agents for ...", or
   hands over a batch of tasks or a CI failure to drive to green. Runs several `/work`
   tasks through background subagents in git worktrees, merges each back onto the
   integration branch, runs the gate on the merged tree, pushes, watches CI through the
@@ -19,7 +19,7 @@ one question at a time, never a token in chat.
 
 ## Input
 
-`$ARGUMENTS`: task ids (`S3 S4`), a lane name from `doc/tasks.md`, a GitHub Actions run or job
+`$ARGUMENTS`: task ids (`FS-01 FS-02`), a lane name from `doc/tasks.md`, a GitHub Actions run or job
 URL (a failure to fix), optionally `--branch <name>` (the integration branch; default `main`),
 or nothing (the next ready tasks in `doc/tasks.md` order).
 

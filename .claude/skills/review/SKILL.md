@@ -74,4 +74,4 @@ Omit empty severities. A clean range gets an explicit `Verdict: CLEAN` with one 
 
 ## After the review
 
-A checkpoint task ends with a local annotated tag `checkpoint-<ID>` (e.g. `checkpoint-S9`). The orchestrator creates it, only once the review has passed (clean, or every HIGH and MEDIUM fixed), and never pushes it. This skill does not tag.
+A checkpoint task ends with a local annotated tag `checkpoint-<ID>` (e.g. `checkpoint-ARCH-07`). The orchestrator creates it, only once the review has passed (clean, or every HIGH and MEDIUM fixed), and never pushes it. This skill does not tag.
