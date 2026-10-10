@@ -51,8 +51,15 @@ pub const CATALOG: &[Check] = &[
     row(
         "unit-tests",
         "unit",
-        "cargo test --locked --workspace",
-        "FND-03",
+        "cargo nextest run --locked --workspace",
+        "TEST-01",
+        true,
+    ),
+    row(
+        "doctests",
+        "unit",
+        "cargo test --locked --workspace --doc",
+        "TEST-01",
         true,
     ),
     row("fmt", "tooling", "cargo xtask fmt", "FND-03", false),

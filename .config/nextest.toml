@@ -1,0 +1,27 @@
+# nextest configuration (foundation.md section 9). Flaky reruns are failures: no retries.
+
+[test-groups]
+# Real OS watcher tests share inotify/FSEvents resources; cap their parallelism.
+# Tests join the group with a `[[profile.<name>.overrides]]` filter such as
+# `test(/^os_watcher::/)` once they exist.
+os-watcher = { max-threads = 4 }
+
+[profile.default]
+retries = 0
+slow-timeout = { period = "30s", terminate-after = 4 }
+
+[profile.ci]
+retries = 0
+fail-fast = false
+slow-timeout = { period = "30s", terminate-after = 4 }
+
+[profile.ci.junit]
+path = "junit.xml"
+
+[[profile.default.overrides]]
+filter = "test(/^os_watcher::/)"
+test-group = "os-watcher"
+
+[[profile.ci.overrides]]
+filter = "test(/^os_watcher::/)"
+test-group = "os-watcher"

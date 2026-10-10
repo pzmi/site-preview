@@ -3,6 +3,7 @@
 //! This is not the full gate; `check` (OPS-01) is.
 
 use crate::process::{Stage, run_stages};
+use crate::tools;
 
 /// The stages `quick` runs, in order. Their ids match the `fmt-check`, `clippy` and
 /// `unit-tests` catalog rows.
@@ -22,12 +23,25 @@ pub fn stages() -> Vec<Stage> {
                 "warnings",
             ],
         ),
-        Stage::new("unit-tests", "cargo", &["test", "--locked", "--workspace"]),
+        Stage::new(
+            "unit-tests",
+            "cargo",
+            &["nextest", "run", "--locked", "--workspace"],
+        ),
+        Stage::new(
+            "doctests",
+            "cargo",
+            &["test", "--locked", "--workspace", "--doc"],
+        ),
     ]
 }
 
 /// Runs `quick` and returns the exit code.
 pub fn run() -> i32 {
+    if let Err(err) = tools::require("cargo-nextest") {
+        eprintln!("xtask: {err}");
+        return 1;
+    }
     run_stages(&stages())
 }
 
