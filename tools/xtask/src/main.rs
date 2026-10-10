@@ -4,6 +4,7 @@ mod catalog;
 mod cli;
 mod process;
 mod quick;
+mod tools;
 
 use std::process::{Command as Proc, ExitCode};
 
@@ -22,6 +23,8 @@ fn main() -> ExitCode {
             print!("{}", catalog::to_json(catalog::CATALOG));
             0
         }
+        Command::Doctor => tools::doctor(),
+        Command::InstallTools { tools } => tools::install(tools),
         other => not_available(other.id()),
     };
     ExitCode::from(u8::try_from(code).unwrap_or(1))

@@ -27,6 +27,6 @@ xtask = []
 
 [external]
 preview-cli = ["clap"]
-xtask = ["clap"]
+xtask = ["clap", "toml"]
 
 [exceptions]
