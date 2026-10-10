@@ -26,5 +26,6 @@ preview-conformance = [
 xtask = []
 
 [external]
+preview-cli = ["clap"]
 
 [exceptions]
