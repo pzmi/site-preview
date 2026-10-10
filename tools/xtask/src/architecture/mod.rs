@@ -6,15 +6,17 @@
 //! under [`FIXTURES_DIR`] fails with the rule its `expected.txt` names. With it, it checks
 //! only that workspace, whose root must hold `architecture.toml` and a `Cargo.lock`.
 
+mod external;
 mod fixtures;
 mod graph;
 mod inventory;
 mod policy;
 mod report;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::thread;
 
 use cargo_metadata::{Metadata, MetadataCommand};
 
@@ -23,6 +25,15 @@ use report::{Diagnostic, Rule};
 
 /// The policy file at the workspace root.
 pub const POLICY_FILE: &str = "architecture.toml";
+
+/// Targets whose dependency edges are evaluated, each through `cargo metadata
+/// --filter-platform`. Windows is not evaluated (ADR 0003).
+pub const TARGETS: [&str; 4] = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-apple-darwin",
+    "x86_64-unknown-linux-musl",
+    "aarch64-unknown-linux-musl",
+];
 
 /// Negative fixtures, relative to the repository root: one mini workspace per directory.
 pub const FIXTURES_DIR: &str = "tests/architecture-invalid";
@@ -43,6 +54,10 @@ pub fn run(manifest_path: Option<&Path>) -> i32 {
         None => (repository_manifest(), true),
     };
     let outcome = check(&manifest);
+    println!(
+        "architecture: targets checked: {} (Windows not evaluated, ADR 0003)",
+        TARGETS.join(", ")
+    );
     for diagnostic in &outcome.diagnostics {
         eprintln!("{diagnostic}");
     }
@@ -117,14 +132,42 @@ fn check_into(manifest: &Path, out: &mut Vec<Diagnostic>) -> usize {
             return 0;
         }
     }
-    let metadata = match load_metadata(manifest, &root) {
-        Ok(metadata) => metadata,
-        Err(diagnostic) => {
-            out.push(diagnostic);
-            return 0;
+    let loaded: Vec<(&str, Result<Metadata, Diagnostic>)> = thread::scope(|scope| {
+        let handles: Vec<_> = TARGETS
+            .iter()
+            .map(|&target| {
+                let root = &root;
+                (
+                    target,
+                    scope.spawn(move || load_metadata(manifest, root, target)),
+                )
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|(target, handle)| {
+                let result = handle.join().unwrap_or_else(|_| {
+                    Err(Diagnostic::new(
+                        Rule::Metadata,
+                        "cargo metadata thread panicked",
+                        "Cargo.toml",
+                    ))
+                });
+                (target, result)
+            })
+            .collect()
+    });
+    let mut per_target = Vec::new();
+    for (target, result) in loaded {
+        match result {
+            Ok(metadata) => per_target.push((target, metadata)),
+            Err(diagnostic) => out.push(diagnostic),
         }
-    };
-    let members = workspace_crates(&metadata);
+    }
+    if per_target.len() < TARGETS.len() {
+        return 0;
+    }
+    let members = workspace_crates(&per_target[0].1);
     match inventory::scan_source_tree(&root) {
         Ok(disk) => out.extend(inventory::check_crates(&policy, &members, &disk)),
         Err(diagnostic) => out.push(diagnostic),
@@ -133,19 +176,59 @@ fn check_into(manifest: &Path, out: &mut Vec<Diagnostic>) -> usize {
         .iter()
         .map(|c| (c.name.clone(), c.manifest.clone()))
         .collect();
-    out.extend(graph::check(
-        &policy,
-        &graph::Graph::from_metadata(&metadata),
-        &manifests,
-    ));
+    let adr_exists = |adr: &str| adr_exists(&root, adr);
+    let mut found: BTreeMap<Diagnostic, BTreeSet<&str>> = BTreeMap::new();
+    for (target, metadata) in &per_target {
+        let graph = graph::Graph::from_metadata(metadata);
+        let mut diagnostics = graph::check(&policy, &graph, &manifests);
+        diagnostics.extend(external::check_edges(
+            &policy,
+            &external::edges(metadata),
+            &manifests,
+        ));
+        diagnostics.extend(external::check_sources(
+            &policy,
+            &external::origins(metadata, &graph),
+            &manifests,
+            &adr_exists,
+        ));
+        for diagnostic in diagnostics {
+            found.entry(diagnostic).or_default().insert(target);
+        }
+    }
+    for (mut diagnostic, targets) in found {
+        if targets.len() < TARGETS.len() {
+            let names: Vec<&str> = targets.into_iter().collect();
+            diagnostic.message = format!("{} [targets: {}]", diagnostic.message, names.join(", "));
+        }
+        out.push(diagnostic);
+    }
     members.len()
 }
 
-fn load_metadata(manifest: &Path, root: &Path) -> Result<Metadata, Diagnostic> {
+/// Whether `doc/adr/<adr>-*.md` exists under `root`.
+fn adr_exists(root: &Path, adr: &str) -> bool {
+    let prefix = format!("{adr}-");
+    adr.len() == 4
+        && adr.bytes().all(|b| b.is_ascii_digit())
+        && fs::read_dir(root.join("doc/adr")).is_ok_and(|entries| {
+            entries.filter_map(Result::ok).any(|e| {
+                e.file_name()
+                    .to_str()
+                    .is_some_and(|n| n.starts_with(&prefix) && n.ends_with(".md"))
+            })
+        })
+}
+
+fn load_metadata(manifest: &Path, root: &Path, target: &str) -> Result<Metadata, Diagnostic> {
     MetadataCommand::new()
         .manifest_path(manifest)
         .current_dir(root)
-        .other_options(vec!["--locked".to_owned()])
+        .other_options(vec![
+            "--locked".to_owned(),
+            "--filter-platform".to_owned(),
+            target.to_owned(),
+        ])
         .exec()
         .map_err(|err| {
             Diagnostic::new(

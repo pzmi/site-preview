@@ -1,0 +1,3 @@
+rule: ARCH-external-feature
+at: crates/preview-application/Cargo.toml
+contains: preview-application -> tokio enables features [rt]

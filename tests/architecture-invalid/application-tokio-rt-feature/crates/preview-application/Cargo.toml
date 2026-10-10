@@ -1,0 +1,9 @@
+[package]
+name = "preview-application"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+preview-domain = { path = "../preview-domain" }
+tokio = { version = "1", default-features = false, features = ["sync", "rt"] }

@@ -34,6 +34,13 @@ pub enum Rule {
     ProductionClosure,
     /// The `[dependencies]` allowlist contains a cycle.
     PolicyCycle,
+    /// A direct third-party dependency is not in `[external.<kind>]`.
+    UnlistedExternal,
+    /// A third-party edge enables a feature outside its `[external.<kind>]` list.
+    ExternalFeature,
+    /// A package comes from git, another registry or a path outside the workspace without
+    /// an approved exception.
+    ExternalSource,
 }
 
 impl Rule {
@@ -53,6 +60,9 @@ impl Rule {
             Self::ForbiddenDevEdge => "ARCH-forbidden-dev-edge",
             Self::ProductionClosure => "ARCH-production-closure",
             Self::PolicyCycle => "ARCH-policy-cycle",
+            Self::UnlistedExternal => "ARCH-unlisted-external",
+            Self::ExternalFeature => "ARCH-external-feature",
+            Self::ExternalSource => "ARCH-external-source",
         }
     }
 }

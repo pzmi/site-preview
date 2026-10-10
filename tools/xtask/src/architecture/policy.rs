@@ -25,7 +25,7 @@ pub struct Policy {
     /// Allowed third-party crates per workspace crate and dependency kind.
     #[serde(default)]
     pub external: External,
-    /// Approved exceptions. No kind of exception is defined yet, so the table must be empty.
+    /// Approved exceptions.
     #[serde(default)]
     pub exceptions: Exceptions,
 }
@@ -164,10 +164,23 @@ impl<'de> Deserialize<'de> for Features {
     }
 }
 
-/// `[exceptions]`.
+/// `[exceptions]`: approved departures from the rules, each citing an ADR.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Exceptions {}
+pub struct Exceptions {
+    /// `[exceptions.sources]`: a package source other than crates.io (without its `?query`
+    /// or `#revision`, for example `git+https://host/repo`) to the approval.
+    #[serde(default)]
+    pub sources: BTreeMap<String, SourceException>,
+}
+
+/// One approved package source.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourceException {
+    /// The approving ADR's number, for example `0042`; `doc/adr/<adr>-*.md` must exist.
+    pub adr: String,
+}
 
 /// Parses policy text: the schema version first, then every field strictly.
 pub fn parse(text: &str) -> Result<Policy, String> {

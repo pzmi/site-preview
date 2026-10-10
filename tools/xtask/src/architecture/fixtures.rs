@@ -7,6 +7,8 @@
 
 use std::fs;
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::thread;
 
 use super::check;
 use super::report::Diagnostic;
@@ -53,15 +55,39 @@ impl Expected {
     }
 }
 
-/// Checks every fixture under `dir`; returns how many passed, or one error per failure.
+/// Checks every fixture under `dir` on a few threads; returns how many passed, or one error
+/// per failure, in case order.
 pub fn verify(dir: &Path) -> Result<usize, Vec<String>> {
     let cases = list_cases(dir).map_err(|e| vec![e])?;
-    let mut errors = Vec::new();
-    for case in &cases {
-        if let Err(err) = verify_case(&dir.join(case)) {
-            errors.push(format!("fixture `{case}`: {err}"));
-        }
+    let next = AtomicUsize::new(0);
+    let workers = thread::available_parallelism().map_or(2, |n| n.get().min(8));
+    let mut results: Vec<(usize, Result<(), String>)> = thread::scope(|scope| {
+        let handles: Vec<_> = (0..workers)
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut done = Vec::new();
+                    loop {
+                        let i = next.fetch_add(1, Ordering::Relaxed);
+                        let Some(case) = cases.get(i) else { break };
+                        done.push((i, verify_case(&dir.join(case))));
+                    }
+                    done
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .flat_map(|h| h.join().unwrap_or_default())
+            .collect()
+    });
+    results.sort_by_key(|(i, _)| *i);
+    if results.len() != cases.len() {
+        return Err(vec!["a fixture worker panicked".to_owned()]);
     }
+    let errors: Vec<String> = results
+        .into_iter()
+        .filter_map(|(i, r)| r.err().map(|e| format!("fixture `{}`: {e}", cases[i])))
+        .collect();
     if errors.is_empty() {
         Ok(cases.len())
     } else {

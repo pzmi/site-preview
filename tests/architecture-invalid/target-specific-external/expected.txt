@@ -1,0 +1,4 @@
+rule: ARCH-unlisted-external
+at: crates/preview-composition/Cargo.toml
+contains: preview-composition -> macstub
+contains: [targets: aarch64-apple-darwin]

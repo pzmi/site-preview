@@ -45,4 +45,6 @@ xtask = { tempfile = ["default"] }
 
 [external.build]
 
+# Approved departures, each citing an ADR. `[exceptions.sources]` maps a non-crates.io
+# source (without query or revision) to `{ adr = "NNNN" }`.
 [exceptions]

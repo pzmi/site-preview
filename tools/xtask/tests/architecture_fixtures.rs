@@ -8,6 +8,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::thread;
 
 fn repository_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -62,33 +63,44 @@ fn matches(output: &str, expected: &str) -> Result<bool, String> {
     }))
 }
 
+fn check_case(case: &str) -> Result<(), String> {
+    let dir = fixtures_dir().join(case);
+    let expected =
+        fs::read_to_string(dir.join("expected.txt")).map_err(|e| format!("{case}: {e}"))?;
+    let manifest = dir.join("Cargo.toml");
+    let output = xtask(&[
+        "architecture",
+        "--manifest-path",
+        manifest.to_str().unwrap(),
+    ]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    match matches(&stderr, &expected) {
+        Ok(true) if !output.status.success() => Ok(()),
+        Ok(_) => Err(format!(
+            "{case}: status {}, stderr:\n{stderr}",
+            output.status
+        )),
+        Err(err) => Err(format!("{case}: {err}")),
+    }
+}
+
 #[test]
 fn should_fail_with_expected_rule_and_path_when_fixture_is_checked() {
     // given
     let cases = cases();
     assert!(!cases.is_empty(), "no negative fixtures");
-    let mut failures = Vec::new();
 
     // when
-    for case in &cases {
-        let dir = fixtures_dir().join(case);
-        let expected = fs::read_to_string(dir.join("expected.txt")).expect("expected.txt");
-        let manifest = dir.join("Cargo.toml");
-        let output = xtask(&[
-            "architecture",
-            "--manifest-path",
-            manifest.to_str().unwrap(),
-        ]);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        match matches(&stderr, &expected) {
-            Ok(true) if !output.status.success() => {}
-            Ok(_) => failures.push(format!(
-                "{case}: status {}, stderr:\n{stderr}",
-                output.status
-            )),
-            Err(err) => failures.push(format!("{case}: {err}")),
-        }
-    }
+    let failures: Vec<String> = thread::scope(|scope| {
+        let handles: Vec<_> = cases
+            .iter()
+            .map(|case| scope.spawn(move || check_case(case)))
+            .collect();
+        handles
+            .into_iter()
+            .filter_map(|h| h.join().expect("fixture thread").err())
+            .collect()
+    });
 
     // then
     assert!(failures.is_empty(), "{}", failures.join("\n"));

@@ -1,0 +1,3 @@
+rule: ARCH-unlisted-external
+at: crates/preview-adapter-http/Cargo.toml
+contains: build dependency preview-adapter-http -> cc is not in `[external.build] preview-adapter-http`

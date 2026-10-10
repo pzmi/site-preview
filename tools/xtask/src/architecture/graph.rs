@@ -97,7 +97,8 @@ impl Graph {
         self.edges.get(id).into_iter().flatten()
     }
 
-    fn name<'a>(&'a self, id: &'a str) -> &'a str {
+    /// The package name of `id`, or `id` itself when unknown.
+    pub fn name_of<'a>(&'a self, id: &'a str) -> &'a str {
         self.nodes.get(id).map_or(id, |n| n.name.as_str())
     }
 
@@ -106,7 +107,7 @@ impl Graph {
     }
 
     /// The shortest path from `start` to every package reachable over `kinds`, as ids.
-    fn shortest_paths(&self, start: &str, kinds: &[Kind]) -> BTreeMap<String, Vec<String>> {
+    pub fn shortest_paths(&self, start: &str, kinds: &[Kind]) -> BTreeMap<String, Vec<String>> {
         let mut paths = BTreeMap::from([(start.to_owned(), vec![start.to_owned()])]);
         let mut queue = VecDeque::from([start.to_owned()]);
         while let Some(id) = queue.pop_front() {
@@ -160,7 +161,7 @@ pub fn check(
             if !graph.is_member(to_id) {
                 continue;
             }
-            let to = graph.name(to_id);
+            let to = graph.name_of(to_id);
             let path = render_path(&[from, to]);
             let allowed = |list: &Vec<String>| list.iter().any(|d| d == to);
             match kind {
@@ -202,16 +203,16 @@ fn check_closure(
     at: &dyn Fn(&str) -> String,
 ) -> Vec<Diagnostic> {
     let mut out = Vec::new();
-    let from = graph.name(start);
+    let from = graph.name_of(start);
     for (id, path) in graph.shortest_paths(start, &[Kind::Normal, Kind::Build]) {
         if !graph.is_member(&id) {
             continue;
         }
-        let to = graph.name(&id);
+        let to = graph.name_of(&id);
         let Some(forbidden @ (Category::TestOnly | Category::ToolOnly)) = category.get(to) else {
             continue;
         };
-        let names: Vec<&str> = path.iter().map(|p| graph.name(p)).collect();
+        let names: Vec<&str> = path.iter().map(|p| graph.name_of(p)).collect();
         out.push(Diagnostic::new(
             Rule::ProductionClosure,
             format!(

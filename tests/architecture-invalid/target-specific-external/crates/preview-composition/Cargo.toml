@@ -1,0 +1,13 @@
+[package]
+name = "preview-composition"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+preview-domain = { path = "../preview-domain" }
+preview-application = { path = "../preview-application" }
+preview-adapter-http = { path = "../preview-adapter-http" }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+macstub = "1"

@@ -1,0 +1,16 @@
+schema = 1
+
+[workspace]
+production = ["preview-domain", "preview-application", "preview-adapter-http", "preview-composition", "preview-cli"]
+test_only = ["preview-testkit"]
+
+[dependencies.normal]
+preview-domain = []
+preview-application = ["preview-domain"]
+preview-adapter-http = ["preview-application", "preview-domain"]
+preview-composition = ["preview-domain", "preview-application", "preview-adapter-http"]
+preview-cli = ["preview-composition"]
+preview-testkit = ["preview-domain", "preview-application"]
+
+[external.normal]
+preview-adapter-http = { cc = ["default"] }
