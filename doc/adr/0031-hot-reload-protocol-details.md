@@ -20,3 +20,22 @@ A change's `path` is root-relative and percent-encoded per component (the WHATWG
 
 - A missed change always degrades to a full reload, never to a stale page.
 - Sites that store non-object `history.state` lose scroll restore only.
+
+## Amendments
+
+- **2026-10-11 (DOM-10, recorded here after the fact).** The second paragraph of the
+  Decision was added in place by DOM-10 rather than as a dated amendment: the per-component
+  percent-encoding of `path` and its round trip through the request-path decoder, the rule
+  that a rename is not a removal, and that a full change set keeps up to 64 paths for
+  information only. The decision itself is unchanged.
+- **2026-10-11 (APP-04 checkpoint review).** `Create`, `Remove` and `Rename` events do not
+  say whether the entry was a file or a directory, so classification checks their last
+  component both ways. A name denied as a file is ignored, as before. A name denied only as
+  a directory (`vendor`, `node_modules`, `__pycache__` reported as created, removed or
+  renamed) makes the change set full (reason `Undisclosed`) without adding its path, so the
+  name of an excluded directory never reaches a client (ADR 0039). A name eligible both ways
+  is recorded as a file and also requests a watch-set reconcile, because it may be a
+  directory that appeared, vanished or was moved in. `Modify` is checked as a file and
+  `DirectoryChanged` as a directory, as before. The change-set API classifies events itself
+  (`ChangeSet::accumulate(&event)`, `Debouncer::record(now, &event)`), so a caller cannot
+  pair an ineligible path with a relevant classification.

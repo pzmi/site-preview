@@ -4,8 +4,8 @@ use core::task::{Poll, Waker};
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use preview_application::{ChangeBatch, ChangeSource};
-use preview_domain::{ChangeEvent, DegradeReason};
+use preview_application::{ChangeBatch, ChangeSource, SourceFailure};
+use preview_domain::ChangeEvent;
 
 struct Shared<E> {
     queue: VecDeque<ChangeBatch<E>>,
@@ -79,8 +79,8 @@ impl<E> ScriptedHandle<E> {
     }
 
     /// Queues a failure report. The source stays open.
-    pub fn fail(&self, reason: DegradeReason) {
-        self.enqueue(ChangeBatch::Failed(reason));
+    pub fn fail(&self, failure: SourceFailure) {
+        self.enqueue(ChangeBatch::Failed(failure));
     }
 
     /// Stops the source: what is already queued is still delivered, then `Closed` for ever.
@@ -155,7 +155,7 @@ mod tests {
         let (mut source, handle) = Source::new();
         handle.push(vec!["a.html", "b.css"]);
         handle.overflow();
-        handle.fail(DegradeReason::RuntimeFailure);
+        handle.fail(SourceFailure::RuntimeFailure);
         handle.push(vec!["c.js"]);
         // when
         let batches: Vec<_> = (0..4).map(|_| ready(&mut source)).collect();
@@ -165,7 +165,7 @@ mod tests {
             [
                 ChangeBatch::Events(vec!["a.html", "b.css"]),
                 ChangeBatch::Overflow,
-                ChangeBatch::Failed(DegradeReason::RuntimeFailure),
+                ChangeBatch::Failed(SourceFailure::RuntimeFailure),
                 ChangeBatch::Events(vec!["c.js"]),
             ]
         );
@@ -311,7 +311,7 @@ mod tests {
     fn should_keep_delivering_when_a_failure_was_reported() {
         // given
         let (mut source, handle) = Source::new();
-        handle.fail(DegradeReason::RegistrationFailed);
+        handle.fail(SourceFailure::RegistrationFailed);
         handle.push(vec!["a.html"]);
         // when
         let first = ready(&mut source);
@@ -319,7 +319,7 @@ mod tests {
         // then
         assert_eq!(
             first,
-            ChangeBatch::Failed(DegradeReason::RegistrationFailed)
+            ChangeBatch::Failed(SourceFailure::RegistrationFailed)
         );
         assert_eq!(second, ChangeBatch::Events(vec!["a.html"]));
     }

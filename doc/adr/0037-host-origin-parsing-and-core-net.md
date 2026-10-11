@@ -37,3 +37,16 @@ because it holds sockets. Hand-parsing IPv6 in a security boundary invites bugs.
 - HTTP-05 maps a Host refusal to 421, HTTP-11 an Origin refusal to 403; both pass raw
   header values and never pre-normalize them.
 - A user who types a non-canonical address or a LAN host name gets 421, by design.
+
+## Amendments
+
+- **2026-10-11 (APP-04 checkpoint review), a known limitation, not a change of decision.**
+  Browsers send `Sec-Fetch-*` only to potentially trustworthy origins (HTTPS, `localhost`,
+  loopback addresses). A page loaded from `http://<LAN address>` in `--allow-remote` mode
+  gets no Fetch Metadata, so HTML injection runs on its fallback classification as the normal
+  case there, and a cross-site `no-cors` request (an `<img>` or `<script>` on another site
+  pointing at `/__site_preview/events`) carries neither `Sec-Fetch-Site` nor `Origin` and
+  is accepted after the Host check. Such requests can hold SSE slots up to the per-server
+  limit (plan.md §7.4), so a hostile page on the same network can deny live reload, though it
+  cannot read the stream. plan.md §15 lists it; `--allow-remote` is already documented as
+  unsafe on untrusted networks.

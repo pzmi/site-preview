@@ -4,6 +4,7 @@
 
 use preview_application::{
     ChangeCoordinator, ChangeSource, Clock, Received, RecordOutcome, ReloadState, SettleOutcome,
+    SourceFailure,
 };
 use preview_domain::{
     AssetKind, ChangeEvent, ChangeKind, Component, DebounceWindow, DegradeReason, DomainEvent,
@@ -194,9 +195,9 @@ async fn should_emit_degraded_when_watcher_fails() {
         .push(vec![event(ChangeKind::Modify, &["index.html"])]);
     p.deliver().await;
     // when
-    p.feed.fail(DegradeReason::RuntimeFailure);
+    p.feed.fail(SourceFailure::RuntimeFailure);
     let first = p.deliver().await;
-    p.feed.fail(DegradeReason::RuntimeFailure);
+    p.feed.fail(SourceFailure::RuntimeFailure);
     let repeated = p.deliver().await;
     p.clock.advance(WINDOW_MS);
     let settle = p.settle();

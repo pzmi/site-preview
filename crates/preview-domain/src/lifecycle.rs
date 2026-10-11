@@ -12,11 +12,18 @@
 //! state and is a no-op once the server is stopping, stopped or failed. A `Stop` during startup
 //! waits for the step in flight: its late result is accepted only to release what it acquired.
 //!
+//! Three resources are tracked: the listener (acquired by `Bound`), the watcher (acquired by
+//! `WatcherReady`) and the owned background tasks (the watcher's debounce task, spawned with
+//! the watcher, and the serve task, spawned on entering `Serving`). SSE streams exist only
+//! while `Serving`, since no request is answered before, so only a stop from `Serving`
+//! closes them; a stop during startup joins the tasks a late `WatcherReady` brings.
+//!
 //! Invariants, pinned by `should_hold_lifecycle_invariants_when_inputs_are_random`:
-//! every acquired listener and watcher is released by an effect, so at most one of each is
-//! held and only in the states [`LifecycleState::holds_listener`] and
-//! [`LifecycleState::holds_watcher`] name (never in `Stopped` or `Failed`); only `Serving`
-//! accepts requests; a refused input leaves the state unchanged; `Failed` is never left.
+//! every acquired listener, watcher and task is released by an effect, so they are held only
+//! in the states [`LifecycleState::holds_listener`], [`LifecycleState::holds_watcher`] and
+//! [`LifecycleState::holds_tasks`] name (never in `Stopped` or `Failed`); `CloseStreams` is
+//! emitted exactly when a serving server stops; only `Serving` accepts requests; a refused
+//! input leaves the state unchanged; `Failed` is never left.
 
 use core::fmt;
 
@@ -34,7 +41,8 @@ pub enum StartPhase {
 pub enum InFlight {
     /// The bind: a late `Bound` must close the listener it produced.
     Bind,
-    /// The watcher initialization: a late `WatcherReady` must stop the watcher.
+    /// The watcher initialization: a late `WatcherReady` must stop the watcher and join the
+    /// debounce task it spawned.
     Watcher,
 }
 
@@ -98,6 +106,13 @@ impl LifecycleState {
     #[must_use]
     pub const fn holds_watcher(self) -> bool {
         matches!(self, Self::Serving { watcher: true })
+    }
+
+    /// Whether owned background tasks (the serve task, and the watcher's debounce task when
+    /// there is a watcher) must still be joined in this state.
+    #[must_use]
+    pub const fn holds_tasks(self) -> bool {
+        matches!(self, Self::Serving { .. })
     }
 
     /// The transition `input` causes from this state.
@@ -173,7 +188,10 @@ impl LifecycleState {
                     awaiting: Some(InFlight::Watcher),
                 },
                 I::WatcherReady,
-            ) => (Self::Stopping { awaiting: None }, &[E::StopWatcher]),
+            ) => (
+                Self::Stopping { awaiting: None },
+                &[E::StopWatcher, E::JoinTasks],
+            ),
             (Self::Stopping { awaiting: None }, I::Stopped) => (Self::Stopped, &[]),
             (Self::Stopped | Self::Stopping { .. } | Self::Failed, I::Stop) => (self, &[]),
             (state, input) => return Err(LifecycleRefusal { state, input }),
@@ -235,7 +253,7 @@ pub enum LifecycleEffect {
     CloseStreams,
     /// Stop the watcher.
     StopWatcher,
-    /// Join the remaining owned tasks.
+    /// Join the remaining owned tasks (the serve task and the watcher's debounce task).
     JoinTasks,
 }
 
@@ -364,7 +382,12 @@ mod tests {
         (AWAIT_BIND, I::Bound, DRAINING, &[E::CloseListener]),
         (AWAIT_BIND, I::BindFailed, DRAINING, &[]),
         (AWAIT_BIND, I::Stop, AWAIT_BIND, &[]),
-        (AWAIT_WATCHER, I::WatcherReady, DRAINING, &[E::StopWatcher]),
+        (
+            AWAIT_WATCHER,
+            I::WatcherReady,
+            DRAINING,
+            &[E::StopWatcher, E::JoinTasks],
+        ),
         (AWAIT_WATCHER, I::WatcherFailed, DRAINING, &[]),
         (AWAIT_WATCHER, I::Stop, AWAIT_WATCHER, &[]),
         (DRAINING, I::Stopped, S::Stopped, &[]),
@@ -501,8 +524,28 @@ mod tests {
             results.last().map(|r| r.map(|t| t.effects)),
             Some(Ok(&[E::CloseListener][..]))
         );
-        assert_eq!(late_ready.map(|t| t.effects), Ok(&[E::StopWatcher][..]));
+        assert_eq!(
+            late_ready.map(|t| t.effects),
+            Ok(&[E::StopWatcher, E::JoinTasks][..])
+        );
         assert_eq!(lifecycle.state(), DRAINING);
+    }
+
+    #[test]
+    fn should_join_tasks_only_when_tasks_are_owned() {
+        // given
+        let holders: Vec<_> = S::ALL.into_iter().filter(|s| s.holds_tasks()).collect();
+        // when
+        let stops: Vec<_> = holders.iter().map(|s| s.step(I::Stop)).collect();
+        // then
+        assert_eq!(
+            holders,
+            [S::Serving { watcher: true }, S::Serving { watcher: false }]
+        );
+        for stop in stops {
+            let effects = stop.expect("stop accepted").effects;
+            assert!(effects.contains(&E::JoinTasks) && effects.contains(&E::CloseStreams));
+        }
     }
 
     #[test]
@@ -576,7 +619,7 @@ mod tests {
         ) {
             // given
             let mut lifecycle = Lifecycle::new();
-            let (mut listeners, mut watchers) = (0_i32, 0_i32);
+            let (mut listeners, mut watchers, mut tasks) = (0_i32, 0_i32, 0_i32);
             for input in inputs {
                 let before = lifecycle.state();
                 // when
@@ -590,12 +633,26 @@ mod tests {
                             listeners += 1;
                         }
                         if input == I::WatcherReady {
+                            // the watcher and its debounce task
                             watchers += 1;
+                            tasks += 1;
                         }
+                        if !before.accepts_requests() && transition.next.accepts_requests() {
+                            // the serve task
+                            tasks += 1;
+                        }
+                        prop_assert_eq!(
+                            transition.effects.contains(&E::CloseStreams),
+                            before.accepts_requests() && !transition.next.accepts_requests()
+                        );
                         for effect in transition.effects {
                             match effect {
                                 E::CloseListener => listeners -= 1,
                                 E::StopWatcher => watchers -= 1,
+                                E::JoinTasks => {
+                                    prop_assert!(tasks > 0, "a join with nothing to join");
+                                    tasks = 0;
+                                }
                                 _ => {}
                             }
                         }
@@ -610,6 +667,7 @@ mod tests {
                 prop_assert!((0..=1).contains(&listeners) && (0..=1).contains(&watchers));
                 prop_assert_eq!(listeners == 1, state.holds_listener());
                 prop_assert_eq!(watchers == 1, state.holds_watcher());
+                prop_assert_eq!(tasks > 0, state.holds_tasks());
                 prop_assert_eq!(state.accepts_requests(), matches!(state, S::Serving { .. }));
             }
         }

@@ -86,8 +86,10 @@ Consequences the checker enforces:
   locator for the domain.
 - **CLI** parses flags, maps outcomes to exit codes, picks loopback defaults and delegates
   through composition.
-- **Testkit** owns fixed clocks, scripted change sources, in-memory content stores,
-  recording sinks and the one sanctioned sleep, `wait_until` in `src/poll.rs`.
+- **Testkit** owns the fake clock (`FakeClock`), the scripted change source
+  (`ScriptedChangeSource`), the in-memory content store (`InMemorySite`), deterministic
+  instance ids (`FixedInstanceIds`), the port contract harnesses and the one sanctioned
+  sleep, `wait_until` in `src/poll.rs`.
 - **Conformance** interprets Quint stimuli, drives real operations and compares observable
   state with the model.
 - **xtask** owns the commands in `cargo xtask list-checks`, including the architecture checker.
@@ -105,8 +107,8 @@ the task names come from `doc/tasks.md`.
 |:--|:--|:--|:--|
 | `SiteContent`: open a validated path as a file or a directory with an optional index | sync, `&dyn`; defined by APP-01 | `preview-adapter-fs` (FS-01, FS-02) | testkit in-memory store (TEST-03) |
 | `ChangeSource`: next batch of events, overflow, failure or close | async, cancellation safe, generic; defined by APP-01 | `preview-adapter-fs` watcher (FS-05..08) | testkit scripted source (TEST-03) |
-| `Clock`: current tick | sync; defined by APP-01 | composition | testkit fixed clock (TEST-03) |
-| Notification publication to connected pages (the `ReloadState` latest-state channel) | `preview_application::ReloadState` (APP-02) | application, served by `preview-adapter-http` | testkit recording sink (TEST-03) |
+| `Clock`: current tick | sync; defined by APP-01 | composition | testkit `FakeClock` (TEST-03) |
+| Notification publication to connected pages (the `ReloadState` latest-state channel) | `preview_application::ReloadState` (APP-02) | application, served by `preview-adapter-http` | none: tests subscribe to the real `ReloadState` (`StateSubscription`) |
 
 Application-level queries and commands planned alongside them: `ResolveRequest`
 (APP-03) and the change commands record, settle, overflow and health (APP-04). Each port's

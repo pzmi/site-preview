@@ -9,15 +9,20 @@ use crate::eligibility::{self, ComponentKind, DenyReason, Eligibility};
 use crate::rel_path::RelPath;
 
 /// What the operating system said happened, as far as the adapter can tell.
+///
+/// Only `Modify` and `DirectoryChanged` say what kind of entry changed. `Create`, `Remove`
+/// and `Rename` do not: a removed or renamed entry is gone before anyone can look, and an
+/// OS may not report the type of a created one, so [`classify`] treats each as possibly a
+/// file and possibly a directory.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ChangeKind {
-    /// An entry appeared.
+    /// An entry appeared; its type is unknown.
     Create,
     /// File data changed.
     Modify,
-    /// An entry disappeared.
+    /// An entry disappeared; its type is unknown.
     Remove,
-    /// An entry was renamed (reported for each side the OS reports).
+    /// An entry was renamed (reported for each side the OS reports); its type is unknown.
     Rename,
     /// The adapter knows the entry is a directory that appeared, vanished or was renamed.
     DirectoryChanged,
@@ -52,52 +57,85 @@ pub enum IgnoreReason {
     MetadataOnly,
 }
 
+/// What a relevant change touched, as far as the event and the entry's name tell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Relevance {
+    /// File data changed (`Modify`): the path is recorded.
+    File,
+    /// An entry of unknown type (`Create`, `Remove`, `Rename`) whose name is eligible both as
+    /// a file and as a directory: the path is recorded as a file, and the watch set is
+    /// reconciled, because the entry may be a directory that appeared, vanished or moved.
+    FileOrDirectory,
+    /// A known directory changed (`DirectoryChanged`): a full reload without a path, and the
+    /// watch set is reconciled.
+    Directory,
+    /// An entry of unknown type whose name is eligible only as a file (`vendor`,
+    /// `node_modules`): if it was a file it was served, so the page reloads in full, but its
+    /// path is never recorded, so the name of a possibly excluded directory never reaches a
+    /// client (ADR 0039). An excluded directory is never watched, so nothing is reconciled.
+    Undisclosed,
+}
+
 /// The verdict on one event.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Classification {
-    /// The change may affect served content. `dir_changed` is true when the directory
-    /// structure may have changed, so the watch set must be reconciled.
-    Relevant {
-        /// A directory was created, removed or renamed.
-        dir_changed: bool,
-    },
+    /// The change may affect served content.
+    Relevant(Relevance),
     /// The change is irrelevant and must not advance the revision.
     Ignored(IgnoreReason),
     /// The event is too coarse to attribute: rescan instead of inventing precision.
     Rescan,
 }
 
+impl Classification {
+    /// Whether the directory structure may have changed, so the watch set must be reconciled
+    /// before the revision settles (plan.md §8.1, §8.3): a directory change, an entry of
+    /// unknown type with an eligible directory name, or an event too coarse to attribute.
+    /// Pinned by `should_request_reconcile_when_entry_may_be_a_directory`.
+    #[must_use]
+    pub const fn requests_reconcile(self) -> bool {
+        matches!(
+            self,
+            Self::Relevant(Relevance::Directory | Relevance::FileOrDirectory) | Self::Rescan
+        )
+    }
+}
+
 /// Classifies one event.
 ///
 /// Order: an ineligible path is ignored first (so ambiguous `.git` churn never forces a
 /// rescan), then access-only and metadata-only events, then ambiguous ones (`Rescan`).
-/// The entry's own kind is unknown to the predicate except for `DirectoryChanged`, which is
-/// checked as a directory; every other kind is checked as a file, so a removed directory the
-/// adapter could not identify (`vendor/` reported as `Remove`) errs towards a spurious
-/// reload, never a missed one. Events on the root itself are relevant only as
+/// `DirectoryChanged` is checked with its last component as a directory, `Modify` and the
+/// ignorable or ambiguous kinds with it as a file. `Create`, `Remove` and `Rename` are of
+/// unknown type and are checked both ways (ADR 0031, amended): denied as a file (which implies
+/// denied as a directory) is ignored; denied only as a directory (`vendor` reported as
+/// `Remove`) is [`Relevance::Undisclosed`]; eligible both ways is
+/// [`Relevance::FileOrDirectory`]. Events on the root itself are relevant only as
 /// `DirectoryChanged`; anything else there is `Rescan`.
 ///
 /// Pinned by the `should_*` tests in this module.
 #[must_use]
 pub fn classify(event: &ChangeEvent) -> Classification {
-    let last = if event.kind == ChangeKind::DirectoryChanged {
+    let names = event.path.components();
+    let checked_as = if event.kind == ChangeKind::DirectoryChanged {
         ComponentKind::Dir
     } else {
         ComponentKind::File
     };
-    if let Eligibility::Denied(reason) = eligibility::components(event.path.components(), last) {
+    if let Eligibility::Denied(reason) = eligibility::components(names, checked_as) {
         return Classification::Ignored(IgnoreReason::Ineligible(reason));
     }
     match event.kind {
         ChangeKind::AccessOnly => Classification::Ignored(IgnoreReason::AccessOnly),
         ChangeKind::MetadataOnly => Classification::Ignored(IgnoreReason::MetadataOnly),
         ChangeKind::Ambiguous => Classification::Rescan,
-        ChangeKind::DirectoryChanged => Classification::Relevant { dir_changed: true },
-        ChangeKind::Create | ChangeKind::Modify | ChangeKind::Remove | ChangeKind::Rename => {
-            if event.path.is_root() {
-                Classification::Rescan
-            } else {
-                Classification::Relevant { dir_changed: false }
+        ChangeKind::DirectoryChanged => Classification::Relevant(Relevance::Directory),
+        _ if event.path.is_root() => Classification::Rescan,
+        ChangeKind::Modify => Classification::Relevant(Relevance::File),
+        ChangeKind::Create | ChangeKind::Remove | ChangeKind::Rename => {
+            match eligibility::components(names, ComponentKind::Dir) {
+                Eligibility::Eligible => Classification::Relevant(Relevance::FileOrDirectory),
+                Eligibility::Denied(_) => Classification::Relevant(Relevance::Undisclosed),
             }
         }
     }
@@ -179,9 +217,80 @@ mod tests {
             results,
             [
                 Classification::Ignored(IgnoreReason::Ineligible(DenyReason::ExcludedDirectory)),
-                Classification::Relevant { dir_changed: false },
+                Classification::Relevant(Relevance::File),
             ]
         );
+    }
+
+    #[test]
+    fn should_withhold_path_when_entry_of_unknown_type_is_named_like_excluded_directory() {
+        // given
+        let events = [
+            event(ChangeKind::Remove, &["vendor"]),
+            event(ChangeKind::Create, &["node_modules"]),
+            event(ChangeKind::Rename, &["docs", "__pycache__"]),
+            event(ChangeKind::Rename, &["lib", "VENDOR"]),
+        ];
+
+        // when
+        let results = events.each_ref().map(classify);
+
+        // then
+        assert_eq!(
+            results,
+            [Classification::Relevant(Relevance::Undisclosed); 4]
+        );
+        assert!(results.iter().all(|c| !c.requests_reconcile()));
+    }
+
+    #[test]
+    fn should_ignore_when_entry_of_unknown_type_is_denied_as_file() {
+        // given
+        let events = [
+            event(ChangeKind::Remove, &[".venv"]),
+            event(ChangeKind::Rename, &["docs", ".git"]),
+            event(ChangeKind::Create, &["vendor", "lib.js"]),
+        ];
+
+        // when
+        let results = events.each_ref().map(classify);
+
+        // then
+        assert_eq!(
+            results,
+            [
+                Classification::Ignored(IgnoreReason::Ineligible(DenyReason::Hidden)),
+                Classification::Ignored(IgnoreReason::Ineligible(DenyReason::Hidden)),
+                Classification::Ignored(IgnoreReason::Ineligible(DenyReason::ExcludedDirectory)),
+            ]
+        );
+    }
+
+    #[test]
+    fn should_request_reconcile_when_entry_may_be_a_directory() {
+        // given
+        let possibly_dirs = [
+            event(ChangeKind::Create, &["blog"]),
+            event(ChangeKind::Remove, &["assets", "img"]),
+            event(ChangeKind::Rename, &["moved-in"]),
+            event(ChangeKind::DirectoryChanged, &["docs"]),
+            event(ChangeKind::Ambiguous, &["docs", "x"]),
+        ];
+        let files = [
+            event(ChangeKind::Modify, &["index.html"]),
+            event(ChangeKind::Remove, &["vendor"]),
+            event(ChangeKind::Create, &[".swp"]),
+        ];
+
+        // when
+        let reconcile = possibly_dirs
+            .each_ref()
+            .map(|e| classify(e).requests_reconcile());
+        let no_reconcile = files.each_ref().map(|e| classify(e).requests_reconcile());
+
+        // then
+        assert_eq!(reconcile, [true; 5]);
+        assert_eq!(no_reconcile, [false; 3]);
     }
 
     #[test]
@@ -196,9 +305,15 @@ mod tests {
         let results = [modified, created, removed, renamed].map(|e| classify(&e));
 
         // then
-        for result in results {
-            assert_eq!(result, Classification::Relevant { dir_changed: false });
-        }
+        assert_eq!(
+            results,
+            [
+                Classification::Relevant(Relevance::File),
+                Classification::Relevant(Relevance::FileOrDirectory),
+                Classification::Relevant(Relevance::FileOrDirectory),
+                Classification::Relevant(Relevance::FileOrDirectory),
+            ]
+        );
     }
 
     #[test]
@@ -224,7 +339,7 @@ mod tests {
         let results = [classify(&created), classify(&root)];
 
         // then
-        assert_eq!(results, [Classification::Relevant { dir_changed: true }; 2]);
+        assert_eq!(results, [Classification::Relevant(Relevance::Directory); 2]);
     }
 
     #[test]

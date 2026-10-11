@@ -98,7 +98,7 @@ rules! {
         ["include-non-literal", "unparseable-source"];
     DomainPurity => "ARCH-domain-purity", "ARCH-06",
         "preview-domain production code names I/O, process, env, thread, clock, randomness, a runtime, HTTP or an outer layer.",
-        ["cfg-attr-path-default", "domain-aliased-fs", "domain-fs-via-macro-head", "domain-std-fs", "domain-tokio-via-macro-path"];
+        ["cfg-attr-path-default", "domain-aliased-fs", "domain-fs-via-macro-head", "domain-std-fs", "domain-std-net", "domain-tokio-via-macro-path"];
     FsAuthority => "ARCH-fs-authority", "ARCH-06",
         "Production code outside preview-adapter-fs and preview-composition/src/bootstrap.rs names filesystem authority.",
         ["ambient-fs-in-application"];

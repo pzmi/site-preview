@@ -18,7 +18,7 @@
 
 use core::time::Duration;
 
-use crate::change::{ChangeEvent, Classification};
+use crate::change::{ChangeEvent, Classification, classify};
 use crate::change_set::{ChangeSet, FullReason};
 use crate::time::{DebounceWindow, Tick};
 
@@ -107,29 +107,27 @@ impl Debouncer {
         self.pending.map(|p| Deadline(p.deadline))
     }
 
-    /// Records one classified change at `now`.
+    /// Records one change event at `now`, classifying it with
+    /// [`classify`](crate::classify) first, and returns that classification.
     ///
-    /// An `Ignored` classification leaves the machine untouched and returns `None`. Anything
-    /// else is added to the pending [`ChangeSet`] (see [`ChangeSet::accumulate`]) and makes the
-    /// machine dirty, with the deadline moved to `now + window`; a `Rescan` classification also
-    /// requests a rescan, like [`Self::mark_overflow`] (pinned by
+    /// An ignored event leaves the machine untouched. Anything else is added to the pending
+    /// [`ChangeSet`] (see [`ChangeSet::accumulate`]) and makes the machine dirty, with the
+    /// deadline moved to `now + window` (read it with [`Self::deadline`]); a `Rescan`
+    /// classification also requests a rescan, like [`Self::mark_overflow`] (pinned by
     /// `should_request_rescan_when_event_is_ambiguous` and
-    /// `should_stay_clean_when_event_is_ignored`).
+    /// `should_stay_clean_when_event_is_ignored`). The classification is not an argument, so
+    /// no caller can record an ineligible path as relevant.
     ///
     /// A change recorded exactly at the deadline, before the poll that would fire, extends
     /// it: the window is measured from the latest change (pinned by
     /// `should_extend_when_change_recorded_exactly_at_deadline_before_poll`).
-    pub fn record(
-        &mut self,
-        now: Tick,
-        event: &ChangeEvent,
-        classification: Classification,
-    ) -> Option<Deadline> {
-        if matches!(classification, Classification::Ignored(_)) {
-            return None;
+    pub fn record(&mut self, now: Tick, event: &ChangeEvent) -> Classification {
+        let classification = classify(event);
+        if !matches!(classification, Classification::Ignored(_)) {
+            self.changes.accumulate_classified(event, classification);
+            self.touch(now, classification == Classification::Rescan);
         }
-        self.changes.accumulate(event, classification);
-        Some(self.touch(now, classification == Classification::Rescan))
+        classification
     }
 
     /// Records a lost-notification overflow at `now`: dirty like [`Self::record`], the next
@@ -177,7 +175,7 @@ impl Debouncer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::change::{ChangeKind, classify};
+    use crate::change::ChangeKind;
     use crate::change_set::{ChangedPath, MAX_CHANGES};
     use crate::path::Component;
     use crate::rel_path::RelPath;
@@ -201,14 +199,15 @@ mod tests {
     /// Records a relevant `a.css` modification, the common case of these tests.
     fn rec(d: &mut Debouncer, now: Tick) -> Deadline {
         let event = css();
-        d.record(now, &event, classify(&event))
+        d.record(now, &event);
+        d.deadline()
             .expect("a relevant change dirties the debouncer")
     }
 
     fn css_set() -> ChangeSet {
         let mut set = ChangeSet::new();
         let event = css();
-        set.accumulate(&event, classify(&event));
+        set.accumulate(&event);
         set
     }
 
@@ -411,9 +410,9 @@ mod tests {
         let mut d = debouncer(150);
         let style = event(ChangeKind::Modify, &["css", "site.css"]);
         let script = event(ChangeKind::Modify, &["app.js"]);
-        d.record(t(0), &style, classify(&style));
-        d.record(t(10), &script, classify(&script));
-        d.record(t(20), &style, classify(&style));
+        d.record(t(0), &style);
+        d.record(t(10), &script);
+        d.record(t(20), &style);
 
         // when
         let fired = d.poll(t(170));
@@ -443,10 +442,11 @@ mod tests {
         let ambiguous = event(ChangeKind::Ambiguous, &["css", "site.css"]);
 
         // when
-        let deadline = d.record(t(0), &ambiguous, classify(&ambiguous));
+        let classification = d.record(t(0), &ambiguous);
 
         // then
-        assert_eq!(deadline.map(Deadline::at), Some(t(150)));
+        assert_eq!(classification, Classification::Rescan);
+        assert_eq!(d.deadline().map(Deadline::at), Some(t(150)));
         assert_eq!(d.poll(t(150)), rescan(ChangeSet::new()));
     }
 
@@ -457,10 +457,11 @@ mod tests {
         let ignored = event(ChangeKind::Modify, &[".git", "index"]);
 
         // when
-        let deadline = d.record(t(0), &ignored, classify(&ignored));
+        let classification = d.record(t(0), &ignored);
 
         // then
-        assert_eq!(deadline, None);
+        assert!(matches!(classification, Classification::Ignored(_)));
+        assert_eq!(d.deadline(), None);
         assert!(!d.is_dirty());
         assert_eq!(d.poll(t(1_000)), Poll::Idle);
     }
@@ -471,7 +472,7 @@ mod tests {
         let mut d = debouncer(150);
         let page = event(ChangeKind::Modify, &["index.html"]);
         rec(&mut d, t(0));
-        d.record(t(5), &page, classify(&page));
+        d.record(t(5), &page);
 
         // when
         let fired = d.poll(t(155));
@@ -608,7 +609,7 @@ mod tests {
             for (gap, step) in steps {
                 now += gap;
                 match step {
-                    Step::Event(e) => { d.record(t(now), &e, classify(&e)); }
+                    Step::Event(e) => { d.record(t(now), &e); }
                     Step::Overflow => { d.mark_overflow(t(now)); }
                     Step::Poll => {
                         if let Poll::Fire(settled) = d.poll(t(now)) {

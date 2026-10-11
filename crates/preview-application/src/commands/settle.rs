@@ -69,7 +69,7 @@ impl ChangeCoordinator {
                 next_deadline: None,
             },
             Err(_exhausted) => SettleOutcome {
-                events: self.watcher_failed(DegradeReason::RevisionExhausted),
+                events: self.degrade(DegradeReason::RevisionExhausted),
                 ..SettleOutcome::default()
             },
         }
@@ -84,6 +84,7 @@ mod tests {
 
     use super::*;
     use crate::commands::test_support::{event, ms};
+    use crate::ports::SourceFailure;
     use crate::reload_state::ReloadState;
 
     fn instance() -> InstanceId {
@@ -152,7 +153,7 @@ mod tests {
         let later_record = c.record(&[event(ChangeKind::Modify, &["b.css"])], ms(200));
         let later_overflow = c.overflow(ms(210));
         let later_settle = c.settle(ms(1_000));
-        let later_failure = c.watcher_failed(DegradeReason::RuntimeFailure);
+        let later_failure = c.watcher_failed(SourceFailure::RuntimeFailure);
         // then
         assert_eq!(first.settled, None);
         assert_eq!(
@@ -185,7 +186,7 @@ mod tests {
     fn should_escalate_to_exhaustion_when_already_degraded() {
         // given
         let mut c = coordinator_at(u64::MAX);
-        c.watcher_failed(DegradeReason::RuntimeFailure);
+        c.watcher_failed(SourceFailure::RuntimeFailure);
         c.overflow(ms(0));
         // when
         let outcome = c.settle(ms(150));

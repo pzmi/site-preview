@@ -44,9 +44,14 @@ impl ChangeCoordinator {
     }
 
     /// When the pending changes settle, if any are pending: the instant the caller should
-    /// call [`settle`](Self::settle) at.
+    /// call [`settle`](Self::settle) at. `None` once the revisions are exhausted, since
+    /// `settle` would publish nothing and the caller's timer must not fire for it again
+    /// (ADR 0040; `should_return_no_deadline_when_revisions_are_exhausted`).
     #[must_use]
     pub fn deadline(&self) -> Option<Deadline> {
+        if self.is_exhausted() {
+            return None;
+        }
         self.debouncer.deadline()
     }
 

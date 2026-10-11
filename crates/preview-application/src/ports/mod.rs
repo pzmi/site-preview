@@ -16,6 +16,6 @@ mod change_source;
 mod clock;
 mod site_content;
 
-pub use change_source::{ChangeBatch, ChangeSource};
+pub use change_source::{ChangeBatch, ChangeSource, SourceFailure};
 pub use clock::Clock;
 pub use site_content::{ContentFile, ContentRefusal, ForbiddenReason, Opened, SiteContent};

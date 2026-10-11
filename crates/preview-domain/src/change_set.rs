@@ -4,7 +4,8 @@
 //! browser client can swap a stylesheet, cache-bust an asset or reload a script in place.
 //! Anything the client cannot apply in place sets [`ChangeSet::is_full`], and a full set always
 //! means a full-page reload: more than [`MAX_CHANGES`] paths, an overflow or rescan, a
-//! directory change, an `html` or `other` path, or a removed `css`, `js` or `asset` path.
+//! directory change, an `html` or `other` path, a removed `css`, `js` or `asset` path, or an
+//! entry whose name is withheld because it may be an excluded directory.
 //!
 //! Rejected alternatives: carrying `RelPath`s and encoding in the HTTP adapter (every consumer
 //! would need the same encoding, and the domain already owns the decoder it must round-trip
@@ -15,7 +16,7 @@ use std::collections::BTreeSet;
 
 use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
 
-use crate::change::{ChangeEvent, ChangeKind, Classification};
+use crate::change::{ChangeEvent, ChangeKind, Classification, Relevance, classify};
 use crate::rel_path::RelPath;
 
 /// The most paths a hot (non-full) change set carries; one more forces a full reload (ADR 0031).
@@ -150,6 +151,9 @@ pub enum FullReason {
     DocumentChanged,
     /// A `css`, `js` or `asset` path was removed; nothing can be swapped in its place.
     Removed,
+    /// An entry of unknown type whose name is denied as a directory (`vendor`) changed: its
+    /// path is withheld from the set ([`Relevance::Undisclosed`]).
+    Undisclosed,
 }
 
 /// The changes accumulated over one debounce window.
@@ -173,11 +177,13 @@ impl ChangeSet {
         }
     }
 
-    /// Adds one classified event.
+    /// Adds one change event, classified with [`classify`] first.
     ///
-    /// `Ignored` changes nothing. `Rescan` marks the set full ([`FullReason::Rescan`]). A
-    /// relevant directory change marks it full ([`FullReason::DirectoryChanged`]) without
-    /// adding a path, since a directory has no kind. A relevant file change adds its
+    /// An ignored event changes nothing. `Rescan` marks the set full ([`FullReason::Rescan`]).
+    /// A known directory change marks it full ([`FullReason::DirectoryChanged`]) without
+    /// adding a path, since a directory has no kind, and an entry whose name is denied as a
+    /// directory marks it full ([`FullReason::Undisclosed`]) without adding its path, so the
+    /// name never reaches a client (ADR 0039). Any other relevant change adds its
     /// [`ChangedPath`] once, however often it repeats; an `html` or `other` kind marks the set
     /// full ([`FullReason::DocumentChanged`]), and so does a `Remove` of any other kind
     /// ([`FullReason::Removed`]). A path that would be the 65th distinct entry is not stored
@@ -187,15 +193,32 @@ impl ChangeSet {
     /// temporary file onto the target, and that must stay hot (pinned by
     /// `should_keep_hot_when_only_css_changes`).
     ///
-    /// Pinned by the `should_*` tests in this module.
-    pub fn accumulate(&mut self, event: &ChangeEvent, classification: Classification) {
+    /// The classification is not an argument, so no caller can record an ineligible path as
+    /// relevant (pinned by `should_change_nothing_when_event_is_ignored`). Pinned by the
+    /// `should_*` tests in this module.
+    pub fn accumulate(&mut self, event: &ChangeEvent) {
+        self.accumulate_classified(event, classify(event));
+    }
+
+    /// [`Self::accumulate`] for an event the caller has just classified with [`classify`];
+    /// crate-private so the pairing cannot be forged from outside.
+    pub(crate) fn accumulate_classified(
+        &mut self,
+        event: &ChangeEvent,
+        classification: Classification,
+    ) {
         match classification {
             Classification::Ignored(_) => {}
             Classification::Rescan => self.mark_full(FullReason::Rescan),
-            Classification::Relevant { dir_changed: true } => {
+            Classification::Relevant(Relevance::Directory) => {
                 self.mark_full(FullReason::DirectoryChanged);
             }
-            Classification::Relevant { dir_changed: false } => self.add(&event.path, event.kind),
+            Classification::Relevant(Relevance::Undisclosed) => {
+                self.mark_full(FullReason::Undisclosed);
+            }
+            Classification::Relevant(Relevance::File | Relevance::FileOrDirectory) => {
+                self.add(&event.path, event.kind);
+            }
         }
     }
 
@@ -255,7 +278,6 @@ impl ChangeSet {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::change::classify;
     use crate::path::{Component, decode_request_path};
     use proptest::prelude::*;
 
@@ -278,7 +300,7 @@ mod tests {
     fn accumulate_all(events: &[ChangeEvent]) -> ChangeSet {
         let mut set = ChangeSet::new();
         for e in events {
-            set.accumulate(e, classify(e));
+            set.accumulate(e);
         }
         set
     }
@@ -345,13 +367,13 @@ mod tests {
         let mut set = ChangeSet::new();
         for name in &names[..MAX_CHANGES] {
             let e = event(ChangeKind::Modify, &[name]);
-            set.accumulate(&e, classify(&e));
+            set.accumulate(&e);
         }
         let at_cap = set.clone();
 
         // when
         let e = event(ChangeKind::Modify, &[&names[MAX_CHANGES]]);
-        set.accumulate(&e, classify(&e));
+        set.accumulate(&e);
 
         // then
         assert!(!at_cap.is_full());
@@ -367,7 +389,7 @@ mod tests {
         let mut set = ChangeSet::new();
 
         // when
-        set.accumulate(&ambiguous, classify(&ambiguous));
+        set.accumulate(&ambiguous);
 
         // then
         assert_eq!(set.reason(), Some(FullReason::Rescan));
@@ -512,11 +534,30 @@ mod tests {
     }
 
     #[test]
+    fn should_mark_full_without_path_when_entry_is_named_like_excluded_directory() {
+        // given
+        let events = [
+            event(ChangeKind::Modify, &["a.css"]),
+            event(ChangeKind::Remove, &["vendor"]),
+            event(ChangeKind::Create, &["node_modules"]),
+            event(ChangeKind::Rename, &["docs", "__pycache__"]),
+        ];
+
+        // when
+        let set = accumulate_all(&events);
+
+        // then
+        assert_eq!(set.reason(), Some(FullReason::Undisclosed));
+        assert_eq!(paths(&set), [("/a.css", AssetKind::Css)]);
+    }
+
+    #[test]
     fn should_change_nothing_when_event_is_ignored() {
         // given
         let events = [
             event(ChangeKind::Modify, &[".git", "index.html"]),
             event(ChangeKind::AccessOnly, &["index.html"]),
+            event(ChangeKind::Modify, &[".env"]),
         ];
 
         // when
@@ -534,7 +575,7 @@ mod tests {
         set.mark_full(FullReason::Rescan);
         set.mark_full(FullReason::CapExceeded);
         let e = event(ChangeKind::Modify, &["a.css"]);
-        set.accumulate(&e, classify(&e));
+        set.accumulate(&e);
 
         // when
         let taken = set.take();
@@ -630,7 +671,7 @@ mod tests {
 
             // when
             for e in &events {
-                set.accumulate(e, classify(e));
+                set.accumulate(e);
             }
 
             // then
@@ -639,10 +680,35 @@ mod tests {
                 prop_assert!(set.changes().iter().all(|c| c.kind().is_hot()));
                 let removed_relevant = events.iter().any(|e| {
                     e.kind == ChangeKind::Remove
-                        && matches!(classify(e), Classification::Relevant { .. })
+                        && matches!(classify(e), Classification::Relevant(_))
                 });
                 prop_assert!(!removed_relevant);
             }
+        }
+
+        #[test]
+        fn should_never_record_excluded_directory_name_when_entry_type_is_unknown(
+            kind in prop_oneof![
+                Just(ChangeKind::Create),
+                Just(ChangeKind::Remove),
+                Just(ChangeKind::Rename),
+            ],
+            dirs in proptest::collection::vec("[a-z]{1,3}", 0..3),
+            excluded in proptest::sample::select(vec![
+                "node_modules", "vendor", "__pycache__", "Vendor", "NODE_MODULES", "node_module\u{17f}",
+            ]),
+        ) {
+            // given
+            let mut parts: Vec<&str> = dirs.iter().map(String::as_str).collect();
+            parts.push(excluded);
+            let mut set = ChangeSet::new();
+
+            // when
+            set.accumulate(&event(kind, &parts));
+
+            // then
+            prop_assert!(set.changes().is_empty());
+            prop_assert_eq!(set.reason(), Some(FullReason::Undisclosed));
         }
 
         #[test]

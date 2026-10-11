@@ -24,7 +24,7 @@ pub mod reload_state;
 pub use commands::{ChangeCoordinator, Received, RecordOutcome, SettleOutcome, Settled};
 pub use ports::{
     ChangeBatch, ChangeSource, Clock, ContentFile, ContentRefusal, ForbiddenReason, Opened,
-    SiteContent,
+    SiteContent, SourceFailure,
 };
 pub use queries::{ForbiddenCause, ResolveRequest, Resolved};
 pub use reload_state::{Published, ReloadClosed, ReloadState, StateSubscription};

@@ -11,7 +11,7 @@ mod time;
 mod watch_set;
 mod watcher_health;
 
-pub use change::{ChangeEvent, ChangeKind, Classification, IgnoreReason, classify};
+pub use change::{ChangeEvent, ChangeKind, Classification, IgnoreReason, Relevance, classify};
 pub use change_set::{AssetKind, ChangeSet, ChangedPath, FullReason, MAX_CHANGES};
 pub use debounce::{Deadline, Debouncer, Poll, Settled};
 pub use events::{DegradeReason, DomainEvent};

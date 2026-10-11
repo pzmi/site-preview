@@ -1,7 +1,7 @@
 //! Recording changes: the `record`, `overflow` and `receive` commands (plan.md sections 8.2
 //! and 8.3).
 
-use preview_domain::{ChangeEvent, Classification, Deadline, DomainEvent, Tick, classify};
+use preview_domain::{ChangeEvent, Classification, Deadline, DomainEvent, Tick};
 
 use super::change_coordinator::ChangeCoordinator;
 use crate::ports::ChangeBatch;
@@ -35,16 +35,20 @@ pub enum Received {
 impl ChangeCoordinator {
     /// Records one batch of change events.
     ///
-    /// Each event is classified with the domain's [`classify`] first; an ignored event (an
+    /// Each event is classified by the domain's debouncer first
+    /// ([`preview_domain::classify`]); an ignored event (an
     /// ineligible path such as `.git/` or `node_modules/`, an access-only or metadata-only
     /// event) never reaches the debouncer, so it neither dirties it nor moves its deadline
     /// (`should_leave_debouncer_untouched_when_every_event_is_ignored`). Every other event is
     /// recorded, so no eligible change in a mixed batch is lost
     /// (`should_record_every_relevant_event_when_batch_is_mixed`).
     ///
-    /// `needs_reconcile` is set by a directory change and by an event too coarse to
-    /// attribute ([`Classification::Rescan`]), which may hide one
-    /// (`should_request_reconcile_when_directory_changes`).
+    /// `needs_reconcile` is set whenever the domain says the directory structure may have
+    /// changed ([`Classification::requests_reconcile`]): a known directory change, a create,
+    /// remove or rename of an entry of unknown type whose name is eligible as a directory, and
+    /// an event too coarse to attribute ([`Classification::Rescan`]), which may hide one
+    /// (`should_request_reconcile_when_directory_changes`,
+    /// `should_request_reconcile_when_entry_of_unknown_type_is_renamed`).
     ///
     /// Once no revision can be published any more (ADR 0040), the batch is refused: nothing
     /// is recorded and no deadline is returned
@@ -55,13 +59,10 @@ impl ChangeCoordinator {
             return outcome;
         }
         for event in events {
-            let classification = classify(event);
-            if self.debouncer.record(now, event, classification).is_some() {
+            let classification = self.debouncer.record(now, event);
+            if !matches!(classification, Classification::Ignored(_)) {
                 outcome.recorded += 1;
-                outcome.needs_reconcile |= matches!(
-                    classification,
-                    Classification::Relevant { dir_changed: true } | Classification::Rescan
-                );
+                outcome.needs_reconcile |= classification.requests_reconcile();
             }
         }
         outcome.next_deadline = self.debouncer.deadline();
@@ -88,7 +89,9 @@ impl ChangeCoordinator {
 
     /// Handles one batch from the [`ChangeSource`](crate::ports::ChangeSource): events are
     /// [`record`](Self::record)ed, an overflow is [`overflow`](Self::overflow), a failure is
-    /// [`watcher_failed`](Self::watcher_failed), and `Closed` ends consumption.
+    /// [`watcher_failed`](Self::watcher_failed), and `Closed` ends consumption. A failure
+    /// keeps the pending deadline, unless the revisions are exhausted, when it returns none
+    /// (`should_return_no_deadline_when_revisions_are_exhausted`).
     ///
     /// The one place a batch is mapped to a command, so the watcher pipeline in composition
     /// makes no decision of its own. Pinned by the tests in `tests/change_commands.rs`.
@@ -96,12 +99,15 @@ impl ChangeCoordinator {
         match batch {
             ChangeBatch::Events(events) => Received::Recorded(self.record(&events, now)),
             ChangeBatch::Overflow => Received::Recorded(self.overflow(now)),
-            ChangeBatch::Failed(reason) => Received::Recorded(RecordOutcome {
-                next_deadline: self.debouncer.deadline(),
-                needs_reconcile: false,
-                recorded: 0,
-                events: self.watcher_failed(reason),
-            }),
+            ChangeBatch::Failed(failure) => {
+                let events = self.watcher_failed(failure);
+                Received::Recorded(RecordOutcome {
+                    next_deadline: self.deadline(),
+                    needs_reconcile: false,
+                    recorded: 0,
+                    events,
+                })
+            }
             ChangeBatch::Closed => Received::Closed,
         }
     }
@@ -109,10 +115,11 @@ impl ChangeCoordinator {
 
 #[cfg(test)]
 mod tests {
-    use preview_domain::{ChangeKind, DebounceWindow, InstanceId};
+    use preview_domain::{ChangeKind, DebounceWindow, DegradeReason, InstanceId, WatcherHealth};
 
     use super::*;
     use crate::commands::test_support::{event, ms};
+    use crate::ports::SourceFailure;
     use crate::reload_state::ReloadState;
 
     fn coordinator() -> ChangeCoordinator {
@@ -208,6 +215,44 @@ mod tests {
     }
 
     #[test]
+    fn should_request_reconcile_when_entry_of_unknown_type_is_renamed() {
+        // given
+        let mut c = coordinator();
+        // when
+        let moved_in = c.record(&[event(ChangeKind::Rename, &["docs"])], ms(0));
+        let removed = c.record(&[event(ChangeKind::Remove, &["blog", "2024"])], ms(1));
+        let created = c.record(&[event(ChangeKind::Create, &["assets"])], ms(2));
+        let modified = c.record(&[event(ChangeKind::Modify, &["a.css"])], ms(3));
+        let excluded = c.record(&[event(ChangeKind::Rename, &["vendor"])], ms(4));
+        // then
+        assert!(moved_in.needs_reconcile);
+        assert!(removed.needs_reconcile);
+        assert!(created.needs_reconcile);
+        assert!(!modified.needs_reconcile);
+        assert!(!excluded.needs_reconcile);
+        assert_eq!(excluded.recorded, 1);
+    }
+
+    #[test]
+    fn should_publish_full_reload_without_path_when_excluded_name_is_removed() {
+        // given
+        let mut c = coordinator();
+        c.record(&[event(ChangeKind::Modify, &["a.css"])], ms(0));
+        c.record(&[event(ChangeKind::Remove, &["vendor"])], ms(1));
+        // when
+        let settled = c.settle(ms(151)).settled.expect("settled");
+        // then
+        assert!(settled.changes.is_full());
+        let paths: Vec<_> = settled
+            .changes
+            .changes()
+            .iter()
+            .map(|p| p.url_path().to_owned())
+            .collect();
+        assert_eq!(paths, ["/a.css"]);
+    }
+
+    #[test]
     fn should_mark_full_rescan_and_reconcile_when_overflow_recorded() {
         // given
         let mut c = coordinator();
@@ -227,10 +272,7 @@ mod tests {
         let mut c = coordinator();
         c.record(&[event(ChangeKind::Modify, &["a.css"])], ms(0));
         // when
-        let received = c.receive(
-            ChangeBatch::Failed(preview_domain::DegradeReason::RuntimeFailure),
-            ms(50),
-        );
+        let received = c.receive(ChangeBatch::Failed(SourceFailure::RuntimeFailure), ms(50));
         // then
         let Received::Recorded(outcome) = received else {
             panic!("a failure is not the end of the source")
@@ -239,9 +281,29 @@ mod tests {
         assert_eq!(
             outcome.events,
             [DomainEvent::WatcherDegraded {
-                reason: preview_domain::DegradeReason::RuntimeFailure
+                reason: DegradeReason::RuntimeFailure
             }]
         );
+    }
+
+    #[test]
+    fn should_return_no_deadline_when_revisions_are_exhausted() {
+        // given: changes pending when the coordinator becomes inert
+        let mut c = coordinator();
+        c.record(&[event(ChangeKind::Modify, &["a.css"])], ms(0));
+        c.health = WatcherHealth::Degraded {
+            reason: DegradeReason::RevisionExhausted,
+        };
+        // when
+        let received = c.receive(ChangeBatch::Failed(SourceFailure::RuntimeFailure), ms(500));
+        // then
+        let Received::Recorded(outcome) = received else {
+            panic!("a failure is not the end of the source")
+        };
+        assert_eq!(outcome.next_deadline, None);
+        assert!(outcome.events.is_empty());
+        assert_eq!(c.deadline(), None, "an inert coordinator arms no timer");
+        assert_eq!(c.settle(ms(500)), crate::SettleOutcome::default());
     }
 
     #[test]

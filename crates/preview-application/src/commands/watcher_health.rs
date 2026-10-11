@@ -10,6 +10,7 @@
 use preview_domain::{DegradeReason, DomainEvent, WatcherHealthRefusal, WatcherInput};
 
 use super::change_coordinator::ChangeCoordinator;
+use crate::ports::SourceFailure;
 
 impl ChangeCoordinator {
     /// Reports that the watcher failed: live reload is unavailable, HTTP serving continues.
@@ -19,9 +20,15 @@ impl ChangeCoordinator {
     /// storm (`should_emit_degraded_once_when_failures_repeat`). The pending changes are
     /// kept: whatever is recorded still settles and publishes.
     ///
-    /// [`DegradeReason::RevisionExhausted`] is absorbing (ADR 0040): it is meant to come from
-    /// [`settle`](Self::settle) alone, never from a watcher adapter.
-    pub fn watcher_failed(&mut self, reason: DegradeReason) -> Vec<DomainEvent> {
+    /// Takes a [`SourceFailure`], which cannot name revision exhaustion: that absorbing
+    /// degradation comes from [`settle`](Self::settle) alone (ADR 0040, amended).
+    pub fn watcher_failed(&mut self, failure: SourceFailure) -> Vec<DomainEvent> {
+        self.degrade(failure.into())
+    }
+
+    /// Degrades the watcher with `reason`; the one path into the health machine's failure
+    /// input, shared by [`watcher_failed`](Self::watcher_failed) and `settle`.
+    pub(super) fn degrade(&mut self, reason: DegradeReason) -> Vec<DomainEvent> {
         // A failure is never refused by the health machine; only `Ready` can be.
         self.health
             .apply(WatcherInput::Failed { reason })
@@ -41,7 +48,9 @@ impl ChangeCoordinator {
     ///
     /// [`WatcherHealthRefusal`] once the revisions are exhausted: live reload can never
     /// resume, so the caller logs the refusal and carries on; the health is unchanged
-    /// (`should_degrade_once_and_refuse_when_revisions_are_exhausted`).
+    /// (`should_degrade_once_and_refuse_when_revisions_are_exhausted`). Also for `dirs == 0`:
+    /// the root is always watched, so no registered directory means no watch at all, and live
+    /// reload must not be claimed (`should_refuse_ready_when_nothing_was_registered`).
     pub fn watcher_ready(&mut self, dirs: usize) -> Result<Vec<DomainEvent>, WatcherHealthRefusal> {
         let transition = self.health.apply(WatcherInput::Ready { dirs })?;
         Ok(transition.event.into_iter().collect())
@@ -75,15 +84,27 @@ mod tests {
     }
 
     #[test]
+    fn should_refuse_ready_when_nothing_was_registered() {
+        // given
+        let mut c = coordinator();
+        // when
+        let refused = c.watcher_ready(0);
+        // then
+        assert!(refused.is_err());
+        assert_eq!(c.health(), WatcherHealth::Starting);
+        assert!(!c.health().is_live());
+    }
+
+    #[test]
     fn should_emit_degraded_once_when_failures_repeat() {
         // given
         let mut c = coordinator();
         c.watcher_ready(4).expect("accepted");
         // when
         let reported: Vec<_> = [
-            DegradeReason::RuntimeFailure,
-            DegradeReason::RegistrationFailed,
-            DegradeReason::RuntimeFailure,
+            SourceFailure::RuntimeFailure,
+            SourceFailure::RegistrationFailed,
+            SourceFailure::RuntimeFailure,
         ]
         .into_iter()
         .flat_map(|reason| c.watcher_failed(reason))
@@ -102,7 +123,7 @@ mod tests {
     fn should_emit_recovered_once_when_ready_after_failure() {
         // given
         let mut c = coordinator();
-        c.watcher_failed(DegradeReason::RegistrationFailed);
+        c.watcher_failed(SourceFailure::RegistrationFailed);
         // when
         let first = c.watcher_ready(2).expect("accepted");
         let second = c.watcher_ready(3).expect("accepted");

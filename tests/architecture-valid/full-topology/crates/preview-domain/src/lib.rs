@@ -1,5 +1,6 @@
 //! Positive fixture: domain code that names only allowed paths. An `Instant` passed in is a
-//! value, not a clock read; `cfg` branches for every platform and test-only code are read.
+//! value, not a clock read; `core::net` address types own no socket (ADR 0037); `cfg`
+//! branches for every platform and test-only code are read.
 
 mod clock;
 
@@ -23,6 +24,10 @@ newtype!(Revision);
 
 pub fn remaining(now: Instant, deadline: Deadline) -> Duration {
     deadline.0.saturating_duration_since(now)
+}
+
+pub fn is_loopback(addr: core::net::IpAddr) -> bool {
+    addr == core::net::IpAddr::V4(core::net::Ipv4Addr::LOCALHOST)
 }
 
 pub fn index(names: &[&str]) -> BTreeMap<usize, String> {

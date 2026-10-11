@@ -200,6 +200,7 @@ Normalize URL paths in one function used before *any* file open. Rules:
 3. Deny any component starting with `.`; this covers `.env`, `.git`, `.well-known`, etc. Document `.well-known` as an intentional P0 limitation.
 4. Deny exact directory components `node_modules`, `vendor`, `.venv`, `__pycache__` and editor/temp names. Match **components**, never substrings (e.g., `my-vendor-artwork` is fine).
 5. Deny editor swap/backup patterns and names ending in `~`; deny non-files and directories lacking `index.html`.
+   Names are compared after a case fold (case-insensitive filesystems), and a component holding a code point HFS+ ignores when comparing names (zero-width characters, directional controls, U+FEFF) is denied outright, so `node\u{200C}_modules` cannot open `node_modules` (the CVE-2014-9390 class).
 6. Never interpolate a URL path into a shell command.
 
 Store path components as validated relative names. Handle URL-encoded spaces and Unicode filenames normally; reject malformed encodings.
@@ -573,6 +574,7 @@ Do not add these “just in case.” In particular, do not invent HMR, bundling,
 - Polling is absent in P0; some NAS/network-mounted directories cannot provide reliable native change events.
 - Browser-side third-party scripts/assets in the user's **site** may make external requests; Site Preview itself makes none. This is a developer preview, not a browser security sandbox.
 - `--allow-remote` is explicitly insecure for untrusted networks because there is no authentication.
+- Browsers send Fetch Metadata (`Sec-Fetch-*`) only to potentially trustworthy origins, so a page opened at `http://<LAN address>` under `--allow-remote` has none: HTML injection uses its fallback classification as the normal case, and a cross-site `no-cors` request to `/__site_preview/events` (no `Origin`, no `Sec-Fetch-Site`) passes the SSE checks and can hold connection slots (§7.4) until they run out. It cannot read the stream (ADR 0037, amended).
 - P0 responds to Range requests with a full resource rather than promising partial-content support.
 
 ## 16. Definition of done

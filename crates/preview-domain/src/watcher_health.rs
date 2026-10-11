@@ -9,8 +9,10 @@
 //! while degraded are absorbed, so a flapping or repeating failure cannot produce an event
 //! storm. The one exception is an escalation to [`DegradeReason::RevisionExhausted`], which is
 //! reported once and is absorbing: with no revision left to publish, live reload can never
-//! recover, so a later `Ready` is refused rather than reported as a recovery. Pinned by
-//! `should_hold_health_invariants_when_inputs_are_random`.
+//! recover, so a later `Ready` is refused rather than reported as a recovery. A `Ready` that
+//! registered no directory is refused in every state: the root is always watched, so zero
+//! directories means registration did not happen, and `Watching` must never be claimed for
+//! it. Pinned by `should_hold_health_invariants_when_inputs_are_random`.
 
 use core::fmt;
 
@@ -24,7 +26,8 @@ pub enum WatcherHealth {
     Starting,
     /// Notifications are registered on `dirs` eligible directories; live reload works.
     Watching {
-        /// The number of watched directories.
+        /// The number of watched directories; at least one, since the root is always
+        /// watched.
         dirs: usize,
     },
     /// Live reload is unavailable; HTTP serving continues.
@@ -38,7 +41,7 @@ pub enum WatcherHealth {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum WatcherInput {
     /// Registration (initial, or a re-registration after a reconcile or a retry) succeeded
-    /// on `dirs` directories.
+    /// on `dirs` directories, the root included; `dirs: 0` is refused.
     Ready {
         /// The number of watched directories.
         dirs: usize,
@@ -59,7 +62,8 @@ pub struct HealthTransition {
     pub event: Option<DomainEvent>,
 }
 
-/// An input that is not a declared transition: `Ready` after the revisions are exhausted.
+/// An input that is not a declared transition: `Ready` after the revisions are exhausted, or
+/// `Ready` with no directory registered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct WatcherHealthRefusal {
     /// The health that refused.
@@ -81,24 +85,29 @@ impl fmt::Display for WatcherHealthRefusal {
 impl core::error::Error for WatcherHealthRefusal {}
 
 impl WatcherHealth {
-    /// Whether live reload is working. Pinned by `should_claim_live_reload_only_when_watching`.
+    /// Whether live reload is working: watching at least one directory (the root). Pinned by
+    /// `should_claim_live_reload_only_when_watching`.
     #[must_use]
     pub const fn is_live(self) -> bool {
-        matches!(self, Self::Watching { .. })
+        matches!(self, Self::Watching { dirs } if dirs > 0)
     }
 
     /// The transition `input` causes from this health.
     ///
     /// Pinned by `should_degrade_once_when_watcher_fails_repeatedly`,
-    /// `should_recover_when_ready_after_degraded` and
-    /// `should_refuse_recovery_when_revisions_are_exhausted`.
+    /// `should_recover_when_ready_after_degraded`,
+    /// `should_refuse_recovery_when_revisions_are_exhausted` and
+    /// `should_refuse_ready_when_no_directory_is_watched`.
     ///
     /// # Errors
-    /// [`WatcherHealthRefusal`] for `Ready` once degraded by
+    /// [`WatcherHealthRefusal`] for `Ready { dirs: 0 }`, and for any `Ready` once degraded by
     /// [`DegradeReason::RevisionExhausted`].
     pub fn step(self, input: WatcherInput) -> Result<HealthTransition, WatcherHealthRefusal> {
         use DegradeReason::RevisionExhausted;
         let (next, event) = match (self, input) {
+            (_, WatcherInput::Ready { dirs: 0 }) => {
+                return Err(WatcherHealthRefusal { state: self, input });
+            }
             (
                 Self::Degraded {
                     reason: RevisionExhausted,
@@ -161,6 +170,8 @@ mod tests {
     const REGISTRATION: DegradeReason = DegradeReason::RegistrationFailed;
     const RUNTIME: DegradeReason = DegradeReason::RuntimeFailure;
     const EXHAUSTED: DegradeReason = DegradeReason::RevisionExhausted;
+    const NO_DIRS: WatcherInput = WatcherInput::Ready { dirs: 0 };
+    const WATCHING_NOTHING: WatcherHealth = WatcherHealth::Watching { dirs: 0 };
 
     fn failed(reason: DegradeReason) -> WatcherInput {
         WatcherInput::Failed { reason }
@@ -283,6 +294,7 @@ mod tests {
         // given
         let states = [
             WatcherHealth::Starting,
+            WatcherHealth::Watching { dirs: 1 },
             WatcherHealth::Watching { dirs: 0 },
             WatcherHealth::Degraded { reason: RUNTIME },
             WatcherHealth::Degraded { reason: EXHAUSTED },
@@ -290,7 +302,31 @@ mod tests {
         // when
         let live = states.map(WatcherHealth::is_live);
         // then
-        assert_eq!(live, [false, true, false, false]);
+        assert_eq!(live, [false, true, false, false, false]);
+    }
+
+    #[test]
+    fn should_refuse_ready_when_no_directory_is_watched() {
+        // given
+        let states = [
+            WatcherHealth::Starting,
+            WatcherHealth::Watching { dirs: 2 },
+            WatcherHealth::Degraded { reason: RUNTIME },
+        ];
+        // when
+        let results =
+            states.map(|mut health| (health.apply(WatcherInput::Ready { dirs: 0 }), health));
+        // then
+        for (before, (result, after)) in states.into_iter().zip(results) {
+            assert_eq!(
+                result,
+                Err(WatcherHealthRefusal {
+                    state: before,
+                    input: WatcherInput::Ready { dirs: 0 }
+                })
+            );
+            assert_eq!(after, before);
+        }
     }
 
     fn is_degraded(health: WatcherHealth) -> bool {
@@ -328,8 +364,8 @@ mod tests {
                 let exhausted_before = before == WatcherHealth::Degraded { reason: EXHAUSTED };
                 match result {
                     Err(refusal) => {
-                        prop_assert!(exhausted_before);
                         prop_assert!(is_ready(input));
+                        prop_assert!(exhausted_before || input == NO_DIRS);
                         prop_assert_eq!(refusal.state, before);
                         prop_assert_eq!(health, before);
                     }
@@ -356,6 +392,7 @@ mod tests {
                 if exhausted_before {
                     prop_assert_eq!(health, before);
                 }
+                prop_assert!(health != WATCHING_NOTHING);
                 prop_assert!(degraded <= recovered + 2);
                 prop_assert!(recovered <= degraded);
             }

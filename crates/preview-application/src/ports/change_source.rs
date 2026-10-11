@@ -4,6 +4,31 @@ use core::future::Future;
 
 use preview_domain::DegradeReason;
 
+/// Why a [`ChangeSource`] cannot watch some or all of the site (plan.md section 8.4). A
+/// category only, never a path or OS error text.
+///
+/// Deliberately narrower than [`DegradeReason`]: revision exhaustion is decided by the
+/// application when a publish fails, never reported by a source, so a source cannot make the
+/// coordinator permanently inert (ADR 0038, ADR 0040 amendments).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SourceFailure {
+    /// Initialization or a watch registration failed (plan.md section 8.1 step 6).
+    RegistrationFailed,
+    /// The OS watcher reported a runtime failure (plan.md section 8.4).
+    RuntimeFailure,
+}
+
+impl From<SourceFailure> for DegradeReason {
+    /// The health category a source failure degrades the watcher with. Pinned by
+    /// `should_degrade_with_matching_reason_when_source_fails`.
+    fn from(failure: SourceFailure) -> Self {
+        match failure {
+            SourceFailure::RegistrationFailed => Self::RegistrationFailed,
+            SourceFailure::RuntimeFailure => Self::RuntimeFailure,
+        }
+    }
+}
+
 /// One delivery from a [`ChangeSource`].
 ///
 /// `E` is the change event the source translates the operating system's notifications into:
@@ -19,7 +44,7 @@ pub enum ChangeBatch<E> {
     Overflow,
     /// The source cannot watch some or all of the site (plan.md section 8.4). Not terminal:
     /// further batches may follow.
-    Failed(DegradeReason),
+    Failed(SourceFailure),
     /// The source has stopped for good.
     Closed,
 }
@@ -100,12 +125,31 @@ mod tests {
     fn assert_send<T: Send>(_: &T) {}
 
     #[test]
+    fn should_degrade_with_matching_reason_when_source_fails() {
+        // given
+        let failures = [
+            SourceFailure::RegistrationFailed,
+            SourceFailure::RuntimeFailure,
+        ];
+        // when
+        let reasons = failures.map(DegradeReason::from);
+        // then
+        assert_eq!(
+            reasons,
+            [
+                DegradeReason::RegistrationFailed,
+                DegradeReason::RuntimeFailure
+            ]
+        );
+    }
+
+    #[test]
     fn should_deliver_in_order_when_an_unpolled_next_was_dropped() {
         // given
         let mut source = Script(VecDeque::from([
             ChangeBatch::Events(vec!["index.html", "style.css"]),
             ChangeBatch::Overflow,
-            ChangeBatch::Failed(DegradeReason::RuntimeFailure),
+            ChangeBatch::Failed(SourceFailure::RuntimeFailure),
         ]));
         let cancelled = source.next();
         assert_send(&cancelled);
@@ -118,7 +162,7 @@ mod tests {
             [
                 ChangeBatch::Events(vec!["index.html", "style.css"]),
                 ChangeBatch::Overflow,
-                ChangeBatch::Failed(DegradeReason::RuntimeFailure),
+                ChangeBatch::Failed(SourceFailure::RuntimeFailure),
                 ChangeBatch::Closed,
                 ChangeBatch::Closed,
             ]

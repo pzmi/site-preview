@@ -5,6 +5,8 @@
 //! directory named `vendor` is not. Names are compared after a case fold, because the default
 //! macOS filesystem is case-insensitive: `openat(dir, "NODE_MODULES")` there opens
 //! `node_modules`, so an exact byte comparison would let a request bypass the deny list.
+//! For the same reason a name holding a code point HFS+ ignores when it compares names
+//! (`node\u{200C}_modules`, `\u{FEFF}.env`; the class of CVE-2014-9390) is denied outright.
 
 use crate::path::{Component, SitePath};
 
@@ -40,7 +42,8 @@ pub enum Eligibility {
 }
 
 /// Why an entry is denied. When several rules match, the most specific reason is reported:
-/// `Reserved`, then `ExcludedDirectory`, then `EditorArtifact`, then `Hidden`.
+/// `IgnorableCodePoint`, then `Reserved`, then `ExcludedDirectory`, then `EditorArtifact`,
+/// then `Hidden`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DenyReason {
     /// The name starts with `.` (`.env`, `.git`, `.well-known`; plan.md §15).
@@ -52,18 +55,38 @@ pub enum DenyReason {
     EditorArtifact,
     /// `__site_preview` directly in the root, where the internal endpoints live.
     Reserved,
+    /// The name holds a code point that HFS+ ignores when it compares names (zero-width
+    /// characters, bidirectional controls, the byte order mark), so it may open the same
+    /// entry as a denied name without it (CVE-2014-9390). Denied for files and directories
+    /// alike, wherever it appears in the name.
+    IgnorableCodePoint,
 }
 
 const EXCLUDED_DIRECTORIES: [&str; 4] = ["node_modules", "vendor", ".venv", "__pycache__"];
 const RESERVED_ROOT_NAME: &str = "__site_preview";
 
+/// The code points HFS+ drops before comparing names, the list git checks since
+/// CVE-2014-9390 (ZERO WIDTH NON-JOINER and JOINER, the directional marks, embeddings and
+/// overrides, the deprecated format characters U+206A to U+206F and ZERO WIDTH NO-BREAK
+/// SPACE), plus ZERO WIDTH SPACE. Denying more is fail-closed.
+const fn is_hfs_ignorable(c: char) -> bool {
+    matches!(
+        c,
+        '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{206A}'..='\u{206F}' | '\u{FEFF}'
+    )
+}
+
 /// Decides whether one entry is eligible.
 ///
 /// Pinned by the `should_*` tests in this module, one per rule and reason, including
 /// `should_allow_component_when_name_only_contains_vendor_substring` and
-/// `should_deny_when_excluded_directory_differs_only_in_case`.
+/// `should_deny_when_excluded_directory_differs_only_in_case` and
+/// `should_deny_when_name_holds_hfs_ignorable_code_point`.
 #[must_use]
 pub fn component(name: &Component, kind: ComponentKind, level: Level) -> Eligibility {
+    if name.as_str().chars().any(is_hfs_ignorable) {
+        return Eligibility::Denied(DenyReason::IgnorableCodePoint);
+    }
     let folded = fold(name.as_str());
     if level == Level::Root && folded == RESERVED_ROOT_NAME {
         return Eligibility::Denied(DenyReason::Reserved);
@@ -253,6 +276,53 @@ mod tests {
             );
         }
         assert_eq!(reserved, [Eligibility::Denied(DenyReason::Reserved); 2]);
+    }
+
+    #[test]
+    fn should_deny_when_name_holds_hfs_ignorable_code_point() {
+        // given: each would open the denied name on HFS+
+        let names = [
+            "node\u{200C}_modules",
+            "vend\u{200D}or",
+            "\u{FEFF}vendor",
+            "\u{200B}.env",
+            ".g\u{200E}it",
+            "__site\u{202A}_preview",
+            "index\u{206F}.html",
+        ];
+
+        // when
+        let dirs = verdicts(&names, ComponentKind::Dir, Level::Root);
+        let files = verdicts(&names, ComponentKind::File, Level::Nested);
+        let in_path = path(&site_path("/docs/%E2%80%8Dvendor/lib.js"));
+
+        // then
+        for (n, result) in names
+            .iter()
+            .chain(&names)
+            .zip(dirs.into_iter().chain(files))
+        {
+            assert_eq!(
+                result,
+                Eligibility::Denied(DenyReason::IgnorableCodePoint),
+                "{n:?}"
+            );
+        }
+        assert_eq!(in_path, Eligibility::Denied(DenyReason::IgnorableCodePoint));
+    }
+
+    #[test]
+    fn should_allow_when_name_holds_only_ordinary_non_ascii() {
+        // given: neighbours of the ignorable ranges stay eligible
+        let names = ["caf\u{e9}", "a\u{2010}b", "x\u{2070}", "\u{FEFE}"];
+
+        // when
+        let results = verdicts(&names, ComponentKind::Dir, Level::Nested);
+
+        // then
+        for (n, result) in names.iter().zip(results) {
+            assert_eq!(result, Eligibility::Eligible, "{n:?}");
+        }
     }
 
     #[test]

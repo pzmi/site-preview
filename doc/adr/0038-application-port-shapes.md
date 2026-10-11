@@ -39,3 +39,12 @@ a callback or channel type in the port (would name a runtime).
   fixed to the event type; TEST-04 and TEST-05 test the documented contracts.
 - APP-04, once DOM-05 lands, bounds its source with `ChangeSource<Event = ChangeEvent>`.
 - If a runtime-selected source is ever needed, a boxed wrapper is added beside the trait.
+
+## Amendments
+
+- **2026-10-11 (APP-04 checkpoint review).** `ChangeBatch::Failed` carries a
+  `SourceFailure::{RegistrationFailed, RuntimeFailure}` instead of the domain's
+  `DegradeReason`. A source can no longer report `RevisionExhausted`, which only the
+  application decides (ADR 0040) and which makes the coordinator inert for good; the
+  application maps a `SourceFailure` to its `DegradeReason` itself. The testkit's
+  `ScriptedHandle::fail` takes a `SourceFailure`.
