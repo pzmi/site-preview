@@ -93,17 +93,17 @@ Consequences the checker enforces:
 
 ## Ports
 
-Ports are trait definitions in `preview-application`, implemented by adapters and by
-testkit fakes (foundation.md section 2.3: a trait only at a nondeterministic or replaceable
-boundary). The list below is the plan, to be updated as the APP lane lands; the task names
-come from `doc/tasks.md`.
+Ports are trait definitions in `preview-application/src/ports/`, implemented by adapters
+and by testkit fakes (foundation.md section 2.3: a trait only at a nondeterministic or
+replaceable boundary). Their shapes are [ADR 0038](adr/0038-application-port-shapes.md);
+the task names come from `doc/tasks.md`.
 
-| Port | Planned by | Real implementation | Fake |
+| Port | Shape | Real implementation | Fake |
 |:--|:--|:--|:--|
-| `SiteContent`: open a validated path as a file or a directory with an optional index | APP-01 | `preview-adapter-fs` (FS-01, FS-02) | testkit in-memory store (TEST-03) |
-| `ChangeSource`: next batch of events, overflow, failure or close | APP-01 | `preview-adapter-fs` watcher (FS-05..08) | testkit scripted source (TEST-03) |
-| `Clock`: current tick | APP-01 | composition | testkit fixed clock (TEST-03) |
-| Notification publication to connected pages (the `ReloadState` latest-state channel) | APP-02 | application, served by `preview-adapter-http` | testkit recording sink (TEST-03) |
+| `SiteContent`: open a validated path as a file or a directory with an optional index | sync, `&dyn`; defined by APP-01 | `preview-adapter-fs` (FS-01, FS-02) | testkit in-memory store (TEST-03) |
+| `ChangeSource`: next batch of events, overflow, failure or close | async, cancellation safe, generic; defined by APP-01 | `preview-adapter-fs` watcher (FS-05..08) | testkit scripted source (TEST-03) |
+| `Clock`: current tick | sync; defined by APP-01 | composition | testkit fixed clock (TEST-03) |
+| Notification publication to connected pages (the `ReloadState` latest-state channel) | planned by APP-02 | application, served by `preview-adapter-http` | testkit recording sink (TEST-03) |
 
 Application-level queries and commands planned alongside them: `ResolveRequest`
 (APP-03) and the change commands record, settle, overflow and health (APP-04). Each port's
