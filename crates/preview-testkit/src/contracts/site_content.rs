@@ -12,7 +12,7 @@
 //! fake's own unit tests and the adapter's tests cover that variant.
 
 use core::fmt;
-use std::io::{ErrorKind, Read};
+use std::io::Read;
 use std::panic::{self, AssertUnwindSafe};
 use std::thread;
 
@@ -451,7 +451,8 @@ fn symlink_final<F: SiteContentFactory>() -> Result<(), String> {
     checks.finish()
 }
 
-/// A link, or a non-directory, as an intermediate component is refused as `Symlink`.
+/// A link as an intermediate component is refused as `Symlink`; a regular file there is
+/// `NotFound` (a path through a file names nothing), so the refusal does not reveal the file.
 fn symlink_middle<F: SiteContentFactory>() -> Result<(), String> {
     let site = F::build(
         &SiteTree::new()
@@ -462,7 +463,16 @@ fn symlink_middle<F: SiteContentFactory>() -> Result<(), String> {
     let mut checks = Checks::default();
     checks.expect(&site, "/out/secret.html", &Observed::Refused(SYMLINK));
     checks.expect(&site, "/out/missing.html", &Observed::Refused(SYMLINK));
-    checks.expect(&site, "/page.html/x", &Observed::Refused(SYMLINK));
+    checks.expect(
+        &site,
+        "/page.html/x",
+        &Observed::Refused(ContentRefusal::NotFound),
+    );
+    checks.expect(
+        &site,
+        "/page.html/x/y.html",
+        &Observed::Refused(ContentRefusal::NotFound),
+    );
     checks.finish()
 }
 
@@ -492,24 +502,29 @@ fn in_root_symlink<F: SiteContentFactory>() -> Result<(), String> {
 }
 
 /// Anything but a regular file or a directory is `NotRegular`, and the call returns at once
-/// (a FIFO without a writer must not block the open).
+/// (a FIFO without a writer must not block the open). A path through one names nothing.
 fn non_regular<F: SiteContentFactory>() -> Result<(), String> {
     let site = F::build(&SiteTree::new().special("pipe").special("sub/pipe.html"));
     let mut checks = Checks::default();
     checks.expect(&site, "/pipe", &Observed::Refused(NOT_REGULAR));
     checks.expect(&site, "/sub/pipe.html", &Observed::Refused(NOT_REGULAR));
-    checks.expect(&site, "/pipe/x", &Observed::Refused(SYMLINK));
+    checks.expect(
+        &site,
+        "/pipe/x",
+        &Observed::Refused(ContentRefusal::NotFound),
+    );
     checks.finish()
 }
 
-/// A component longer than `NAME_MAX` bytes is an I/O refusal (`InvalidFilename`), not
-/// `NotFound`; one of exactly `NAME_MAX` bytes is an ordinary missing name. A component
-/// before it is still resolved first.
+/// A component longer than `NAME_MAX` bytes names nothing that can exist, so it is
+/// `NotFound`, like a missing name of exactly `NAME_MAX` bytes: a request must not turn into
+/// a server failure (`Io`) by being long. Final, intermediate or after a missing component,
+/// the answer is the same.
 fn name_too_long<F: SiteContentFactory>() -> Result<(), String> {
     let site = F::build(&SiteTree::new().file("a/b.html", b"b"));
     let at_max = "n".repeat(NAME_MAX);
     let over = "n".repeat(NAME_MAX + 1);
-    let too_long = Observed::Refused(ContentRefusal::Io(ErrorKind::InvalidFilename));
+    let too_long = Observed::Refused(ContentRefusal::NotFound);
     let not_found = Observed::Refused(ContentRefusal::NotFound);
     let mut checks = Checks::default();
     checks.expect(&site, &format!("/{over}"), &too_long);

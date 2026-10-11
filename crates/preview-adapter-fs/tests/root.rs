@@ -1,6 +1,6 @@
 //! Opening the site root over a real filesystem (plan.md sections 3 and 6): the reserved
-//! name in every entry type, a file or missing root, a root given through a link, and an
-//! unreadable root.
+//! name in every entry type and letter case, a file or missing root, a root given through a
+//! link, and an unreadable root.
 
 use std::fs;
 use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
@@ -61,6 +61,47 @@ fn should_fail_with_reserved_conflict_when_site_preview_is_file_or_dangling_link
 
     // then
     assert_eq!(errors, [RootError::ReservedPathConflict; 2]);
+}
+
+#[test]
+fn should_fail_with_reserved_conflict_when_name_differs_only_in_case() {
+    // given
+    let base = tempdir();
+    let names = ["__Site_Preview", "__SITE_PREVIEW", "__s\u{0131}te_preview"];
+    let roots: Vec<_> = names
+        .iter()
+        .enumerate()
+        .map(|(index, name)| {
+            let root = base.path().join(format!("site-{index}"));
+            fs::create_dir_all(root.join(name)).expect("create reserved dir");
+            fs::write(root.join(name).join("page.html"), b"shadowed").expect("write page");
+            root
+        })
+        .collect();
+
+    // when
+    let errors: Vec<_> = roots.iter().map(|root| error_of(root)).collect();
+
+    // then
+    assert_eq!(errors, [RootError::ReservedPathConflict; 3]);
+}
+
+#[test]
+fn should_open_when_root_holds_names_close_to_reserved_one() {
+    // given
+    let base = tempdir();
+    let root = site(&base);
+    fs::create_dir(root.join("site_preview")).expect("create near-miss dir");
+    fs::write(root.join("__site_preview.html"), b"x").expect("create near-miss file");
+
+    // when
+    let opened = open_site_root(&root);
+
+    // then
+    assert!(
+        opened.is_ok(),
+        "a near-miss name is not reserved: {opened:?}"
+    );
 }
 
 #[test]

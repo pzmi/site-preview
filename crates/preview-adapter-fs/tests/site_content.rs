@@ -2,7 +2,7 @@
 //! 5.1, ADR 0038): directory index resolution, its refusals, and refusals that carry no path.
 
 use std::fs;
-use std::io::{ErrorKind, Read};
+use std::io::Read;
 use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -204,7 +204,7 @@ fn should_refuse_when_directory_itself_is_symlink() {
 }
 
 #[test]
-fn should_not_leak_absolute_path_when_io_error() {
+fn should_not_leak_absolute_path_when_refused() {
     // given
     let site = Site::new();
     site.link("link.html", &site.outside.join("index.html"));
@@ -222,11 +222,6 @@ fn should_not_leak_absolute_path_when_io_error() {
     .map(|opened| opened.expect_err("refused"));
 
     // then
-    assert!(
-        matches!(refusals[0], ContentRefusal::Io(kind) if kind != ErrorKind::NotFound),
-        "a name over NAME_MAX is an I/O error: {:?}",
-        refusals[0]
-    );
     let base = site.root.parent().expect("root has a parent");
     for refusal in refusals {
         let text = format!("{refusal} {refusal:?}");
@@ -236,4 +231,38 @@ fn should_not_leak_absolute_path_when_io_error() {
             "a refusal leaked the temp dir: {text}"
         );
     }
+}
+
+#[test]
+fn should_return_not_found_when_name_exceeds_name_max() {
+    // given
+    let site = Site::new();
+    site.write("a/b.html", b"b");
+    let content = site.content();
+    let over = "n".repeat(256);
+
+    // when
+    let refusals = [
+        open(&*content, &format!("/{over}")),
+        open(&*content, &format!("/a/{over}")),
+        open(&*content, &format!("/{over}/b.html")),
+    ]
+    .map(|opened| opened.expect_err("refused"));
+
+    // then
+    assert_eq!(refusals, [ContentRefusal::NotFound; 3]);
+}
+
+#[test]
+fn should_return_not_found_when_path_continues_through_file() {
+    // given
+    let site = Site::new();
+    site.write("index.html", b"home");
+    let content = site.content();
+
+    // when
+    let opened = open(&*content, "/index.html/x");
+
+    // then
+    assert_eq!(opened.map(|_| ()), Err(ContentRefusal::NotFound));
 }

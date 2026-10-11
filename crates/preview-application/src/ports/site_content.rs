@@ -97,8 +97,9 @@ impl fmt::Debug for Opened {
 /// Why confinement or the file type refused a path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ForbiddenReason {
-    /// A component is a symbolic link, or an intermediate component is not a directory: a
-    /// no-follow directory open cannot tell the two apart, and both are refused.
+    /// A component is a symbolic link. A path through a regular file or other non-directory
+    /// that is not a link is [`ContentRefusal::NotFound`] instead, so the refusal does not
+    /// reveal that the file exists.
     Symlink,
     /// The final object is neither a regular file nor a directory.
     NotRegular,
@@ -110,13 +111,14 @@ pub enum ForbiddenReason {
 /// or OS error text (pinned by `should_render_category_only_when_refusal_is_displayed`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ContentRefusal {
-    /// A component does not exist.
+    /// A component does not exist: it is missing, its name is longer than the system allows
+    /// (`NAME_MAX`), or an earlier component is a file or other non-directory, not a link.
     NotFound,
     /// The path exists but may not be served.
     Forbidden(ForbiddenReason),
-    /// Any other I/O failure, by kind. A missing entry, a refused link or non-directory
-    /// component and a denied access have their own variants and never arrive here as
-    /// `NotFound`, `NotADirectory` or `PermissionDenied`.
+    /// Any other I/O failure, by kind. A missing or over-long name, a refused link, a path
+    /// through a non-directory and a denied access have their own variants and never arrive
+    /// here as `NotFound`, `InvalidFilename`, `NotADirectory` or `PermissionDenied`.
     Io(ErrorKind),
 }
 
@@ -124,9 +126,7 @@ impl fmt::Display for ContentRefusal {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::NotFound => f.write_str("not found"),
-            Self::Forbidden(ForbiddenReason::Symlink) => {
-                f.write_str("forbidden: symbolic link or non-directory component")
-            }
+            Self::Forbidden(ForbiddenReason::Symlink) => f.write_str("forbidden: symbolic link"),
             Self::Forbidden(ForbiddenReason::NotRegular) => {
                 f.write_str("forbidden: not a regular file or directory")
             }

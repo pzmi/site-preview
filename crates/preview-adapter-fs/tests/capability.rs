@@ -222,21 +222,23 @@ fn should_refuse_when_target_is_socket() {
 }
 
 #[test]
-fn should_refuse_when_middle_component_is_regular_file() {
+fn should_return_not_found_when_middle_component_is_regular_file() {
     // given
     let site = Fixture::new();
     site.write("file.txt", b"not a directory");
     let root = site.capability();
 
     // when
-    let opened = root.open(&site_path("/file.txt/child"));
+    let child = root.open(&site_path("/file.txt/child"));
+    let deeper = root.open(&site_path("/file.txt/child/grandchild.html"));
 
     // then
-    assert_eq!(opened.map(|_| ()), Err(SYMLINK));
+    assert_eq!(child.map(|_| ()), Err(ContentRefusal::NotFound));
+    assert_eq!(deeper.map(|_| ()), Err(ContentRefusal::NotFound));
 }
 
 #[test]
-fn should_refuse_when_middle_component_is_fifo() {
+fn should_return_not_found_when_middle_component_is_fifo() {
     // given
     let site = Fixture::new();
     site.fifo("pipe");
@@ -246,7 +248,79 @@ fn should_refuse_when_middle_component_is_fifo() {
     let opened = root.open(&site_path("/pipe/child"));
 
     // then
-    assert_eq!(opened.map(|_| ()), Err(SYMLINK));
+    assert_eq!(opened.map(|_| ()), Err(ContentRefusal::NotFound));
+}
+
+#[test]
+fn should_refuse_as_symlink_when_middle_component_is_symlink_to_file() {
+    // given
+    let site = Fixture::new();
+    site.write("real.txt", b"inside");
+    site.link("to-inside-file", Path::new("real.txt"));
+    site.link("to-outside-file", &site.outside.join("secret.txt"));
+    let root = site.capability();
+
+    // when
+    let inside = root.open(&site_path("/to-inside-file/child"));
+    let outside = root.open(&site_path("/to-outside-file/child"));
+
+    // then
+    assert_eq!(inside.map(|_| ()), Err(SYMLINK));
+    assert_eq!(outside.map(|_| ()), Err(SYMLINK));
+}
+
+/// The final-component pre-filter: a FIFO is refused from its `fstatat` and never opened, so
+/// no driver's (or pipe's) open routine runs for it. An inotify `IN_OPEN` watch observes
+/// every successful open of the watched object, synchronously, so the regular file opened in
+/// the same test proves the watch sees opens. Linux only: inotify has no macOS equivalent
+/// that observes opens.
+#[cfg(target_os = "linux")]
+#[test]
+fn should_not_open_fifo_when_final_component_is_fifo() {
+    use rustix::fs::inotify;
+
+    // given
+    let site = Fixture::new();
+    site.fifo("pipe");
+    site.write("page.html", b"page");
+    let root = site.capability();
+    let watcher = inotify::init(inotify::CreateFlags::CLOEXEC | inotify::CreateFlags::NONBLOCK)
+        .expect("inotify init");
+    let fifo_watch =
+        inotify::add_watch(&watcher, site.root.join("pipe"), inotify::WatchFlags::OPEN)
+            .expect("watch fifo");
+    let file_watch = inotify::add_watch(
+        &watcher,
+        site.root.join("page.html"),
+        inotify::WatchFlags::OPEN,
+    )
+    .expect("watch file");
+
+    // when
+    let fifo = root.open(&site_path("/pipe"));
+    let file = root.open(&site_path("/page.html"));
+
+    // then
+    assert_eq!(fifo.map(|_| ()), Err(NOT_REGULAR));
+    assert_eq!(read_file(file.expect("file opens")), b"page");
+    let mut buf = [std::mem::MaybeUninit::uninit(); 4096];
+    let mut reader = inotify::Reader::new(&watcher, &mut buf);
+    let mut opened_watches = Vec::new();
+    loop {
+        match reader.next() {
+            Ok(event) => opened_watches.push(event.wd()),
+            Err(rustix::io::Errno::AGAIN) => break,
+            Err(errno) => panic!("reading inotify events failed: {errno}"),
+        }
+    }
+    assert!(
+        opened_watches.contains(&file_watch),
+        "the watch must see the regular file's open: {opened_watches:?}"
+    );
+    assert!(
+        !opened_watches.contains(&fifo_watch),
+        "the FIFO was opened before it was refused: {opened_watches:?}"
+    );
 }
 
 #[test]

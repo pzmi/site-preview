@@ -40,8 +40,8 @@ struct Inner {
 /// files, denied entries and failing entries.
 ///
 /// It refuses exactly as the real store does (the `SiteContent` contract): a link at any
-/// component is `Forbidden(Symlink)` and is never followed, an intermediate file is
-/// `Forbidden(Symlink)` too, a directory opens its own `index.html` and returns that index's
+/// component is `Forbidden(Symlink)` and is never followed, a path through a file or special
+/// entry is `NotFound` (it names nothing), a directory opens its own `index.html` and returns that index's
 /// refusal, and no eligibility rule applies, so `.git` opens like any other name. Handles own
 /// a copy of the bytes at open time, so a later [`put_file`](Self::put_file) does not change
 /// a file already opened.
@@ -50,8 +50,9 @@ struct Inner {
 /// directories are created. A builder panics when a parent is already a non-directory: that is
 /// a mistake in the test, not a behaviour to model.
 ///
-/// A component longer than 255 bytes (`NAME_MAX`) is `Io(InvalidFilename)` when the walk
-/// reaches it, as the operating system reports it, never `NotFound`.
+/// A component longer than 255 bytes (`NAME_MAX`) is `NotFound` when the walk reaches it, even
+/// if a builder put such a name in the tree: the operating system refuses it before any
+/// lookup, so it can name nothing.
 #[derive(Clone)]
 pub struct InMemorySite {
     inner: Arc<Inner>,
@@ -242,9 +243,11 @@ impl SiteContent for InMemorySite {
                     return Err(ContentRefusal::Forbidden(ForbiddenReason::PermissionDenied));
                 }
                 Some(Node::Broken(kind)) => return Err(ContentRefusal::Io(*kind)),
-                // A link, or a file or device with more path below it: the no-follow open
-                // cannot tell them apart and both are refused as `Symlink`.
-                Some(_) => return Err(ContentRefusal::Forbidden(ForbiddenReason::Symlink)),
+                Some(Node::Symlink) => {
+                    return Err(ContentRefusal::Forbidden(ForbiddenReason::Symlink));
+                }
+                // A file or special entry with more path below it names nothing.
+                Some(Node::File(_) | Node::Special) => return Err(ContentRefusal::NotFound),
             }
         }
         check_length(last)?;
@@ -257,7 +260,7 @@ impl SiteContent for InMemorySite {
 
 fn check_length(name: &Component) -> Result<(), ContentRefusal> {
     if name.as_str().len() > NAME_MAX {
-        return Err(ContentRefusal::Io(ErrorKind::InvalidFilename));
+        return Err(ContentRefusal::NotFound);
     }
     Ok(())
 }
@@ -345,13 +348,17 @@ mod tests {
     }
 
     #[test]
-    fn should_refuse_as_symlink_when_intermediate_component_is_a_file() {
+    fn should_return_not_found_when_intermediate_component_is_a_file_or_special() {
         // given
-        let site = InMemorySite::new().with_file("a.html", b"x");
+        let site = InMemorySite::new()
+            .with_file("a.html", b"x")
+            .with_special("pipe");
         // when
-        let result = refusal(&site, "/a.html/b");
+        let through_file = refusal(&site, "/a.html/b");
+        let through_special = refusal(&site, "/pipe/b");
         // then
-        assert_eq!(result, ContentRefusal::Forbidden(ForbiddenReason::Symlink));
+        assert_eq!(through_file, ContentRefusal::NotFound);
+        assert_eq!(through_special, ContentRefusal::NotFound);
     }
 
     #[test]
@@ -502,22 +509,25 @@ mod tests {
     }
 
     #[test]
-    fn should_refuse_as_io_when_component_exceeds_name_max() {
+    fn should_return_not_found_when_component_exceeds_name_max() {
         // given
-        let site = InMemorySite::new().with_file("a/b.html", b"b");
         let over = "n".repeat(NAME_MAX + 1);
         let at_max = "n".repeat(NAME_MAX);
+        let site = InMemorySite::new()
+            .with_file("a/b.html", b"b")
+            .with_file(&format!("held/{over}"), b"unreachable");
         // when
         let leaf = refusal(&site, &format!("/a/{over}"));
         let parent = refusal(&site, &format!("/{over}/b.html"));
         let boundary = refusal(&site, &format!("/{at_max}"));
         let after_missing = refusal(&site, &format!("/missing/{over}"));
+        let held = refusal(&site, &format!("/held/{over}"));
         // then
-        let too_long = ContentRefusal::Io(ErrorKind::InvalidFilename);
-        assert_eq!(leaf, too_long);
-        assert_eq!(parent, too_long);
+        assert_eq!(leaf, ContentRefusal::NotFound);
+        assert_eq!(parent, ContentRefusal::NotFound);
         assert_eq!(boundary, ContentRefusal::NotFound);
         assert_eq!(after_missing, ContentRefusal::NotFound);
+        assert_eq!(held, ContentRefusal::NotFound);
     }
 
     #[test]

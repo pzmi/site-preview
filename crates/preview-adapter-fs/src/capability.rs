@@ -8,12 +8,20 @@
 //!
 //! - an intermediate component is opened with
 //!   `O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK`, so a symbolic link, a
-//!   regular file or anything else that is not a real directory stops the walk;
-//! - the final component is opened with
-//!   `O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK | O_NOCTTY`, and `fstat` on the
-//!   descriptor that was opened classifies it as a regular file, a directory or other.
+//!   regular file or anything else that is not a real directory stops the walk. When that
+//!   open fails with `ENOTDIR` (which either system may answer for a link as well as for a
+//!   file), an `fstatat(AT_SYMLINK_NOFOLLOW)` of the same name classifies the refusal only: a
+//!   link is `Forbidden(Symlink)`, anything else that is not a directory is `NotFound`, as a
+//!   path through a file names nothing. It never opens anything and its answer never lets a
+//!   walk continue, so a swap between the two calls changes only which refusal is reported;
+//! - the final component is first looked at with `fstatat(AT_SYMLINK_NOFOLLOW)`, so a device,
+//!   FIFO or socket is refused before `open` could run a driver's open routine; then it is
+//!   opened with `O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK | O_NOCTTY`, and `fstat` on
+//!   the descriptor that was opened classifies it as a regular file, a directory or other.
+//!   The `fstat` stays the authoritative check: an object swapped in after the pre-filter is
+//!   still refused, the pre-filter only spares the common case the open.
 //!
-//! Nothing is checked by path and reopened: the descriptor that was classified is the one
+//! Nothing is checked by path and then trusted: the descriptor that was classified is the one
 //! handed out, so a link swapped in after the open cannot redirect it. A component name is
 //! passed to `openat` exactly as [`Component::as_str`] gives it, never decoded or joined
 //! again; the [`Component`] invariant (no `/`, no `.` or `..`, no control characters) is what
@@ -35,7 +43,7 @@ use std::path::Path;
 
 use preview_application::{ContentRefusal, ForbiddenReason};
 use preview_domain::{Component, SitePath};
-use rustix::fs::{FileType, Mode, OFlags};
+use rustix::fs::{AtFlags, FileType, Mode, OFlags};
 use rustix::io::Errno;
 
 /// Why [`RootDir::open`] or [`OpenedDir::open_child`] refused a path.
@@ -86,7 +94,7 @@ impl RootDir {
     }
 
     /// The root descriptor, for checks made relative to the root inside this crate (the
-    /// reserved-name `statat` of `root.rs`). Never exported: outside the crate, the root is
+    /// reserved-name listing of `root.rs`). Never exported: outside the crate, the root is
     /// reachable only through [`RootDir::open`].
     pub(crate) fn as_fd(&self) -> BorrowedFd<'_> {
         self.fd.as_fd()
@@ -98,9 +106,11 @@ impl RootDir {
     ///
     /// # Errors
     ///
-    /// - [`ContentRefusal::NotFound`] when a component does not exist;
+    /// - [`ContentRefusal::NotFound`] when a component does not exist, its name is longer than
+    ///   the system allows, or an intermediate component is a file or other non-directory that
+    ///   is not a link;
     /// - [`ForbiddenReason::Symlink`] when a component is a symbolic link (even one pointing
-    ///   inside the root) or an intermediate component is not a directory;
+    ///   inside the root);
     /// - [`ForbiddenReason::NotRegular`] when the final object is neither a regular file nor a
     ///   directory;
     /// - [`ForbiddenReason::PermissionDenied`] when the system denies access;
@@ -116,7 +126,8 @@ impl RootDir {
         let mut held: Option<OwnedFd> = None;
         for name in parents {
             let parent = held.as_ref().map_or(self.fd.as_fd(), AsFd::as_fd);
-            let next = open_name(parent, name, DIR_FLAGS).map_err(refusal)?;
+            let next = open_name(parent, name, DIR_FLAGS)
+                .map_err(|errno| intermediate_refusal(parent, name, errno))?;
             held = Some(next);
         }
         let parent = held.as_ref().map_or(self.fd.as_fd(), AsFd::as_fd);
@@ -196,7 +207,20 @@ impl OpenedDir {
 }
 
 /// Opens the final component and classifies the descriptor it got.
+///
+/// The `fstatat` first is a pre-filter, not the check: it keeps a device, FIFO or socket from
+/// being opened at all (a device's open routine runs before any `fstat` could refuse it), but
+/// the object can change between the two calls, so the `fstat` of the opened descriptor below
+/// still decides. Pinned by `should_not_open_fifo_when_final_component_is_fifo`.
 fn open_final(parent: BorrowedFd<'_>, name: &Component) -> Result<Opened, OpenError> {
+    let seen =
+        retry_on_interrupt(|| rustix::fs::statat(parent, name.as_str(), AtFlags::SYMLINK_NOFOLLOW))
+            .map_err(refusal)?;
+    match FileType::from_raw_mode(seen.st_mode) {
+        FileType::RegularFile | FileType::Directory => {}
+        FileType::Symlink => return Err(ContentRefusal::Forbidden(ForbiddenReason::Symlink)),
+        _ => return Err(ContentRefusal::Forbidden(ForbiddenReason::NotRegular)),
+    }
     let fd = open_name(parent, name, FINAL_FLAGS).map_err(|errno| {
         if refuses_non_regular(errno) {
             ContentRefusal::Forbidden(ForbiddenReason::NotRegular)
@@ -247,15 +271,40 @@ fn refuses_non_regular(errno: Errno) -> bool {
     matches!(errno, Errno::NXIO | Errno::NODEV | Errno::OPNOTSUPP)
 }
 
+/// The refusal for an intermediate component whose directory open failed.
+///
+/// With `O_DIRECTORY | O_NOFOLLOW`, Linux and macOS may answer a link as well as a regular
+/// file with `ENOTDIR`. Only on that error is the name looked at again, without following
+/// it, to tell the two apart: a link is refused as one, while a file or other non-directory is
+/// `NotFound`, so `/index.html/x` does not reveal that `index.html` exists. A directory found
+/// there now (swapped in after the open), or a failed look, stays `Symlink`, the refusal the
+/// open itself would have given. The look opens nothing and never resumes the walk. Pinned
+/// by `should_return_not_found_when_middle_component_is_regular_file` and
+/// `should_refuse_when_middle_component_is_symlink`.
+fn intermediate_refusal(parent: BorrowedFd<'_>, name: &Component, errno: Errno) -> ContentRefusal {
+    if errno != Errno::NOTDIR {
+        return refusal(errno);
+    }
+    let looked =
+        retry_on_interrupt(|| rustix::fs::statat(parent, name.as_str(), AtFlags::SYMLINK_NOFOLLOW));
+    match looked.map(|stat| FileType::from_raw_mode(stat.st_mode)) {
+        Ok(FileType::Symlink | FileType::Directory) | Err(_) => {
+            ContentRefusal::Forbidden(ForbiddenReason::Symlink)
+        }
+        Ok(_) => ContentRefusal::NotFound,
+    }
+}
+
 /// The port's category for an errno.
 ///
-/// `ELOOP` is what Linux and macOS return for `O_NOFOLLOW` on a link; with `O_DIRECTORY`
-/// either may answer a link or a non-directory with `ENOTDIR`, so both mean "not a real
-/// directory or file to walk through" and are refused alike. (FreeBSD's `EMLINK` for a link
-/// is outside the P0 targets.)
+/// `ELOOP` is what Linux and macOS return for `O_NOFOLLOW` on a link. `ENOTDIR` reaches here
+/// only from an open that [`intermediate_refusal`] did not classify; it means "not a real
+/// directory to walk through" and is refused like a link. A name longer than `NAME_MAX`
+/// (`ENAMETOOLONG`) names nothing that can exist, so it is `NotFound` like any missing name,
+/// not a server failure. (FreeBSD's `EMLINK` for a link is outside the P0 targets.)
 fn refusal(errno: Errno) -> ContentRefusal {
     match errno {
-        Errno::NOENT => ContentRefusal::NotFound,
+        Errno::NOENT | Errno::NAMETOOLONG => ContentRefusal::NotFound,
         Errno::LOOP | Errno::NOTDIR => ContentRefusal::Forbidden(ForbiddenReason::Symlink),
         Errno::ACCESS | Errno::PERM => ContentRefusal::Forbidden(ForbiddenReason::PermissionDenied),
         other => ContentRefusal::Io(io::Error::from(other).kind()),
