@@ -98,16 +98,22 @@ rules! {
         ["include-non-literal", "unparseable-source"];
     DomainPurity => "ARCH-domain-purity", "ARCH-06",
         "preview-domain production code names I/O, process, env, thread, clock, randomness, a runtime, HTTP or an outer layer.",
-        ["domain-aliased-fs", "domain-std-fs", "domain-tokio-via-macro-path"];
+        ["cfg-attr-path-default", "domain-aliased-fs", "domain-fs-via-macro-head", "domain-std-fs", "domain-tokio-via-macro-path"];
     FsAuthority => "ARCH-fs-authority", "ARCH-06",
         "Production code outside preview-adapter-fs and preview-composition/src/bootstrap.rs names filesystem authority.",
         ["ambient-fs-in-application"];
     LayerIsolation => "ARCH-layer-isolation", "ARCH-06",
         "An adapter names a sibling adapter, composition or watcher, or the application names adapter technology.",
-        ["http-names-fs-adapter"];
+        ["composition-names-fs-adapter", "http-names-fs-adapter"];
     UnsafeCode => "ARCH-unsafe-code", "ARCH-06",
         "Owned code contains an unsafe block, fn, impl, trait, extern block or unsafe attribute.",
         ["unsafe-block"];
+    MissingSelector => "ARCH-missing-selector", "ARCH-07",
+        "A crate or file the semantic rules name is missing and not listed in [semantic] absent, or absent lists a member.",
+        ["missing-selector"];
+    LintConfig => "ARCH-lint-config", "ARCH-07",
+        "A lint is relaxed outside source: a member's [lints] is not workspace = true, a workspace lint is allowed, rustflags allow or cap lints, or clippy.toml allows.",
+        ["clippy-toml-allow", "member-lints-override", "rustflags-allow"];
     UnfinishedCode => "ARCH-unfinished-code", "ARCH-07",
         "Production code calls todo!, unimplemented! or dbg! without an [exceptions.lints] entry.",
         ["todo-in-production"];
@@ -122,7 +128,7 @@ rules! {
         ["sleep-in-test"];
     TestName => "ARCH-test-name", "ARCH-07",
         "A test function's name does not match should_<outcome>_when_<condition>, or a macro hides a test.",
-        ["badly-named-test"];
+        ["badly-named-proptest", "badly-named-test"];
     TestStructure => "ARCH-test-structure", "ARCH-07",
         "A test function's body lacks the // given, // when and // then comments in that order.",
         ["missing-given-when-then"];

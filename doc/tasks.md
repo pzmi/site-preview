@@ -100,6 +100,7 @@ Each decision is an ADR. Tasks cite the D-id, and D*n* is ADR *n*+1. ADR 0001 is
 | APP-02 | `ReloadState` latest-state channel | TEST-03, DOM-10 | sonnet | | APP-03 |
 | APP-03 | `ResolveRequest` query with render snapshot | TEST-03, DOM-02 | opus | | APP-02 |
 | APP-04 | Change commands: record, settle, overflow, health | APP-02, DOM-04, DOM-05, DOM-09, DOM-10 | opus | ⛳ | |
+| ARCH-09 | Semantic rules: commands, queries, observability | APP-04 | opus | | FS-01 |
 | FS-01 | Root capability: `openat` per component | APP-01 | opus | | APP-02..04 |
 | FS-02 | `SiteContent` adapter: index resolution, errors | FS-01, APP-03 | opus | | |
 | FS-03 | Root opening and reserved-path check | FS-01 | sonnet | | FS-02 |
@@ -171,7 +172,7 @@ Each decision is an ADR. Tasks cite the D-id, and D*n* is ADR *n*+1. ADR 0001 is
 | OPS-06 | `release.yml`: archives, SHA256SUMS, provenance, SBOM | OPS-05, DOC-05 | opus | ⛳ | |
 | OPS-07 | v0.1.0: changelog, install docs, tag handoff | OPS-06, E2E-08 | haiku | | |
 
-**Execution order:** FND → ARCH → OPS-01, DOC-01, SEC-01..03 interleaved with DOM → TEST-02, APP, TEST-03, APP-04 ⛳ → FS-01..04 with TEST-04 and ARCH-08 → HTTP-01, HTTP-02 → **CLI-01 (first working binary)** → HTTP-03..05, CLI-02 → E2E-01 ⛳ (M1) → HTTP-06..12 → E2E-02 ⛳ (M2) ∥ HTTP-13..16 (hot-reload client) → FS-05..08, CLI-03, FS-09, TEST-05 → E2E-03 ⛳ (M3) → CLI-04..07 → E2E-04..06, E2E-09 → E2E-07 ⛳ (M4) → FORMAL-01..10 ⛳ → TEST-06..09, SEC-04..05 ⛳ → E2E-08, OPS-02..04 ⛳ → OPS-05, DOC-05, OPS-06 ⛳ → OPS-07.
+**Execution order:** FND → ARCH → OPS-01, DOC-01, SEC-01..03 interleaved with DOM → TEST-02, APP, TEST-03, APP-04 ⛳ → ARCH-09 with FS-01..04, TEST-04 and ARCH-08 → HTTP-01, HTTP-02 → **CLI-01 (first working binary)** → HTTP-03..05, CLI-02 → E2E-01 ⛳ (M1) → HTTP-06..12 → E2E-02 ⛳ (M2) ∥ HTTP-13..16 (hot-reload client) → FS-05..08, CLI-03, FS-09, TEST-05 → E2E-03 ⛳ (M3) → CLI-04..07 → E2E-04..06, E2E-09 → E2E-07 ⛳ (M4) → FORMAL-01..10 ⛳ → TEST-06..09, SEC-04..05 ⛳ → E2E-08, OPS-02..04 ⛳ → OPS-05, DOC-05, OPS-06 ⛳ → OPS-07.
 
 ---
 
@@ -300,6 +301,18 @@ Each decision is an ADR. Tasks cite the D-id, and D*n* is ADR *n*+1. ADR 0001 is
 - **Create/Change:** `crates/preview-domain/tests/compile_fail.rs` plus `tests/compile-fail/*.rs` with `.stderr`: constructing `SitePath` without `decode` (private fields), mutating `Revision` downward, and building a `SiteState` with a revision that does not come from `next()`. `crates/preview-adapter-fs/tests/compile_fail.rs`: constructing `RootDir` from a raw fd or path outside `RootDir::open_root`, and obtaining an `OwnedFd` from `OpenedFile` mutably.
 - **Accept:** `cargo nextest run -p preview-domain -p preview-adapter-fs` passes with each fixture failing to compile for the stated reason (pinned `.stderr`). Making a field `pub` breaks the corresponding fixture (state this check in the commit).
 - **Impact:** public API.
+
+### ARCH-09: Semantic rules: commands, queries, observability
+- **Depends on:** APP-04. **Model:** opus. **Size:** M. Parallel with FS-01.
+- **Read:** fnd §3.3 (rule bullets 4, 5 and 7), fnd §2.4; ADR 0035, ADR 0036; the module layout APP-01..APP-04 created in `crates/preview-application/src/{commands,queries,ports}/`.
+- **Create/Change:** `tools/xtask/src/architecture/semantic/rules_cqrs.rs` on the ARCH-06 collector, with a rule row and negative fixtures for each rule:
+  - `ARCH-command-isolation`: a module under `preview-application/src/commands/` names nothing under `crate::queries` and no HTTP DTO (`axum`, `http`, `preview_adapter_http`), also through re-exports. Fixtures `command-imports-query`, `command-names-http-dto`.
+  - `ARCH-query-purity`: a module under `src/queries/` names nothing under `crate::commands`, takes no `&mut` receiver or parameter of a domain state type, and calls no `ReloadState` publish method. Fixtures `query-calls-command`, `query-mutates-state`.
+  - `ARCH-observability-isolation`: domain code names no `tracing`/`log` item, and an application value returned by an instrumentation call (a `tracing` or `log` macro, or a module named `observability`/`metrics`) never flows into a branch condition or a returned decision; checked conservatively from the syntax (a call inside an `if`/`match` scrutinee or a `return`). Fixture `instrumentation-drives-decision`.
+
+  The module selectors (`commands/`, `queries/`) are checked to exist like the ARCH-07 selectors (`ARCH-missing-selector`). The positive fixture gains a command, a query and a traced command that pass.
+- **Accept:** each fixture fails with its rule, file and line; the repo and the positive fixture pass; `list-checks` lists the new rule ids with owner ARCH-09; renaming `src/queries/` in a copy of the positive fixture fails with `ARCH-missing-selector`.
+- **Impact:** port contract, dependency graph.
 
 ---
 
@@ -1160,7 +1173,7 @@ Each decision is an ADR. Tasks cite the D-id, and D*n* is ADR *n*+1. ADR 0001 is
 |---|---|
 | ARCH-01 workspace topology and toolchain pin | FND-01 |
 | ARCH-02 policy schema and Cargo graph checker | ARCH-01, ARCH-02, ARCH-03 |
-| ARCH-03 semantic module/library restrictions | ARCH-05, ARCH-06, ARCH-07 |
+| ARCH-03 semantic module/library restrictions | ARCH-05, ARCH-06, ARCH-07, ARCH-09 |
 | ARCH-04 negative-fixture harness | ARCH-01, ARCH-04 |
 | ARCH-05 public API compile-fail fixtures | ARCH-08 |
 | TEST-01 nextest, deterministic fakes/testkit contracts | TEST-01, TEST-03, TEST-04, TEST-05 |

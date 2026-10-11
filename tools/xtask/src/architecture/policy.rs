@@ -28,6 +28,19 @@ pub struct Policy {
     /// Approved exceptions.
     #[serde(default)]
     pub exceptions: Exceptions,
+    /// Settings of the semantic rules.
+    #[serde(default)]
+    pub semantic: Semantic,
+}
+
+/// `[semantic]`: settings of the semantic rules (ADR 0035).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Semantic {
+    /// Crates the rules name that this workspace deliberately lacks (fixtures with part of
+    /// the topology). Every other crate a rule names must be a workspace member.
+    #[serde(default)]
+    pub absent: Vec<String>,
 }
 
 /// A crate category. Every workspace crate is in exactly one.

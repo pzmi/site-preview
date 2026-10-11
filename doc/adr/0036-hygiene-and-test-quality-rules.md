@@ -27,15 +27,25 @@ place for one. TEST-01 introduced the single sanctioned sleep, `wait_until` in
 - `#[ignore]` is never allowed; there is no exception.
 - `todo!`, `unimplemented!` and `dbg!` (bare or through `std`/`core`) fail in production code
   of every crate; test code may use them.
-- Sleeping (`std::thread::sleep`, `sleep_ms`, `tokio::time::sleep`, `sleep_until`, also
-  through aliases) fails in test code: test targets, `#[cfg(test)]` items, test functions
+- Waiting on wall-clock time (`std::thread::sleep`, `sleep_ms`, `park_timeout`,
+  `mpsc::Receiver::recv_timeout`/`recv_deadline` in path form, `tokio::time::sleep`,
+  `sleep_until`, `timeout`, `timeout_at`, `interval`, `interval_at`, also through aliases)
+  fails in test code: test targets, `#[cfg(test)]` items, test functions
   and every file of a `test_only` crate. The exemption is structural, not a policy entry:
   only production code of `preview-testkit/src/poll.rs`, the bounded `wait_until` helper,
   may sleep.
-- Every function with a test attribute (`#[test]`, `#[tokio::test]`, any path ending in
-  `test`) is named `^should_[a-z0-9_]+_when_[a-z0-9_]+$` and has `// given`, `// when` and
-  `// then` comment lines in that order in its body. A test written inside a macro body
-  fails, since neither can be checked there.
+- Test functions are those with an attribute from an explicit list, `#[test]` and
+  `#[tokio::test]`; another attribute ending in `test` does not make test code. Each is
+  named `^should_[a-z0-9_]+_when_[a-z0-9_]+$` and has `// given`, `// when` and `// then`
+  comment lines in that order in its body. Inside `proptest!` (the one known test macro)
+  the name and body are read from the tokens and checked the same way; a test written
+  inside any other macro body fails, since neither can be checked there.
+- `ARCH-lint-config`: lints cannot be relaxed outside the source either. Every member's
+  `[lints]` is exactly `workspace = true` (required when `[workspace.lints]` exists), a
+  `[workspace.lints]` level of `allow` needs an `[[exceptions.lints]]` entry with
+  `path = "Cargo.toml"`, `.cargo/config.toml` rustflags (build, target, env) carry no
+  `-A`, `--allow` or `--cap-lints`, and no `clippy.toml` key starting with `allow` is set
+  to anything but `false`.
 - `cargo xtask list-checks` lists every architecture rule id with the task that introduced
   it, as rows of the `architecture` stage.
 

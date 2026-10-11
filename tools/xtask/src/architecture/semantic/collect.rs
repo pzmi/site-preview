@@ -55,6 +55,9 @@ pub fn collect_target(
     }
 }
 
+/// Macros whose `#[test]` functions are checked from their tokens (ADR 0036).
+pub const TEST_MACROS: &[&str] = &["proptest"];
+
 /// Pass one: the scopes.
 struct Binder<'a> {
     scopes: &'a mut Scopes,
@@ -149,7 +152,7 @@ impl Collector<'_> {
             RefKind::Macro => self.scopes.resolve_import(&self.module, path),
             RefKind::Path => self.scopes.resolve(&self.module, path),
         };
-        self.push(path, resolved, line, kind, open_tail);
+        self.push(path, resolved, line, kind, (open_tail, false));
     }
 
     fn push(
@@ -158,7 +161,7 @@ impl Collector<'_> {
         resolved: Vec<Vec<String>>,
         line: usize,
         kind: RefKind,
-        open_tail: bool,
+        (open_tail, open_head): (bool, bool),
     ) {
         if resolved.is_empty() {
             return;
@@ -169,6 +172,7 @@ impl Collector<'_> {
             written: path.render(),
             resolved,
             open_tail,
+            open_head,
             kind,
         });
     }
@@ -176,7 +180,13 @@ impl Collector<'_> {
     fn use_item(&mut self, item: &syn::ItemUse) {
         for leaf in use_leaves(item) {
             let resolved = self.scopes.resolve_import(&self.module, &leaf.path);
-            self.push(&leaf.path, resolved, leaf.line, RefKind::Path, false);
+            self.push(
+                &leaf.path,
+                resolved,
+                leaf.line,
+                RefKind::Path,
+                (false, false),
+            );
         }
     }
 
@@ -191,7 +201,7 @@ impl Collector<'_> {
             resolved,
             item.ident.span().start().line,
             RefKind::Path,
-            false,
+            (false, false),
         );
     }
 
@@ -200,8 +210,9 @@ impl Collector<'_> {
         self.facts.unsafe_sites.push((site, what));
     }
 
-    /// Records what a token stream names: paths, macro calls, `use` leaves, `unsafe`.
-    fn tokens(&mut self, tokens: &proc_macro2::TokenStream) {
+    /// Records what a token stream names: paths, macro calls, `use` leaves, `unsafe`,
+    /// attributes and tests. Tests are checkable only in a known test macro (`proptest!`).
+    fn tokens(&mut self, tokens: &proc_macro2::TokenStream, test_macro: bool) {
         let scan = scan_tokens(tokens);
         for found in &scan.paths {
             let kind = if found.is_macro {
@@ -209,7 +220,23 @@ impl Collector<'_> {
             } else {
                 RefKind::Path
             };
-            self.reference(&found.path, found.line, kind, found.open_tail);
+            if found.open_head {
+                // `$m::fs::read`: no resolution; the rules match the tail.
+                let resolved = vec![found.path.segments.clone()];
+                self.push(&found.path, resolved, found.line, kind, (false, true));
+            } else if found.path.segments.len() == 1 && kind == RefKind::Path {
+                // A lone name in a token stream may be a crate handed to a macro.
+                let resolved = self.scopes.resolve_import(&self.module, &found.path);
+                self.push(
+                    &found.path,
+                    resolved,
+                    found.line,
+                    kind,
+                    (found.open_tail, false),
+                );
+            } else {
+                self.reference(&found.path, found.line, kind, found.open_tail);
+            }
         }
         for item in &scan.uses {
             self.use_item(item);
@@ -223,12 +250,12 @@ impl Collector<'_> {
         for (meta, line) in &scan.attributes {
             self.attribute(meta, *line);
         }
-        for (name, line) in scan.test_fns {
-            let site = self.site(line);
+        for test in scan.test_fns {
+            let site = self.site(test.line);
             self.facts.tests.push(TestFn {
                 site,
-                name,
-                body: None,
+                name: test.name,
+                body: if test_macro { test.body } else { None },
             });
         }
     }
@@ -409,7 +436,12 @@ impl<'ast> Visit<'ast> for Collector<'_> {
         if is_include(&mac.path) {
             self.include(mac, line);
         }
-        self.tokens(&mac.tokens);
+        let test_macro = mac
+            .path
+            .segments
+            .last()
+            .is_some_and(|s| TEST_MACROS.contains(&paths::name(&s.ident).as_str()));
+        self.tokens(&mac.tokens, test_macro);
     }
 
     fn visit_attribute(&mut self, attr: &'ast Attribute) {
@@ -418,7 +450,7 @@ impl<'ast> Visit<'ast> for Collector<'_> {
             if list.path.is_ident("unsafe") {
                 self.unsafe_site(first_line(&list.path), "an `#[unsafe(..)]` attribute");
             }
-            self.tokens(&list.tokens);
+            self.tokens(&list.tokens, false);
         }
         visit::visit_attribute(self, attr);
     }
@@ -465,5 +497,182 @@ impl<'ast> Visit<'ast> for Collector<'_> {
     fn visit_item_foreign_mod(&mut self, item: &'ast syn::ItemForeignMod) {
         self.unsafe_site(item.abi.extern_token.span.start().line, "an `extern` block");
         visit::visit_item_foreign_mod(self, item);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::testing::facts_for;
+    use super::*;
+
+    fn written_in(facts: &Facts, context: Context) -> Vec<String> {
+        facts
+            .references
+            .iter()
+            .filter(|r| r.site.context == context)
+            .map(|r| format!("{}={}", r.written, r.resolved[0].join("::")))
+            .collect()
+    }
+
+    #[test]
+    fn should_mark_test_context_when_code_is_cfg_test_or_a_test_function() {
+        // given
+        let source = "use std::fs;\npub fn f() { let _ = fs::read(\"a\"); }\n#[cfg(test)]\nmod tests {\n    fn helper() { let _ = std::env::args(); }\n}\n#[test]\nfn should_x_when_y() { let _ = std::process::id(); }\n";
+
+        // when
+        let facts = facts_for("p", &[("src/lib.rs", source)]);
+
+        // then
+        let production = written_in(&facts, Context::Production);
+        let test = written_in(&facts, Context::Test);
+        assert!(
+            production.contains(&"fs::read=std::fs::read".to_owned()),
+            "{production:?}"
+        );
+        assert!(
+            test.contains(&"std::env::args=std::env::args".to_owned()),
+            "{test:?}"
+        );
+        assert!(
+            test.contains(&"std::process::id=std::process::id".to_owned()),
+            "{test:?}"
+        );
+        assert!(
+            !production
+                .iter()
+                .any(|r| r.contains("env") || r.contains("process"))
+        );
+    }
+
+    #[test]
+    fn should_record_suppressions_when_given_inner_outer_or_through_cfg_attr() {
+        // given
+        let source = "#![allow(dead_code)]\n#[cfg_attr(test, expect(clippy::unwrap_used, reason = \"x\"))]\nfn f() {}\n#[cfg_attr(coverage_nightly, coverage(off))]\nfn g() {}\nmacro_rules! m { () => { #[allow(unused)] fn h() {} } }\n";
+
+        // when
+        let facts = facts_for("p", &[("src/lib.rs", source)]);
+
+        // then
+        let got: Vec<(String, Vec<String>, usize)> = facts
+            .attributes
+            .iter()
+            .map(|a| (a.name.clone(), a.lints.clone(), a.site.line))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("allow".to_owned(), vec!["dead_code".to_owned()], 1),
+                (
+                    "expect".to_owned(),
+                    vec!["clippy::unwrap_used".to_owned()],
+                    2
+                ),
+                ("coverage".to_owned(), vec!["coverage".to_owned()], 4),
+                ("allow".to_owned(), vec!["unused".to_owned()], 6),
+            ]
+        );
+    }
+
+    #[test]
+    fn should_read_bodies_only_when_tests_are_in_proptest() {
+        // given
+        let source = "proptest::proptest! {\n    #[test]\n    fn should_a_when_b(n in 0u8..2) {\n        // given\n    }\n}\nmy_tests! {\n    #[test]\n    fn should_c_when_d() {}\n}\n#[rstest]\nfn not_a_test() {}\n";
+
+        // when
+        let facts = facts_for("p", &[("src/lib.rs", source)]);
+
+        // then
+        let got: Vec<(String, Option<(usize, usize)>)> = facts
+            .tests
+            .iter()
+            .map(|t| (t.name.clone(), t.body))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("should_a_when_b".to_owned(), Some((3, 5))),
+                ("should_c_when_d".to_owned(), None)
+            ]
+        );
+    }
+
+    #[test]
+    fn should_follow_include_when_it_is_in_expression_position() {
+        // given
+        let files = [
+            (
+                "src/lib.rs",
+                "pub fn f() -> u8 {\n    include!(\"value.rs\")\n}\n",
+            ),
+            (
+                "src/value.rs",
+                "{ let _ = std::net::Ipv4Addr::LOCALHOST; 1 }\n",
+            ),
+        ];
+
+        // when
+        let facts = facts_for("p", &files);
+
+        // then
+        assert!(facts.problems.is_empty(), "{:?}", facts.problems);
+        let hit = facts
+            .references
+            .iter()
+            .find(|r| r.written == "std::net::Ipv4Addr::LOCALHOST")
+            .map(|r| r.site.at());
+        assert_eq!(hit.as_deref(), Some("crates/p/src/value.rs:1"));
+        assert!(facts.sources.contains_key("crates/p/src/value.rs"));
+    }
+
+    #[test]
+    fn should_record_unsafe_and_lone_crate_names_when_inside_macro_tokens() {
+        // given
+        let source = "macro_rules! m { () => { unsafe { } } }\npub fn f() { g!(tokio); }\n";
+
+        // when
+        let facts = facts_for("p", &[("src/lib.rs", source)]);
+
+        // then
+        assert_eq!(facts.unsafe_sites.len(), 1);
+        assert!(
+            facts
+                .references
+                .iter()
+                .any(|r| r.written == "tokio" && r.resolved == [vec!["tokio".to_owned()]]),
+            "{:?}",
+            facts.references
+        );
+    }
+
+    #[test]
+    fn should_load_default_file_when_path_is_only_given_through_cfg_attr() {
+        // given
+        let files = [
+            (
+                "src/lib.rs",
+                "#[cfg_attr(unix, path = \"u.rs\")]\nmod imp;\n#[cfg_attr(unix, path = \"gone.rs\")]\nmod other;\n",
+            ),
+            ("src/u.rs", ""),
+            (
+                "src/imp.rs",
+                "pub fn f() { let _ = std::fs::read(\"a\"); }\n",
+            ),
+            ("src/other.rs", ""),
+        ];
+
+        // when
+        let facts = facts_for("p", &files);
+
+        // then
+        assert!(
+            facts
+                .references
+                .iter()
+                .any(|r| r.site.at() == "crates/p/src/imp.rs:1"),
+            "{:?}",
+            facts.references
+        );
+        assert_eq!(facts.problems.len(), 1, "{:?}", facts.problems);
+        assert!(facts.problems[0].1.contains("`crates/p/src/gone.rs`"));
     }
 }

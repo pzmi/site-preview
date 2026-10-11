@@ -14,3 +14,6 @@ preview-testkit = ["preview-domain", "preview-application"]
 
 [external.normal]
 preview-application = { shim = ["default"] }
+
+[semantic]
+absent = ["preview-adapter-fs", "preview-conformance"]

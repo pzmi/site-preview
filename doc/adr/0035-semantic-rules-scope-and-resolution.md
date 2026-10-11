@@ -20,9 +20,11 @@ domain test needs `Instant::now()` to make an `Instant` value at all.
 - **Reach.** For every Cargo target of every workspace package (library, binaries, tests,
   benches, examples, build script), the checker walks the module tree from the target's
   root through `mod` declarations, including `#[path]` and every `cfg_attr(.., path)`
-  branch, and through `include!` of a string literal. A file that does not parse, a
-  declared module with no file, and an `include!` or `#[path]` that is not a literal fail
-  as `ARCH-source-parse`. Files that no target reaches are not compiled and are not read.
+  branch, and through `include!` of a string literal. When every `#[path]` of a module is
+  conditional, the default `name.rs` or `name/mod.rs` is read too, as the other branches'
+  file. A file that does not parse, a declared module with no file, a `#[path]` naming a
+  missing file, and an `include!` or `#[path]` that is not a literal fail as
+  `ARCH-source-parse`. Files that no target reaches are not compiled and are not read.
 - **Every `cfg` branch** is analysed; nothing is evaluated. This is stricter than a check
   per target.
 - **Names.** Per target, `use` trees (renames, groups, `self`, globs), `extern crate`
@@ -33,7 +35,10 @@ domain test needs `Instant::now()` to make an `Instant` value at all.
   path that nothing binds is a local value.
 - **Macros.** Token streams of macro invocations, `macro_rules!` bodies and attribute
   arguments are scanned for paths, `use`/`extern crate` items and `unsafe`. A macro path
-  that continues with a metavariable (`std::$m`) counts as every path below its prefix.
+  that continues with a metavariable (`std::$m`) counts as every path below its prefix;
+  one that starts with a metavariable (`$k::fs::read`) hits every forbidden path whose
+  segments after the first match what follows. A lone name in a token stream counts as an
+  extern crate (`via!(tokio)`).
 - **Context.** Test, bench and example targets, `#[cfg(test)]` items (also
   `cfg(all(test, ..))`) and test functions are test code. Domain purity, filesystem
   authority and layer isolation apply to production code; `unsafe` is rejected everywhere.
@@ -41,7 +46,17 @@ domain test needs `Instant::now()` to make an `Instant` value at all.
   `preview-adapter-fs` and `preview-composition/src/bootstrap.rs`; the path lists include
   `tokio::fs`, `notify` and the `Path`/`PathBuf` methods that touch the filesystem),
   `ARCH-layer-isolation` (adapters never name a sibling adapter or composition, HTTP never
-  names the watcher, the application never names adapter technology), `ARCH-unsafe-code`.
+  names the watcher, the application never names adapter technology, composition names
+  `preview_adapter_fs` only in `src/bootstrap.rs`, and the CLI names no workspace crate but
+  composition), `ARCH-unsafe-code`. The domain list also covers console output
+  (`print!`..`eprintln!`), compile-time environment (`env!`, `option_env!`) and
+  `RandomState`.
+- **Selectors.** Every workspace crate a rule names must exist, unless `[semantic] absent`
+  in `architecture.toml` lists it (a fixture with part of the topology); `absent` may not
+  list a member or a crate no rule names, and the poll helper file of ADR 0036 must exist
+  (`ARCH-missing-selector`). A rename therefore fails instead of turning a rule into a
+  no-op. An exemption file that is missing (`bootstrap.rs`, which composition has not
+  written yet) only narrows the exemption and is not required.
 
 ## Consequences
 
@@ -51,6 +66,9 @@ domain test needs `Instant::now()` to make an `Instant` value at all.
 - Method calls on values are not type-resolved: `path.exists()` or `instant.elapsed()` is
   not seen, only the paths that produced the value. The rules catch the import or the
   type-qualified call, not data flow; behaviour tests remain the second line (§3.3).
+- Re-exports across crates are not followed: composition could re-export a filesystem API
+  that the CLI then names. The isolation rules close that route structurally (composition
+  names the filesystem adapter only at bootstrap; the CLI names only composition).
 - Over-approximation can report an ambiguous name; the fix is to name the item plainly,
   never to loosen the rule.
 - ARCH-07 adds the hygiene and test-quality rules on the same collector.

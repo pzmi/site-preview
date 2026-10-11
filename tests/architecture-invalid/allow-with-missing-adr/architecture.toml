@@ -10,3 +10,6 @@ preview-domain = []
 path = "crates/preview-domain/src/lib.rs"
 lint = "clippy::too_many_lines"
 adr = "0099"
+
+[semantic]
+absent = ["preview-adapter-fs", "preview-adapter-http", "preview-application", "preview-cli", "preview-composition", "preview-conformance", "preview-testkit"]

@@ -12,3 +12,6 @@ preview-composition = ["preview-domain", "preview-application", "preview-adapter
 preview-cli = ["preview-composition"]
 preview-testkit = ["preview-domain", "preview-application"]
 preview-adapter-fs = ["preview-application", "preview-testkit"]
+
+[semantic]
+absent = ["preview-conformance"]

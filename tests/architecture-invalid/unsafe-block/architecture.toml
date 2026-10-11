@@ -5,3 +5,6 @@ production = ["preview-adapter-fs"]
 
 [dependencies.normal]
 preview-adapter-fs = []
+
+[semantic]
+absent = ["preview-adapter-http", "preview-application", "preview-cli", "preview-composition", "preview-conformance", "preview-domain", "preview-testkit"]

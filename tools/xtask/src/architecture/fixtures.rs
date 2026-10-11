@@ -3,8 +3,10 @@
 //! workspace that must pass with no diagnostic at all.
 //!
 //! `expected.txt` holds `key: value` lines: `rule:` (required, a rule id), `at:` (required, a
-//! substring of the diagnostic's path) and any number of `contains:` (substrings of the
-//! message). One diagnostic must satisfy all of them; other diagnostics may also appear.
+//! substring of the diagnostic's path), any number of `contains:` (substrings of the
+//! message) and an optional `only: true`. One diagnostic must satisfy all of them; other
+//! diagnostics may also appear unless `only` is set, which requires every diagnostic to be
+//! of the expected rule.
 
 use std::fs;
 use std::path::Path;
@@ -23,12 +25,14 @@ pub struct Expected {
     pub at: String,
     /// Substrings of the diagnostic's message.
     pub contains: Vec<String>,
+    /// Every diagnostic must be of `rule`.
+    pub only: bool,
 }
 
 impl Expected {
     /// Parses `expected.txt`.
     pub fn parse(text: &str) -> Result<Self, String> {
-        let (mut rule, mut at, mut contains) = (None, None, Vec::new());
+        let (mut rule, mut at, mut contains, mut only) = (None, None, Vec::new(), false);
         for line in text.lines().map(str::trim).filter(|l| !l.is_empty()) {
             let (key, value) = line
                 .split_once(':')
@@ -38,6 +42,13 @@ impl Expected {
                 "rule" => rule = Some(value),
                 "at" => at = Some(value),
                 "contains" => contains.push(value),
+                "only" => {
+                    only = match value.as_str() {
+                        "true" => true,
+                        "false" => false,
+                        other => return Err(format!("`only:` takes true or false, not `{other}`")),
+                    }
+                }
                 other => return Err(format!("unknown key `{other}`")),
             }
         }
@@ -45,6 +56,7 @@ impl Expected {
             rule: rule.ok_or("missing `rule:`")?,
             at: at.ok_or("missing `at:`")?,
             contains,
+            only,
         })
     }
 
@@ -139,7 +151,12 @@ fn verify_case(case: &Path) -> Result<(), String> {
         .map_err(|e| format!("cannot read expected.txt: {e}"))?;
     let expected = Expected::parse(&text).map_err(|e| format!("expected.txt: {e}"))?;
     let outcome = check(&case.join("Cargo.toml"));
-    if outcome.diagnostics.iter().any(|d| expected.matches(d)) {
+    let extra = expected.only
+        && outcome
+            .diagnostics
+            .iter()
+            .any(|d| d.rule.id() != expected.rule);
+    if !extra && outcome.diagnostics.iter().any(|d| expected.matches(d)) {
         return Ok(());
     }
     let got: Vec<String> = outcome
@@ -148,8 +165,9 @@ fn verify_case(case: &Path) -> Result<(), String> {
         .map(ToString::to_string)
         .collect();
     Err(format!(
-        "expected `{}` at `{}`, got: {}",
+        "expected `{}`{} at `{}`, got: {}",
         expected.rule,
+        if expected.only { " only" } else { "" },
         expected.at,
         if got.is_empty() {
             "no diagnostics".to_owned()
@@ -189,6 +207,21 @@ mod tests {
 
         // then
         assert!(!matched);
+    }
+
+    #[test]
+    fn should_require_single_rule_when_only_is_set() {
+        // given
+        let expected =
+            Expected::parse("rule: ARCH-unknown-crate\nat: crates/x\nonly: true\n").unwrap();
+
+        // when
+        let parsed_only = expected.only;
+        let bad = Expected::parse("rule: ARCH-x\nat: y\nonly: maybe\n");
+
+        // then
+        assert!(parsed_only);
+        assert!(bad.unwrap_err().contains("true or false"));
     }
 
     #[test]

@@ -79,6 +79,9 @@ pub struct Reference {
     /// Written in a macro body before a metavariable (`std::$m`): it may expand to any path
     /// below each candidate.
     pub open_tail: bool,
+    /// Written in a macro body after a metavariable (`$m::fs::read`): the candidate is the
+    /// part after it, which may follow any crate.
+    pub open_head: bool,
     /// Path or macro invocation.
     pub kind: RefKind,
 }
@@ -144,8 +147,14 @@ pub fn check(
     adr_exists: &dyn Fn(&str) -> bool,
 ) -> Vec<Diagnostic> {
     let root = metadata.workspace_root.as_std_path();
-    let mut out = Vec::new();
+    let mut out = selector_problems(root, metadata, policy);
     let mut hygiene = rules_hygiene::Hygiene::new(policy, adr_exists);
+    let manifests: Vec<String> = metadata
+        .workspace_packages()
+        .iter()
+        .map(|p| relative(root, p.manifest_path.as_std_path()))
+        .collect();
+    out.extend(hygiene.config(root, &manifests));
     for package in metadata.workspace_packages() {
         let facts = collect_package(root, package);
         for (at, problem) in &facts.problems {
@@ -162,6 +171,106 @@ pub fn check(
     // Line numbers are computed; the parsed sources need not stay in this thread's span map.
     proc_macro2::extra::invalidate_current_thread_spans();
     out
+}
+
+/// Every workspace crate a rule names, as a package name: the crates the rules apply to,
+/// exempt or forbid. A renamed crate would make those rules pass without checking anything.
+fn selector_crates() -> BTreeSet<String> {
+    let mut out: BTreeSet<String> = [
+        rules_purity::DOMAIN,
+        rules_purity::FS_ADAPTER,
+        rules_purity::BOOTSTRAP.0,
+        rules_hygiene::POLL_HELPER.0,
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect();
+    for (package, crates) in rules_purity::ISOLATION {
+        out.insert((*package).to_owned());
+        out.extend(
+            crates
+                .iter()
+                .filter(|c| c.starts_with("preview_"))
+                .map(|c| c.replace('_', "-")),
+        );
+    }
+    out
+}
+
+/// `ARCH-missing-selector`: each crate the rules name must be a workspace member unless
+/// `[semantic] absent` lists it (fixtures with part of the topology), an `absent` entry
+/// must not name a member, and the poll helper's file must exist.
+fn selector_problems(root: &Path, metadata: &Metadata, policy: &Policy) -> Vec<Diagnostic> {
+    let members: BTreeMap<String, &Package> = metadata
+        .workspace_packages()
+        .into_iter()
+        .map(|p| (p.name.to_string(), p))
+        .collect();
+    let absent: BTreeSet<&str> = policy.semantic.absent.iter().map(String::as_str).collect();
+    let mut out = Vec::new();
+    for name in selector_crates() {
+        match (members.contains_key(&name), absent.contains(name.as_str())) {
+            (false, false) => out.push(Diagnostic::new(
+                Rule::MissingSelector,
+                format!(
+                    "the semantic rules name crate `{name}`, which is not in the workspace: a rename would make them pass unchecked; rename the rule's selector too, or list it in [semantic] absent"
+                ),
+                super::POLICY_FILE,
+            )),
+            (true, true) => out.push(Diagnostic::new(
+                Rule::MissingSelector,
+                format!("[semantic] absent lists `{name}`, which is a workspace crate"),
+                super::POLICY_FILE,
+            )),
+            _ => {}
+        }
+    }
+    for name in &absent {
+        if !selector_crates().contains(*name) {
+            out.push(Diagnostic::new(
+                Rule::MissingSelector,
+                format!("[semantic] absent lists `{name}`, which no rule names"),
+                super::POLICY_FILE,
+            ));
+        }
+    }
+    let (helper, file) = rules_hygiene::POLL_HELPER;
+    if let Some(package) = members.get(helper)
+        && let Some(dir) = package.manifest_path.parent()
+        && !dir.as_std_path().join(file).is_file()
+    {
+        out.push(Diagnostic::new(
+            Rule::MissingSelector,
+            format!("the test-sleep exemption names `{file}` in {helper}, which does not exist"),
+            relative(root, &dir.as_std_path().join(file)),
+        ));
+    }
+    out
+}
+
+/// The first candidate of `reference` under a forbidden prefix, rendered. A macro path that
+/// continues with a metavariable (`std::$m`) hits when a forbidden prefix lies below it; one
+/// that starts with a metavariable (`$k::fs::read`) hits when what follows it matches the
+/// rest of a forbidden prefix after its first segment.
+pub fn first_hit(reference: &Reference, forbidden: &[&[&str]]) -> Option<String> {
+    let agree = |a: &[String], b: &[&str]| a.iter().zip(b).all(|(x, y)| x == y);
+    reference.resolved.iter().find_map(|candidate| {
+        forbidden.iter().find_map(|prefix| {
+            if reference.open_head {
+                return (1..prefix.len())
+                    .any(|k| !candidate.is_empty() && agree(candidate, &prefix[k..]))
+                    .then(|| prefix.join("::"));
+            }
+            let related = agree(candidate, prefix);
+            if related && candidate.len() >= prefix.len() {
+                Some(candidate.join("::"))
+            } else if related && reference.open_tail {
+                Some(prefix.join("::"))
+            } else {
+                None
+            }
+        })
+    })
 }
 
 fn collect_package(root: &Path, package: &Package) -> Facts {
@@ -325,8 +434,8 @@ impl<'a> Loader<'a> {
                         let mut inner_ctx = Place {
                             module: child,
                             mod_dir: mod_dir.clone(),
-                            path_base: match paths.first() {
-                                Some(Ok(p)) => ctx.path_base.join(p),
+                            path_base: match paths.iter().find(|p| !p.conditional) {
+                                Some(PathAttr { value: Ok(p), .. }) => ctx.path_base.join(p),
                                 _ => mod_dir,
                             },
                             test,
@@ -381,47 +490,50 @@ impl<'a> Loader<'a> {
         module: Vec<String>,
         test: bool,
         line: usize,
-        paths: &[Result<String, ()>],
+        paths: &[PathAttr],
     ) {
         let at = format!("{}:{line}", ctx.rel);
-        let mut candidates: Vec<(PathBuf, bool)> = Vec::new();
+        if paths.iter().any(|p| p.value.is_err()) {
+            self.problem(at, non_literal("#[path]"));
+            return;
+        }
+        // Every `#[path]`, conditional or not, names a file that must exist. Without an
+        // unconditional one, the default file is what the other `cfg` branches load.
+        let mut existing: Vec<(PathBuf, bool)> = Vec::new();
         for path in paths {
-            match path {
-                Ok(p) => candidates.push((ctx.path_base.join(p), true)),
-                Err(()) => {
-                    self.problem(at.clone(), non_literal("#[path]"));
+            if let Ok(p) = &path.value {
+                let file = ctx.path_base.join(p);
+                if !file.is_file() {
+                    self.problem(
+                        at.clone(),
+                        format!(
+                            "module `{name}` names `{}` in a #[path], which does not exist",
+                            relative(self.root, &file)
+                        ),
+                    );
                     return;
                 }
+                existing.push((file, true));
             }
         }
-        let explicit = !candidates.is_empty();
         let defaults = [
             ctx.mod_dir.join(format!("{name}.rs")),
             ctx.mod_dir.join(name).join("mod.rs"),
         ];
-        let existing: Vec<(PathBuf, bool)> = if explicit {
-            candidates
-                .into_iter()
-                .filter(|(p, _)| p.is_file())
-                .collect()
-        } else {
-            defaults
-                .iter()
-                .find(|p| p.is_file())
-                .map(|p| (p.clone(), p.ends_with("mod.rs")))
-                .into_iter()
-                .collect()
-        };
-        if existing.is_empty() {
-            let tried = if explicit {
-                "its #[path]".to_owned()
-            } else {
+        if paths.iter().all(|p| p.conditional) {
+            existing.extend(
                 defaults
                     .iter()
-                    .map(|p| format!("`{}`", relative(self.root, p)))
-                    .collect::<Vec<_>>()
-                    .join(" or ")
-            };
+                    .find(|p| p.is_file())
+                    .map(|p| (p.clone(), p.ends_with("mod.rs"))),
+            );
+        }
+        if existing.is_empty() {
+            let tried = defaults
+                .iter()
+                .map(|p| format!("`{}`", relative(self.root, p)))
+                .collect::<Vec<_>>()
+                .join(" or ");
             self.problem(
                 at,
                 format!("module `{name}` has no source file (tried {tried})"),
@@ -479,20 +591,32 @@ pub fn include_path(tokens: &proc_macro2::TokenStream) -> Option<String> {
         .map(|lit| lit.value())
 }
 
-/// `#[path = ".."]` and `#[cfg_attr(.., path = "..")]` values; `Err` for a non-literal.
-fn path_attributes(attrs: &[Attribute]) -> Vec<Result<String, ()>> {
+/// One `#[path]` of a module declaration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PathAttr {
+    /// The literal path; `Err` when it is not a string literal.
+    value: Result<String, ()>,
+    /// Given through `cfg_attr`, so it applies only in some `cfg` branches.
+    conditional: bool,
+}
+
+/// `#[path = ".."]` and every `#[cfg_attr(.., path = "..")]` branch.
+fn path_attributes(attrs: &[Attribute]) -> Vec<PathAttr> {
     let mut out = Vec::new();
     for attr in attrs {
-        for meta in effective_metas(&attr.meta) {
-            if let Meta::NameValue(nv) = &meta
+        for (i, meta) in effective_metas(&attr.meta).iter().enumerate() {
+            if let Meta::NameValue(nv) = meta
                 && nv.path.is_ident("path")
             {
-                out.push(match &nv.value {
-                    syn::Expr::Lit(syn::ExprLit {
-                        lit: syn::Lit::Str(s),
-                        ..
-                    }) => Ok(s.value()),
-                    _ => Err(()),
+                out.push(PathAttr {
+                    value: match &nv.value {
+                        syn::Expr::Lit(syn::ExprLit {
+                            lit: syn::Lit::Str(s),
+                            ..
+                        }) => Ok(s.value()),
+                        _ => Err(()),
+                    },
+                    conditional: i > 0,
                 });
             }
         }
@@ -525,12 +649,23 @@ pub fn is_test_only(attrs: &[Attribute]) -> bool {
     })
 }
 
-/// Whether `attr` marks a test function: its path ends in `test`.
-pub fn is_test_attribute(attr: &Attribute) -> bool {
-    attr.path()
+/// The attributes that mark a test function. Any other attribute does not, so a test
+/// framework the checker does not know is not treated as test code.
+pub const TEST_ATTRIBUTES: &[&[&str]] = &[&["test"], &["tokio", "test"]];
+
+/// Whether `path` is one of [`TEST_ATTRIBUTES`].
+pub fn is_test_path(path: &syn::Path) -> bool {
+    let segments: Vec<String> = path
         .segments
-        .last()
-        .is_some_and(|s| s.ident == "test")
+        .iter()
+        .map(|s| paths::name(&s.ident))
+        .collect();
+    path.leading_colon.is_none() && TEST_ATTRIBUTES.iter().any(|t| *t == segments.as_slice())
+}
+
+/// Whether `attr` marks a test function (`#[test]`, `#[tokio::test]`).
+pub fn is_test_attribute(attr: &Attribute) -> bool {
+    is_test_path(attr.path())
 }
 
 /// Whether a `cfg` predicate can only hold when compiling tests.
@@ -562,6 +697,50 @@ pub fn relative(root: &Path, path: &Path) -> String {
         .unwrap_or(path)
         .to_string_lossy()
         .replace('\\', "/")
+}
+
+/// Builders for the rule modules' unit tests.
+#[cfg(test)]
+pub mod testing {
+    use super::*;
+
+    /// A policy with every rule crate in its usual category.
+    pub fn policy() -> Policy {
+        super::super::policy::parse(
+            "schema = 1\n[workspace]\nproduction = [\"preview-domain\", \"preview-application\", \"preview-adapter-fs\", \"preview-adapter-http\", \"preview-composition\", \"preview-cli\"]\ntest_only = [\"preview-testkit\", \"preview-conformance\"]\n[dependencies.normal]\n",
+        )
+        .unwrap()
+    }
+
+    /// The facts of a library package named `package` whose files (relative to the package
+    /// directory, the first being the root `src/lib.rs`) hold `files`.
+    pub fn facts_for(package: &str, files: &[(&str, &str)]) -> Facts {
+        let dir = tempfile::TempDir::new().unwrap();
+        let root = dir.path();
+        let package_dir = root.join("crates").join(package);
+        for (rel, text) in files {
+            let path = package_dir.join(rel);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, text).unwrap();
+        }
+        let lib = package_dir.join(files[0].0);
+        let mut loader = Loader::new(root);
+        loader.load_file(&lib, Vec::new(), lib.parent().unwrap(), false, 0, None);
+        let mut facts = Facts {
+            package: package.to_owned(),
+            dir: format!("crates/{package}"),
+            problems: loader.problems.clone(),
+            sources: loader.texts.clone(),
+            ..Facts::default()
+        };
+        collect::collect_target(root, &loader.units, BTreeMap::new(), &mut facts);
+        facts
+    }
+
+    /// Diagnostics as their rendered lines.
+    pub fn rendered(diagnostics: &[Diagnostic]) -> Vec<String> {
+        diagnostics.iter().map(ToString::to_string).collect()
+    }
 }
 
 #[cfg(test)]
@@ -606,7 +785,19 @@ mod tests {
         let paths = path_attributes(&attrs);
 
         // then
-        assert_eq!(paths, [Ok("u.rs".to_owned()), Err(())]);
+        assert_eq!(
+            paths,
+            [
+                PathAttr {
+                    value: Ok("u.rs".to_owned()),
+                    conditional: true
+                },
+                PathAttr {
+                    value: Err(()),
+                    conditional: true
+                }
+            ]
+        );
     }
 
     #[test]

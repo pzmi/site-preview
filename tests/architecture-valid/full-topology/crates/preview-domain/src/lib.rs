@@ -3,6 +3,9 @@
 
 mod clock;
 
+#[cfg_attr(target_os = "macos", path = "platform_mac.rs")]
+mod platform;
+
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
@@ -46,5 +49,19 @@ mod tests {
 
         // then
         assert_eq!(indexed.len(), std::env::args().count().min(1));
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn should_keep_every_name_when_list_is_indexed(count in 0usize..8) {
+            // given
+            let names = vec!["n"; count];
+
+            // when
+            let indexed = index(&names);
+
+            // then
+            proptest::prop_assert_eq!(indexed.len(), count);
+        }
     }
 }

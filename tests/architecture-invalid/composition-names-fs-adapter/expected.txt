@@ -1,0 +1,4 @@
+rule: ARCH-layer-isolation
+at: crates/preview-composition/src/lib.rs:6
+contains: `preview_adapter_fs::read`
+only: true

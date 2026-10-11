@@ -1,0 +1,4 @@
+rule: ARCH-missing-selector
+at: architecture.toml
+contains: crate `preview-domain`, which is not in the workspace
+only: true

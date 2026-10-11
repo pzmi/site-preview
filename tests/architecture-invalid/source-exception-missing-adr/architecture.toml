@@ -17,3 +17,6 @@ preview-application = { gitdep = ["default"] }
 
 [exceptions.sources]
 "git+https://example.invalid/gitdep.git" = { adr = "9999" }
+
+[semantic]
+absent = ["preview-adapter-fs", "preview-conformance"]

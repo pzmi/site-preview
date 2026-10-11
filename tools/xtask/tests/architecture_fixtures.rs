@@ -43,17 +43,26 @@ fn cases() -> Vec<String> {
 
 /// Whether one line of `output` is a diagnostic satisfying `expected`.
 fn matches(output: &str, expected: &str) -> Result<bool, String> {
-    let (mut rule, mut at, mut contains) = (None, None, Vec::new());
+    let (mut rule, mut at, mut contains, mut only) = (None, None, Vec::new(), false);
     for line in expected.lines().filter(|l| !l.trim().is_empty()) {
         match line.split_once(':').map(|(k, v)| (k.trim(), v.trim())) {
             Some(("rule", v)) => rule = Some(v),
             Some(("at", v)) => at = Some(v),
             Some(("contains", v)) => contains.push(v),
+            Some(("only", v)) => only = v == "true",
             _ => return Err(format!("bad expected.txt line: {line}")),
         }
     }
     let rule = rule.ok_or("expected.txt has no rule")?;
     let at = at.ok_or("expected.txt has no at")?;
+    let prefix = format!("{rule}: ");
+    if only
+        && output
+            .lines()
+            .any(|line| line.starts_with("ARCH-") && !line.starts_with(&prefix))
+    {
+        return Ok(false);
+    }
     Ok(output.lines().any(|line| {
         let Some((message, location)) = line.rsplit_once(" (at ") else {
             return false;
@@ -118,6 +127,15 @@ fn should_have_fixture_when_task_names_it() {
         "missing-crate",
         "empty-selector",
         "duplicate-category",
+        "reversed-edge",
+        "testkit-in-production",
+        "transitive-test-only",
+        "undeclared-build-dep",
+        "cli-bypasses-composition",
+        "domain-uses-tokio",
+        "application-tokio-rt-feature",
+        "git-dependency",
+        "unlisted-external",
         "domain-std-fs",
         "domain-aliased-fs",
         "domain-tokio-via-macro-path",

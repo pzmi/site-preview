@@ -3,11 +3,13 @@
 //! no sleeps in tests outside the bounded poll helper, and named, structured tests.
 
 use std::collections::BTreeSet;
+use std::fs;
+use std::path::Path;
 
 use super::super::POLICY_FILE;
 use super::super::policy::{LintException, Policy};
 use super::super::report::{Diagnostic, Rule};
-use super::{Context, Facts, RefKind, Site};
+use super::{Context, Facts, RefKind, Site, first_hit};
 
 /// Macros that mark unfinished code, with the clippy lint an exception names.
 const UNFINISHED: &[(&str, &str)] = &[
@@ -16,17 +18,26 @@ const UNFINISHED: &[(&str, &str)] = &[
     ("dbg", "clippy::dbg_macro"),
 ];
 
-/// Calls that block a test on wall-clock time.
+/// Calls that block a test on wall-clock time: sleeps, timed parks and receives, and tokio's
+/// timers. A method call on a value (`rx.recv_timeout(..)`) is not type-resolved; only the
+/// path form is seen (ADR 0035).
 const SLEEPS: &[&[&str]] = &[
     &["std", "thread", "sleep"],
     &["std", "thread", "sleep_ms"],
+    &["std", "thread", "park_timeout"],
+    &["std", "sync", "mpsc", "Receiver", "recv_timeout"],
+    &["std", "sync", "mpsc", "Receiver", "recv_deadline"],
     &["tokio", "time", "sleep"],
     &["tokio", "time", "sleep_until"],
+    &["tokio", "time", "timeout"],
+    &["tokio", "time", "timeout_at"],
+    &["tokio", "time", "interval"],
+    &["tokio", "time", "interval_at"],
 ];
 
 /// The bounded polling helper (TEST-01): the one place test support may sleep, in its
 /// production code. Package and file inside it.
-const POLL_HELPER: (&str, &str) = ("preview-testkit", "src/poll.rs");
+pub const POLL_HELPER: (&str, &str) = ("preview-testkit", "src/poll.rs");
 
 /// The hygiene rules over all packages: suppressions are matched against
 /// `[[exceptions.lints]]`, and entries that match nothing are reported by [`Hygiene::finish`].
@@ -54,6 +65,107 @@ impl<'a> Hygiene<'a> {
         sleeps(facts, self.policy, &mut out);
         tests(facts, &mut out);
         out
+    }
+
+    /// `ARCH-lint-config`: lints relaxed outside Rust source. `root` is the workspace root and
+    /// `manifests` every member's manifest, relative to it.
+    pub fn config(&mut self, root: &Path, manifests: &[String]) -> Vec<Diagnostic> {
+        let mut out = Vec::new();
+        let workspace_lints = self.workspace_lints(root, &mut out);
+        for manifest in manifests {
+            let lints = read_toml(root, manifest, &mut out).and_then(|t| t.get("lints").cloned());
+            let inherits = lints.as_ref().is_some_and(|l| {
+                l.as_table().is_some_and(|t| {
+                    t.len() == 1 && t.get("workspace") == Some(&toml::Value::Boolean(true))
+                })
+            });
+            let problem = match (&lints, inherits) {
+                (Some(_), false) => Some("its [lints] must be exactly `workspace = true`"),
+                (None, _) if workspace_lints => Some(
+                    "it has no `[lints] workspace = true`, so it inherits none of [workspace.lints]",
+                ),
+                _ => None,
+            };
+            if let Some(problem) = problem {
+                out.push(Diagnostic::new(Rule::LintConfig, problem, manifest.clone()));
+            }
+        }
+        let mut dirs: Vec<String> = vec![String::new()];
+        dirs.extend(
+            manifests
+                .iter()
+                .filter_map(|m| m.rsplit_once('/').map(|(dir, _)| format!("{dir}/"))),
+        );
+        for dir in &dirs {
+            for name in [".cargo/config.toml", ".cargo/config"] {
+                let rel = format!("{dir}{name}");
+                if root.join(&rel).is_file()
+                    && let Some(config) = read_toml(root, &rel, &mut out)
+                {
+                    rustflags(&config, &rel, &mut out);
+                }
+            }
+            for name in ["clippy.toml", ".clippy.toml"] {
+                let rel = format!("{dir}{name}");
+                if root.join(&rel).is_file()
+                    && let Some(config) = read_toml(root, &rel, &mut out)
+                {
+                    for (key, value) in &config {
+                        if key.starts_with("allow") && value != &toml::Value::Boolean(false) {
+                            out.push(Diagnostic::new(
+                                Rule::LintConfig,
+                                format!("`{key} = {value}` relaxes clippy outside the source"),
+                                rel.clone(),
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// Reports `allow` levels in the root `[workspace.lints]` that no exception approves;
+    /// returns whether the table exists.
+    fn workspace_lints(&mut self, root: &Path, out: &mut Vec<Diagnostic>) -> bool {
+        let Some(manifest) = read_toml(root, "Cargo.toml", out) else {
+            return false;
+        };
+        let Some(tools) = manifest
+            .get("workspace")
+            .and_then(|w| w.get("lints"))
+            .and_then(toml::Value::as_table)
+        else {
+            return false;
+        };
+        let site = Site {
+            file: "Cargo.toml".to_owned(),
+            line: 0,
+            context: Context::Production,
+        };
+        for (tool, lints) in tools {
+            for (lint, level) in lints.as_table().into_iter().flatten() {
+                let level = level
+                    .as_str()
+                    .or_else(|| level.get("level").and_then(toml::Value::as_str));
+                if level != Some("allow") {
+                    continue;
+                }
+                let name = if tool == "rust" {
+                    lint.clone()
+                } else {
+                    format!("{tool}::{lint}")
+                };
+                if let Err(reason) = self.excepted(&site, &name) {
+                    out.push(Diagnostic::new(
+                        Rule::LintConfig,
+                        format!("[workspace.lints] allows `{name}`; {reason}"),
+                        "Cargo.toml",
+                    ));
+                }
+            }
+        }
+        true
     }
 
     /// Entries in `[[exceptions.lints]]` that no suppression used.
@@ -164,6 +276,70 @@ impl<'a> Hygiene<'a> {
     }
 }
 
+/// Reads `rel` under `root` as TOML; a file that does not read or parse is reported.
+fn read_toml(root: &Path, rel: &str, out: &mut Vec<Diagnostic>) -> Option<toml::Table> {
+    let parsed = fs::read_to_string(root.join(rel))
+        .map_err(|e| e.to_string())
+        .and_then(|text| text.parse::<toml::Table>().map_err(|e| e.to_string()));
+    match parsed {
+        Ok(table) => Some(table),
+        Err(err) => {
+            out.push(Diagnostic::new(
+                Rule::LintConfig,
+                format!(
+                    "cannot read lint configuration: {}",
+                    err.lines().next().unwrap_or("")
+                ),
+                rel,
+            ));
+            None
+        }
+    }
+}
+
+/// Reports rustflags in a Cargo config that allow or cap lints.
+fn rustflags(config: &toml::Table, rel: &str, out: &mut Vec<Diagnostic>) {
+    let mut lists: Vec<&toml::Value> = Vec::new();
+    lists.extend(config.get("build").and_then(|b| b.get("rustflags")));
+    for target in config
+        .get("target")
+        .and_then(toml::Value::as_table)
+        .into_iter()
+        .flat_map(|t| t.values())
+    {
+        lists.extend(target.get("rustflags"));
+    }
+    lists.extend(config.get("env").and_then(|e| e.get("RUSTFLAGS")));
+    for value in lists {
+        let flags: Vec<String> = match value {
+            toml::Value::String(s) => s.split_whitespace().map(str::to_owned).collect(),
+            toml::Value::Array(a) => a
+                .iter()
+                .filter_map(toml::Value::as_str)
+                .map(str::to_owned)
+                .collect(),
+            toml::Value::Table(t) => t
+                .get("value")
+                .and_then(toml::Value::as_str)
+                .map(|s| s.split_whitespace().map(str::to_owned).collect())
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        };
+        for flag in flags {
+            if flag.starts_with("-A")
+                || flag.starts_with("--allow")
+                || flag.starts_with("--cap-lints")
+            {
+                out.push(Diagnostic::new(
+                    Rule::LintConfig,
+                    format!("rustflags `{flag}` allow or cap lints outside the source"),
+                    rel,
+                ));
+            }
+        }
+    }
+}
+
 fn sleeps(facts: &Facts, policy: &Policy, out: &mut Vec<Diagnostic>) {
     let test_crate = policy
         .workspace
@@ -178,19 +354,13 @@ fn sleeps(facts: &Facts, policy: &Policy, out: &mut Vec<Diagnostic>) {
         if !test || poll_helper {
             continue;
         }
-        let hit = reference.resolved.iter().find(|candidate| {
-            SLEEPS.iter().any(|sleep| {
-                candidate.len() >= sleep.len()
-                    && candidate.iter().zip(sleep.iter()).all(|(a, b)| a == b)
-            })
-        });
-        if let Some(candidate) = hit {
+        if let Some(candidate) = first_hit(reference, SLEEPS) {
             out.push(Diagnostic::new(
                 Rule::TestSleep,
                 format!(
                     "{} test code calls `{}`: wait on an event, an injected clock or `{}::poll::wait_until` instead",
                     facts.package,
-                    candidate.join("::"),
+                    candidate,
                     POLL_HELPER.0.replace('-', "_")
                 ),
                 reference.site.at(),
@@ -276,6 +446,50 @@ fn given_when_then(body: &[&str]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn should_report_lint_config_when_relaxed_outside_source() {
+        // given
+        let dir = tempfile::TempDir::new().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join(".cargo")).unwrap();
+        fs::create_dir_all(root.join("crates/a")).unwrap();
+        fs::write(
+            root.join("Cargo.toml"),
+            "[workspace.lints.rust]\ndead_code = \"allow\"\nunused = { level = \"allow\", priority = 1 }\n[workspace.lints.clippy]\nall = \"deny\"\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("crates/a/Cargo.toml"),
+            "[package]\nname = \"a\"\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join(".cargo/config.toml"),
+            "[target.x86_64-unknown-linux-gnu]\nrustflags = \"--cap-lints=warn\"\n",
+        )
+        .unwrap();
+        let mut policy = super::super::testing::policy();
+        policy.exceptions.lints.push(LintException {
+            path: "Cargo.toml".to_owned(),
+            lint: "unused".to_owned(),
+            adr: "0001".to_owned(),
+        });
+        let adr_exists = |adr: &str| adr == "0001";
+        let mut hygiene = Hygiene::new(&policy, &adr_exists);
+
+        // when
+        let got = super::super::testing::rendered(
+            &hygiene.config(root, &["crates/a/Cargo.toml".to_owned()]),
+        );
+
+        // then
+        assert_eq!(got.len(), 3, "{got:?}");
+        assert!(got[0].contains("allows `dead_code`"), "{got:?}");
+        assert!(got[1].contains("inherits none"), "{got:?}");
+        assert!(got[2].contains("`--cap-lints=warn`"), "{got:?}");
+        assert!(hygiene.finish().is_empty());
+    }
 
     #[test]
     fn should_accept_name_when_it_has_outcome_and_condition() {

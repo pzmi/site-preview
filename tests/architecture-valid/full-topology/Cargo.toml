@@ -11,3 +11,6 @@ members = [
     "crates/preview-conformance",
     "tools/xtask",
 ]
+
+[workspace.lints.rust]
+unsafe_code = "forbid"

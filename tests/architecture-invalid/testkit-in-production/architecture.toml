@@ -11,3 +11,6 @@ preview-adapter-http = ["preview-application", "preview-domain", "preview-testki
 preview-composition = ["preview-domain", "preview-application", "preview-adapter-http"]
 preview-cli = ["preview-composition"]
 preview-testkit = ["preview-domain", "preview-application"]
+
+[semantic]
+absent = ["preview-adapter-fs", "preview-conformance"]

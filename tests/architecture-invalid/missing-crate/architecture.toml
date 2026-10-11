@@ -5,3 +5,6 @@ production = ["app", "gone"]
 
 [dependencies.normal]
 app = []
+
+[semantic]
+absent = ["preview-adapter-fs", "preview-adapter-http", "preview-application", "preview-cli", "preview-composition", "preview-conformance", "preview-domain", "preview-testkit"]

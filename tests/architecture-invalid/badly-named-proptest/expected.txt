@@ -1,0 +1,4 @@
+rule: ARCH-test-name
+at: crates/preview-domain/src/lib.rs:6
+contains: `roundtrip`
+only: true

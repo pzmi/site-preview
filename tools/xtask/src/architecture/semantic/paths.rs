@@ -378,6 +378,9 @@ pub struct TokenPath {
     /// It continues with a macro metavariable (`std::$m`), so it may expand to anything
     /// below the written prefix.
     pub open_tail: bool,
+    /// It starts with a macro metavariable (`$m::fs::read`): `path` holds the segments
+    /// after it, which may follow any crate.
+    pub open_head: bool,
     /// It is followed by `!`: a macro invocation.
     pub is_macro: bool,
 }
@@ -395,8 +398,8 @@ pub struct TokenScan {
     pub unsafe_lines: Vec<usize>,
     /// Attributes (`#[..]` and `#![..]`) that parse, with the line of their `#`.
     pub attributes: Vec<(syn::Meta, usize)>,
-    /// Functions after a test attribute: name and line of the attribute.
-    pub test_fns: Vec<(String, usize)>,
+    /// Functions after a test attribute.
+    pub test_fns: Vec<TokenTest>,
 }
 
 /// Scans `tokens` (a macro body or invocation) for paths, `use` and `extern crate` items and
@@ -452,11 +455,7 @@ fn attribute_at(trees: &[TokenTree], start: usize, scan: &mut TokenScan) {
     let Ok(meta) = syn::parse2::<syn::Meta>(group.stream()) else {
         return;
     };
-    let is_test = meta
-        .path()
-        .segments
-        .last()
-        .is_some_and(|s| s.ident == "test");
+    let is_test = super::is_test_path(meta.path());
     scan.attributes.push((meta, line));
     if !is_test {
         return;
@@ -465,13 +464,37 @@ fn attribute_at(trees: &[TokenTree], start: usize, scan: &mut TokenScan) {
     let fn_at = trees[after..]
         .iter()
         .take(16)
-        .position(|t| matches!(t, TokenTree::Ident(i) if i == "fn"));
-    let name = fn_at.and_then(|k| match trees.get(after + k + 1) {
+        .position(|t| matches!(t, TokenTree::Ident(i) if i == "fn"))
+        .map(|k| after + k);
+    let name = fn_at.and_then(|k| match trees.get(k + 1) {
         Some(TokenTree::Ident(ident)) => Some(name(ident)),
         _ => None,
     });
-    scan.test_fns
-        .push((name.unwrap_or_else(|| "<generated>".to_owned()), line));
+    // The body is the first brace group after the name (parameters and a return type,
+    // which have no braces in the test macros the checker reads, come before it).
+    let body = fn_at.and_then(|k| {
+        trees[k..].iter().take(64).find_map(|t| match t {
+            TokenTree::Group(g) if g.delimiter() == Delimiter::Brace => {
+                Some((g.span_open().start().line, g.span_close().end().line))
+            }
+            _ => None,
+        })
+    });
+    scan.test_fns.push(TokenTest {
+        name: name.unwrap_or_else(|| "<generated>".to_owned()),
+        line,
+        body,
+    });
+}
+
+/// A function after a test attribute in a token stream.
+pub struct TokenTest {
+    /// Its name, or `<generated>` when none follows.
+    pub name: String,
+    /// Line of the attribute.
+    pub line: usize,
+    /// First and last line of its body, when one follows.
+    pub body: Option<(usize, usize)>,
 }
 
 /// Parses `use ...;` or `extern crate ...;` starting at `start`, if it is one.
@@ -503,6 +526,7 @@ fn is_path_sep(trees: &[TokenTree], i: usize) -> bool {
 /// The path starting at `trees[i]`, if one starts there, and the index after it.
 fn path_at(trees: &[TokenTree], i: usize) -> Option<(TokenPath, usize)> {
     let previous = i.checked_sub(1).and_then(|p| trees.get(p));
+    let mut open_head = false;
     let (absolute, mut j, line, mut segments) = match &trees[i] {
         TokenTree::Ident(ident) => {
             let name = name(ident);
@@ -522,6 +546,14 @@ fn path_at(trees: &[TokenTree], i: usize) -> Option<(TokenPath, usize)> {
                 ident.span().start().line,
                 vec!["$crate".to_owned()],
             ),
+            // `$m::fs::read`: the head is whatever the caller passes.
+            Some(TokenTree::Ident(ident)) if is_path_sep(trees, i + 2) => match trees.get(i + 4) {
+                Some(TokenTree::Ident(next)) => {
+                    open_head = true;
+                    (false, i + 5, ident.span().start().line, vec![name(next)])
+                }
+                _ => return None,
+            },
             _ => return None,
         },
         TokenTree::Punct(_) if is_path_sep(trees, i) => {
@@ -563,6 +595,7 @@ fn path_at(trees: &[TokenTree], i: usize) -> Option<(TokenPath, usize)> {
             path: Written { absolute, segments },
             line,
             open_tail,
+            open_head,
             is_macro,
         },
         j,
