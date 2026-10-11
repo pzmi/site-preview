@@ -40,3 +40,4 @@ This directory holds the decisions behind site-preview, one file per decision, i
 | [0034](0034-cargo-bylaw-qualification.md) | cargo-bylaw is not qualified; semantic rules use syn | Proposed |
 | [0035](0035-semantic-rules-scope-and-resolution.md) | Semantic rules: what is analysed and how names resolve | Proposed |
 | [0036](0036-hygiene-and-test-quality-rules.md) | Hygiene and test-quality rules and their exceptions | Proposed |
+| [0037](0037-host-origin-parsing-and-core-net.md) | Host and Origin parsing details; `core::net` in the domain | Proposed |
