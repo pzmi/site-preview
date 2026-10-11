@@ -1,0 +1,5 @@
+error[E0451]: field `fd` of struct `preview_adapter_fs::RootDir` is private
+ --> tests/compile-fail/root_dir_from_fd.rs:6:15
+  |
+6 |     RootDir { fd }
+  |               ^^ private field

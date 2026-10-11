@@ -44,11 +44,11 @@ preview-cli = { clap = ["default", "derive", "std", "help", "usage", "error-cont
 xtask = { cargo_metadata = ["default"], clap = ["default", "derive"], proc-macro2 = ["span-locations"], serde = ["default", "derive"], syn = ["parsing", "full", "visit", "clone-impls"], toml = ["default"] }
 
 [external.dev]
-preview-adapter-fs = { tempfile = ["default"] }
+preview-adapter-fs = { tempfile = ["default"], trybuild = ["default"] }
 preview-adapter-http = { http-body-util = ["default"], tokio = ["rt", "macros"], tower = ["util"] }
 preview-cli = { assert_cmd = ["default"], predicates = ["default"] }
 preview-application = { proptest = ["default"], tokio = ["rt", "macros"] }
-preview-domain = { proptest = ["default"] }
+preview-domain = { proptest = ["default"], trybuild = ["default"] }
 xtask = { tempfile = ["default"] }
 
 [external.build]

@@ -20,7 +20,7 @@ fixture belongs to a rule). A rule without a verified negative case is rejected
 | compiler | rustc and clippy through `[workspace.lints]` (`unsafe_code = "forbid"`, `unused_must_use`, `missing_docs`, `clippy::all`, `dbg_macro`, `todo`, `unimplemented`), run by `cargo xtask quick` | `Cargo.toml` |
 | xtask graph | the checker reads `cargo metadata --locked` and the manifests and compares them with `architecture.toml` | `tools/xtask/src/architecture/` (`policy.rs`, `graph.rs`, `external.rs`, `inventory.rs`) |
 | xtask semantic | the checker parses sources with `syn` and resolves names (ADR 0035) | `tools/xtask/src/architecture/semantic/` |
-| trybuild | compile-fail API fixtures; planned by ARCH-08, none exist yet | not yet |
+| trybuild | compile-fail API fixtures that pin private fields and consuming receivers (ARCH-08); the `.stderr` snapshots are the expected diagnostics | `crates/preview-domain/tests/compile-fail/`, `crates/preview-adapter-fs/tests/compile-fail/` |
 
 Every rule below is enforced by the xtask checker. The compiler lints are a second line for
 `unsafe`, `todo!`, `unimplemented!` and `dbg!`: the checker still reports them, so the rule

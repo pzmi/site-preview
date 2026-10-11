@@ -1,0 +1,5 @@
+error[E0616]: field `fd` of struct `OpenedFile` is private
+ --> tests/compile-fail/opened_file_fd_field.rs:5:23
+  |
+5 |     let _ = &mut file.fd;
+  |                       ^^ private field

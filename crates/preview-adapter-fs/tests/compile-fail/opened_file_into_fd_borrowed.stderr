@@ -1,0 +1,13 @@
+error[E0507]: cannot move out of `*file` which is behind a mutable reference
+ --> tests/compile-fail/opened_file_into_fd_borrowed.rs:6:15
+  |
+6 |     let _fd = file.into_fd();
+  |               ^^^^ --------- `*file` moved due to this method call
+  |               |
+  |               move occurs because `*file` has type `OpenedFile`, which does not implement the `Copy` trait
+  |
+note: `OpenedFile::into_fd` takes ownership of the receiver `self`, which moves `*file`
+ --> src/capability.rs
+  |
+  |     pub fn into_fd(self) -> OwnedFd {
+  |                    ^^^^

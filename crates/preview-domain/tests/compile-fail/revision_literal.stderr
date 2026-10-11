@@ -1,0 +1,11 @@
+error[E0423]: cannot initialize a tuple struct which contains private fields
+ --> tests/compile-fail/revision_literal.rs:7:38
+  |
+7 |     let _ = SiteState::new(instance, Revision(7));
+  |                                      ^^^^^^^^
+  |
+note: constructor is not visible here due to private fields
+ --> src/site_state.rs
+  |
+  | pub struct Revision(u64);
+  |                     ^^^ private field

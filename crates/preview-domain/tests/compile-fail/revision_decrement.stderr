@@ -1,0 +1,5 @@
+error[E0616]: field `0` of struct `Revision` is private
+ --> tests/compile-fail/revision_decrement.rs:6:14
+  |
+6 |     revision.0 -= 1;
+  |              ^ private field
