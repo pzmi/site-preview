@@ -12,3 +12,4 @@ publish = false
 workspace = true
 
 [dependencies]
+percent-encoding = "2.3.2"

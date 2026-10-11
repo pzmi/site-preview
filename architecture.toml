@@ -36,6 +36,7 @@ xtask = []
 # its default features), or is "*" for any. A crate allowed under `normal` is also allowed
 # as a dev-dependency.
 [external.normal]
+preview-domain = { percent-encoding = ["default"] }
 preview-cli = { clap = ["default", "derive", "std", "help", "usage", "error-context"] }
 xtask = { cargo_metadata = ["default"], clap = ["default", "derive"], proc-macro2 = ["span-locations"], serde = ["default", "derive"], syn = ["parsing", "full", "visit", "clone-impls"], toml = ["default"] }
 
