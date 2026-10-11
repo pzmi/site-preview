@@ -12,6 +12,7 @@ pub use request_policy::{
     Authority, AuthorityHost, BoundAddr, HostDecision, HostPolicy, HostReject, OriginDecision,
     OriginPolicy, OriginReject,
 };
+pub mod eligibility;
 pub mod path;
 
 pub use path::{Component, PathRefusal, SitePath, decode_request_path};
