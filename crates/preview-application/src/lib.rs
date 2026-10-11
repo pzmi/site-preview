@@ -25,4 +25,5 @@ pub use ports::{
     ChangeBatch, ChangeSource, Clock, ContentFile, ContentRefusal, ForbiddenReason, Opened,
     SiteContent,
 };
+pub use queries::{ForbiddenCause, ResolveRequest, Resolved};
 pub use reload_state::{Published, ReloadClosed, ReloadState, StateSubscription};

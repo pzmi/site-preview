@@ -464,6 +464,7 @@ name = "preview-application"
 version = "0.1.0"
 dependencies = [
  "preview-domain",
+ "preview-testkit",
  "proptest",
  "tokio",
 ]
