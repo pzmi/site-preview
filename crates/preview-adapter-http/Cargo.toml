@@ -12,5 +12,13 @@ publish = false
 workspace = true
 
 [dependencies]
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
 preview-application = { path = "../preview-application" }
 preview-domain = { path = "../preview-domain" }
+tokio = { version = "1.53.2", default-features = false, features = ["rt"] }
+
+[dev-dependencies]
+http-body-util = "0.1.5"
+preview-testkit = { path = "../preview-testkit" }
+tokio = { version = "1.53.2", default-features = false, features = ["rt", "macros"] }
+tower = { version = "0.5", features = ["util"] }
