@@ -42,6 +42,7 @@ xtask = { cargo_metadata = ["default"], clap = ["default", "derive"], proc-macro
 
 [external.dev]
 preview-cli = { assert_cmd = ["default"], predicates = ["default"] }
+preview-domain = { proptest = ["default"] }
 xtask = { tempfile = ["default"] }
 
 [external.build]
