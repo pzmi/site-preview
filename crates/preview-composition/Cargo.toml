@@ -17,4 +17,4 @@ preview-application = { path = "../preview-application" }
 preview-adapter-fs = { path = "../preview-adapter-fs" }
 preview-adapter-http = { path = "../preview-adapter-http" }
 tokio = { version = "1.53.2", default-features = false, features = ["rt-multi-thread", "net", "signal"] }
-axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
+axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio"] }

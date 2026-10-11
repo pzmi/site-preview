@@ -6,8 +6,10 @@
 all-features = true
 
 [advisories]
-# Unmaintained crates are reported but do not fail the stage; a vulnerability or a yanked
-# crate does. Each ignore needs the advisory id, the reason and an ADR.
+# A vulnerability or a yanked crate fails the stage at any depth. `unmaintained` is a scope
+# (cargo-deny 0.18 and later): "workspace" fails on an unmaintained crate that a workspace
+# member depends on directly, and does not report one reached only transitively (ADR 0041).
+# Each ignore needs the advisory id, the reason and an ADR.
 unmaintained = "workspace"
 yanked = "deny"
 ignore = []

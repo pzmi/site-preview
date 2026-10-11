@@ -7,6 +7,7 @@ mod check;
 mod cli;
 mod process;
 mod quick;
+mod repo;
 mod security;
 mod test;
 mod tools;

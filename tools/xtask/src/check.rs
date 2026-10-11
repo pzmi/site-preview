@@ -75,7 +75,10 @@ mod tests {
             "clippy",
             "unit-tests",
             "doctests",
-            "security",
+            "deny",
+            "secrets",
+            "workflows",
+            "action-pins",
         ] {
             assert!(names.contains(&want), "{want} missing from {names:?}");
         }

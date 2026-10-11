@@ -53,7 +53,7 @@ pub const CATALOG: &[Check] = &[
     row(
         "unit-tests",
         "unit",
-        "cargo nextest run --locked --workspace",
+        "cargo nextest run --workspace --locked --profile ci",
         "TEST-01",
         true,
     ),
@@ -93,12 +93,19 @@ pub const CATALOG: &[Check] = &[
         "security",
         "cargo xtask security",
         "SEC-01",
+        false,
+    ),
+    row(
+        "deny",
+        "security",
+        "cargo deny --locked check",
+        "SEC-01",
         true,
     ),
     row(
         "secrets",
         "security",
-        "gitleaks git --no-banner --redact --config .gitleaks.toml",
+        "gitleaks git --no-banner --redact over the full history (after a git preflight)",
         "SEC-02",
         true,
     ),
@@ -106,7 +113,7 @@ pub const CATALOG: &[Check] = &[
     row(
         "action-pins",
         "security",
-        "cargo xtask security (in-process)",
+        "check .github/workflows and .github/actions for unpinned uses:",
         "SEC-02",
         true,
     ),
@@ -208,6 +215,7 @@ fn json_str(s: &str) -> String {
 mod tests {
     use super::*;
     use crate::cli::Cli;
+    use crate::process::Action;
     use clap::CommandFactory;
     use std::collections::HashSet;
 
@@ -273,5 +281,30 @@ mod tests {
 
         // then
         assert!(json.contains(r#""command": "say \"hi\"\\""#), "{json}");
+    }
+
+    #[test]
+    fn should_show_the_command_check_runs_when_a_stage_is_listed() {
+        // given
+        let stages = crate::check::stages();
+
+        // when
+        let mismatched: Vec<_> = stages
+            .iter()
+            .filter_map(|stage| {
+                let shown = match &stage.action {
+                    Action::Command { program, args } => std::iter::once(program.as_str())
+                        .chain(args.iter().map(String::as_str))
+                        .collect::<Vec<_>>()
+                        .join(" "),
+                    Action::InProcess { display, .. } => (*display).to_owned(),
+                };
+                let listed = find(stage.name).map(|c| c.command);
+                (listed != Some(shown.as_str())).then_some((stage.name, listed, shown))
+            })
+            .collect();
+
+        // then
+        assert!(mismatched.is_empty(), "{mismatched:?}");
     }
 }
