@@ -227,3 +227,136 @@ async fn should_not_exceed_length_when_file_grew() {
     let body = response.into_body().collect().await.unwrap().to_bytes();
     assert_eq!(body.as_ref(), &data[..1000]);
 }
+
+#[tokio::test]
+async fn should_omit_utf8_charset_when_html_is_latin1() {
+    // given: "café" in ISO-8859-1, not valid UTF-8
+    let page = b"<!doctype html><meta charset=iso-8859-1><p>caf\xe9</p>";
+    let site = InMemorySite::new().with_file("old.html", page);
+
+    // when
+    let response = app(Arc::new(site))
+        .oneshot(request("GET", "/old.html"))
+        .await
+        .unwrap();
+
+    // then
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(header(&response, "content-type"), Some("text/html"));
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(body.as_ref(), page.as_slice());
+}
+
+#[tokio::test]
+async fn should_label_utf8_charset_when_html_is_utf8() {
+    // given
+    let page = "<!doctype html><p>café</p>".as_bytes();
+    let site = InMemorySite::new().with_file("index.html", page);
+
+    // when
+    let response = app(Arc::new(site))
+        .oneshot(request("GET", "/"))
+        .await
+        .unwrap();
+
+    // then
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        header(&response, "content-type"),
+        Some("text/html; charset=utf-8")
+    );
+    assert_eq!(header(&response, "content-length"), Some("27"));
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(body.as_ref(), page);
+}
+
+#[tokio::test]
+async fn should_label_same_content_type_when_head_of_html() {
+    // given
+    let site = InMemorySite::new()
+        .with_file("utf8.html", "<p>ok ✓</p>".as_bytes())
+        .with_file("latin1.html", b"<p>caf\xe9</p>");
+
+    for (path, expected) in [
+        ("/utf8.html", "text/html; charset=utf-8"),
+        ("/latin1.html", "text/html"),
+    ] {
+        // when
+        let response = app(Arc::new(site.clone()))
+            .oneshot(request("HEAD", path))
+            .await
+            .unwrap();
+
+        // then
+        assert_eq!(header(&response, "content-type"), Some(expected), "{path}");
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        assert!(body.is_empty(), "{path}");
+    }
+}
+
+#[tokio::test]
+async fn should_omit_utf8_charset_when_html_exceeds_eight_mebibytes() {
+    // given: valid UTF-8, but too large to check, so its encoding is unknown
+    let page = vec![b'a'; 8 * 1024 * 1024 + 1];
+    let site = InMemorySite::new().with_file("huge.html", &page);
+
+    // when
+    let response = app(Arc::new(site))
+        .oneshot(request("GET", "/huge.html"))
+        .await
+        .unwrap();
+
+    // then
+    assert_eq!(header(&response, "content-type"), Some("text/html"));
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(body.len(), page.len());
+}
+
+#[tokio::test]
+async fn should_label_content_type_and_nosniff_when_serving_by_extension() {
+    // given
+    let site = InMemorySite::new()
+        .with_file("styles.css", b"p{}")
+        .with_file("routes.gpx", b"<gpx/>")
+        .with_file("blob.unknownext", b"?");
+
+    for (path, expected) in [
+        ("/styles.css", "text/css; charset=utf-8"),
+        ("/routes.gpx", "application/gpx+xml"),
+        ("/blob.unknownext", "application/octet-stream"),
+    ] {
+        // when
+        let response = app(Arc::new(site.clone()))
+            .oneshot(request("GET", path))
+            .await
+            .unwrap();
+
+        // then
+        assert_eq!(header(&response, "content-type"), Some(expected), "{path}");
+        assert_eq!(
+            header(&response, "x-content-type-options"),
+            Some("nosniff"),
+            "{path}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn should_answer_500_when_html_shorter_than_length() {
+    // given: an HTML file that shrank after fstat
+    let content = Lying {
+        data: b"<p>short</p>".to_vec(),
+        claimed: 5000,
+    };
+
+    // when
+    let response = app(Arc::new(content))
+        .oneshot(request("GET", "/page.html"))
+        .await
+        .unwrap();
+
+    // then
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    assert!(!String::from_utf8_lossy(&body).contains("short"));
+}

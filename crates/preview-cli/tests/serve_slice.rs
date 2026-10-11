@@ -59,17 +59,43 @@ impl Server {
     }
 
     fn get(&self, path: &str) -> (u16, Vec<u8>) {
+        let reply = self.fetch(path);
+        (reply.status, reply.body)
+    }
+
+    /// GETs `path` (which may carry a query) without following redirects.
+    fn fetch(&self, path: &str) -> Reply {
         let agent = ureq::Agent::config_builder()
             .proxy(None)
             .http_status_as_error(false)
+            .max_redirects(0)
             .build()
             .new_agent();
         let url = format!("{}{}", self.url, path.trim_start_matches('/'));
         let mut response = agent.get(&url).call().expect("the server answers");
+        let header = |name: &str| {
+            response
+                .headers()
+                .get(name)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_owned)
+        };
+        let content_type = header("content-type");
         let status = response.status().as_u16();
         let body = response.body_mut().read_to_vec().expect("a readable body");
-        (status, body)
+        Reply {
+            status,
+            content_type,
+            body,
+        }
     }
+}
+
+/// One response, as the tests inspect it.
+struct Reply {
+    status: u16,
+    content_type: Option<String>,
+    body: Vec<u8>,
 }
 
 impl Drop for Server {
@@ -178,6 +204,34 @@ fn should_serve_stylesheet_bytes_unchanged_when_requested() {
         before,
         "the shared fixture differs from its copy"
     );
+}
+
+#[test]
+fn should_label_content_type_when_serving_fixture_files() {
+    // given
+    let site = copy_of_fixture();
+    let server = Server::start(site.path());
+    let expected = [
+        ("/", "text/html; charset=utf-8"),
+        ("/guide/", "text/html; charset=utf-8"),
+        ("/styles.css", "text/css; charset=utf-8"),
+        ("/app.js", "text/javascript; charset=utf-8"),
+        ("/data.json", "application/json"),
+        ("/routes.gpx", "application/gpx+xml"),
+        ("/images/sample.svg", "image/svg+xml"),
+    ];
+
+    // when
+    let replies: Vec<_> = expected
+        .iter()
+        .map(|(path, _)| server.fetch(path))
+        .collect();
+
+    // then
+    for ((path, content_type), reply) in expected.iter().zip(&replies) {
+        assert_eq!(reply.status, 200, "{path}");
+        assert_eq!(reply.content_type.as_deref(), Some(*content_type), "{path}");
+    }
 }
 
 #[test]

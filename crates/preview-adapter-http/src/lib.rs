@@ -6,6 +6,7 @@
 
 mod errors;
 mod files;
+mod mime;
 mod router;
 mod state;
 
