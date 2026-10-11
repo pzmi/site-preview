@@ -1,7 +1,7 @@
 //! `cargo xtask quick`: formatter check, the architecture policy (ADR 0019), Clippy, the
 //! unit/component tests and the doctests.
 //!
-//! This is not the full gate; `check` (OPS-01) is.
+//! This is not the full gate; `check` is (see `check.rs`).
 
 use crate::process::{Stage, run_stages};
 use crate::{architecture, tools};

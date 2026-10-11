@@ -17,8 +17,8 @@ env:
   CARGO_INCREMENTAL: "0"
 
 jobs:
-  quick:
-    name: Quick
+  check:
+    name: Check
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -38,12 +38,12 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             target
-          key: quick-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'tools/versions.toml') }}
+          key: check-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'tools/versions.toml') }}
           restore-keys: |
-            quick-${{ runner.os }}-
+            check-${{ runner.os }}-
 
       - name: Install pinned dev tools
         run: cargo xtask install-tools cargo-nextest
 
-      - name: Quick gate
-        run: cargo xtask quick
+      - name: Full gate
+        run: cargo xtask check

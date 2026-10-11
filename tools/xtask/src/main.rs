@@ -2,9 +2,11 @@
 
 mod architecture;
 mod catalog;
+mod check;
 mod cli;
 mod process;
 mod quick;
+mod test;
 mod tools;
 
 use std::process::{Command as Proc, ExitCode};
@@ -19,6 +21,8 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     let code = match &cli.command {
         Command::Quick => quick::run(),
+        Command::Test => test::run(),
+        Command::Check => check::run(),
         Command::Fmt => run_fmt(),
         Command::Architecture { manifest_path } => architecture::run(manifest_path.as_deref()),
         Command::ListChecks => {

@@ -1,6 +1,8 @@
 //! Running external commands as gate stages.
 
+use std::fmt::Write as _;
 use std::process::Command;
+use std::time::{Duration, Instant};
 
 /// One gate stage: an external command, or a function of this binary.
 #[derive(Debug, Clone)]
@@ -9,6 +11,8 @@ pub struct Stage {
     pub name: &'static str,
     /// What runs.
     pub action: Action,
+    /// Pinned tool that must be installed for the stage to run (checked by [`run_report`]).
+    pub tool: Option<&'static str>,
 }
 
 /// How a stage runs.
@@ -39,7 +43,15 @@ impl Stage {
                 program: program.to_owned(),
                 args: args.iter().map(|a| (*a).to_owned()).collect(),
             },
+            tool: None,
         }
+    }
+
+    /// Declares the pinned tool this stage needs; without it the stage reports `UNAVAILABLE`.
+    #[must_use]
+    pub fn needs(mut self, tool: &'static str) -> Self {
+        self.tool = Some(tool);
+        self
     }
 
     /// Builds a stage that calls `run` in this process.
@@ -47,6 +59,7 @@ impl Stage {
         Self {
             name,
             action: Action::InProcess { display, run },
+            tool: None,
         }
     }
 
@@ -70,6 +83,95 @@ impl Stage {
     }
 }
 
+/// How one stage ended in a [`run_report`]. There is no "skipped" (D18).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Status {
+    /// Exit code 0.
+    Passed,
+    /// Non-zero exit code.
+    Failed(i32),
+    /// A required tool is missing; carries the actionable message.
+    Unavailable(String),
+}
+
+impl Status {
+    /// The word printed in the summary table.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Passed => "ok",
+            Self::Failed(_) => "FAILED",
+            Self::Unavailable(_) => "UNAVAILABLE",
+        }
+    }
+}
+
+/// One row of the summary table.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Outcome {
+    /// Stage name.
+    pub name: &'static str,
+    /// How it ended.
+    pub status: Status,
+    /// Wall-clock time (zero for an unavailable stage).
+    pub duration: Duration,
+}
+
+/// Runs every stage (a failure does not stop later ones, so one run shows all problems) and
+/// returns one outcome each. `require` decides whether a stage's tool is usable.
+pub fn run_report(stages: &[Stage], require: &dyn Fn(&str) -> Result<(), String>) -> Vec<Outcome> {
+    stages
+        .iter()
+        .map(|stage| {
+            let start = Instant::now();
+            let status = match stage.tool.map(require) {
+                Some(Err(message)) => {
+                    eprintln!("xtask: stage {} UNAVAILABLE: {message}", stage.name);
+                    Status::Unavailable(message)
+                }
+                _ => match stage.execute() {
+                    0 => Status::Passed,
+                    code => {
+                        eprintln!("xtask: stage {} FAILED with exit code {code}", stage.name);
+                        Status::Failed(code)
+                    }
+                },
+            };
+            Outcome {
+                name: stage.name,
+                status,
+                duration: start.elapsed(),
+            }
+        })
+        .collect()
+}
+
+/// Renders the final table: stage, status, duration.
+pub fn render_table(outcomes: &[Outcome]) -> String {
+    let width = outcomes
+        .iter()
+        .map(|o| o.name.len())
+        .max()
+        .unwrap_or(5)
+        .max(5);
+    let mut out = format!("{:<width$}  {:<11}  {}\n", "stage", "status", "duration");
+    for o in outcomes {
+        let _ = writeln!(
+            out,
+            "{:<width$}  {:<11}  {:.1}s",
+            o.name,
+            o.status.label(),
+            o.duration.as_secs_f64()
+        );
+    }
+    out
+}
+
+/// Prints the table and returns 0 only when every stage passed, else 1.
+pub fn finish(outcomes: &[Outcome]) -> i32 {
+    print!("{}", render_table(outcomes));
+    i32::from(outcomes.iter().any(|o| o.status != Status::Passed))
+}
+
 /// Runs stages in order, streaming their output, and stops at the first failure.
 ///
 /// Returns 0 when all pass, otherwise the failing stage's exit code (1 when the process was
@@ -91,6 +193,61 @@ mod tests {
 
     fn sh(name: &'static str, script: &str) -> Stage {
         Stage::new(name, "sh", &["-c", script])
+    }
+
+    fn present(_: &str) -> Result<(), String> {
+        Ok(())
+    }
+
+    #[test]
+    fn should_report_failed_and_exit_nonzero_when_a_stage_fails() {
+        // given
+        let stages = [
+            sh("ok", "exit 0"),
+            sh("bad", "exit 7"),
+            sh("after", "exit 0"),
+        ];
+
+        // when
+        let outcomes = run_report(&stages, &present);
+        let table = render_table(&outcomes);
+        let code = finish(&outcomes);
+
+        // then
+        assert_eq!(outcomes[1].status, Status::Failed(7));
+        assert_eq!(outcomes[2].status, Status::Passed, "later stages still run");
+        assert!(table.contains("bad") && table.contains("FAILED"), "{table}");
+        assert_eq!(code, 1);
+    }
+
+    #[test]
+    fn should_report_unavailable_and_exit_nonzero_when_a_tool_is_missing() {
+        // given
+        let stages = [sh("needs-tool", "exit 0").needs("cargo-nope")];
+        let missing = |tool: &str| Err(format!("missing {tool}: install it"));
+
+        // when
+        let outcomes = run_report(&stages, &missing);
+        let table = render_table(&outcomes);
+        let code = finish(&outcomes);
+
+        // then
+        assert!(matches!(outcomes[0].status, Status::Unavailable(_)));
+        assert!(table.contains("UNAVAILABLE"), "{table}");
+        assert_eq!(code, 1);
+    }
+
+    #[test]
+    fn should_exit_zero_when_every_stage_passes() {
+        // given
+        let stages = [sh("a", "exit 0"), sh("b", "exit 0").needs("tool")];
+
+        // when
+        let outcomes = run_report(&stages, &present);
+
+        // then
+        assert_eq!(finish(&outcomes), 0);
+        assert!(outcomes.iter().all(|o| o.status.label() == "ok"));
     }
 
     #[test]
