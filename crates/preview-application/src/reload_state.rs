@@ -58,7 +58,7 @@ impl ReloadState {
         Self::from_state(SiteState::initial(instance))
     }
 
-    fn from_state(state: SiteState) -> Self {
+    pub(crate) fn from_state(state: SiteState) -> Self {
         let mut changes = ChangeSet::new();
         changes.mark_full(FullReason::Rescan);
         let (tx, _rx) = watch::channel(Published { state, changes });

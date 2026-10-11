@@ -43,3 +43,4 @@ This directory holds the decisions behind site-preview, one file per decision, i
 | [0037](0037-host-origin-parsing-and-core-net.md) | Host and Origin parsing details; `core::net` in the domain | Proposed |
 | [0038](0038-application-port-shapes.md) | Application port shapes: synchronous content, async change source, no adapter types | Proposed |
 | [0039](0039-request-resolution-outcomes.md) | Request resolution outcomes: no existence leak, snapshot before open | Proposed |
+| [0040](0040-change-coordinator-recovery-and-exhaustion.md) | Change coordinator: recovery signal, reconcile requests and revision exhaustion | Proposed |

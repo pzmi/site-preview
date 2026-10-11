@@ -46,6 +46,7 @@ Each decision is an ADR. Tasks cite the D-id, and D*n* is ADR *n*+1. ADR 0001 is
 | D36 | [0037](adr/0037-host-origin-parsing-and-core-net.md) | The domain uses `core::net` address value types; `std::net` stays forbidden. Host parsing is strict (printable ASCII, no userinfo, bracketed IPv6 without zone id, canonical dotted-quad IPv4, canonical port, 80 when absent). `localhost` (any ASCII case) is allowed whenever the listener is loopback; `0.0.0.0`/`::` as Host is always rejected. SSE: `Sec-Fetch-Site: cross-site` refused; an Origin must be `http://` plus the accepted Host authority, port included; `null` refused; neither header allowed. | Proposed |
 | D37 | [0038](adr/0038-application-port-shapes.md) | `SiteContent` and `Clock` are synchronous and object safe; `ChangeSource` is async (`impl Future + Send`), cancellation safe and used through generics, with the batch generic over the event type until DOM-05 lands. Refusals carry categories, never paths. No port names an adapter or runtime type. | Proposed |
 | D38 | [0039](adr/0039-request-resolution-outcomes.md) | `ResolveRequest` decodes, checks eligibility, snapshots, then opens; malformed is 400, traversal 404, ineligible 403 without an open. A final name denied only as a directory, requested without a slash, gives `NotFound` for every outcome but a plain file, so a redirect or error never reveals it. `Io` becomes `Unavailable(kind)`; `RedirectToSlash` carries the decoded path; the snapshot is an `FnOnce() -> SiteState`. | Proposed |
+| D39 | [0040](adr/0040-change-coordinator-recovery-and-exhaustion.md) | Watcher recovery is reported by composition through `ChangeCoordinator::watcher_ready(dirs)` after a successful (re-)registration; the `ChangeSource` port has no recovered batch. `RecordOutcome::needs_reconcile` is set by a directory change, an unattributable (`Rescan`) event and an overflow. `RevisionExhausted` degrades once and makes the coordinator refuse record, overflow and settle without retrying; a later `watcher_ready` is refused. `receive(batch, now)` is the single batch-to-command mapping. | Proposed |
 
 ## Rules for every task
 
@@ -465,7 +466,7 @@ Each decision is an ADR. Tasks cite the D-id, and D*n* is ADR *n*+1. ADR 0001 is
   - `record(batch, now) -> RecordOutcome { next_deadline, needs_reconcile }`, which classifies with DOM-05 and ignores irrelevant events without touching the debouncer.
   - `overflow(now)`.
   - `settle(now) -> Option<Settled { state: SiteState, rescan, changes: ChangeSet }>`, which publishes the state together with its change set through `ReloadState` and emits `RevisionPublished`.
-  - `watcher_failed(reason)` and `watcher_recovered()`, which emit health events.
+  - `watcher_failed(reason)` and `watcher_ready(dirs)` (recovery, D39), which emit health events.
 
   Events go out through a returned `Vec<DomainEvent>`; there is no bus (fnd §2.4).
 - **Accept:** with `FakeClock` and `ScriptedChangeSource`: `should_publish_one_revision_when_burst_settles`, `should_publish_css_change_set_when_only_stylesheet_edited`, `should_not_publish_when_only_dot_git_changes`, `should_publish_with_rescan_when_overflow_signalled`, and `should_emit_degraded_when_watcher_fails`. Every command has a test entry point (fnd §5.2 bullet 3).
