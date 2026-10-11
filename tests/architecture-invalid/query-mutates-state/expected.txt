@@ -1,0 +1,4 @@
+rule: ARCH-query-purity
+at: crates/preview-application/src/queries/mod.rs:9
+contains: calls `.publish_next(..)`
+only: true

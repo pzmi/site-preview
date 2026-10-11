@@ -1,0 +1,4 @@
+rule: ARCH-missing-selector
+at: crates/preview-application/src/queries
+contains: module `queries` of preview-application
+only: true

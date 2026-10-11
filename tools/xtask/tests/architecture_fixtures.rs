@@ -148,6 +148,11 @@ fn should_have_fixture_when_task_names_it() {
         "badly-named-test",
         "missing-given-when-then",
         "todo-in-production",
+        "command-imports-query",
+        "command-names-http-dto",
+        "query-calls-command",
+        "query-mutates-state",
+        "instrumentation-drives-decision",
     ]
     .into_iter()
     .filter(|name| !cases.iter().any(|c| c == name))
@@ -207,4 +212,55 @@ fn should_pass_when_positive_fixture_is_checked() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(output.status.success(), "{stderr}");
     assert!(!stderr.contains("ARCH-"), "{stderr}");
+}
+
+/// Copies the directory tree `from` into `to`.
+fn copy_tree(from: &Path, to: &Path) {
+    fs::create_dir_all(to).unwrap();
+    for entry in fs::read_dir(from).unwrap().map(Result::unwrap) {
+        let target = to.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copy_tree(&entry.path(), &target);
+        } else {
+            fs::copy(entry.path(), &target).unwrap();
+        }
+    }
+}
+
+#[test]
+fn should_fail_with_missing_selector_when_queries_module_of_positive_fixture_is_renamed() {
+    // given
+    let copy = tempfile::TempDir::new().unwrap();
+    copy_tree(
+        &repository_root().join("tests/architecture-valid/full-topology"),
+        copy.path(),
+    );
+    let src = copy.path().join("crates/preview-application/src");
+    fs::rename(src.join("queries"), src.join("reads")).unwrap();
+    let lib = fs::read_to_string(src.join("lib.rs")).unwrap();
+    let renamed = lib
+        .replace("pub mod queries;", "pub mod reads;")
+        .replace("pub use queries::", "pub use reads::");
+    assert_ne!(lib, renamed, "the positive fixture declares `queries`");
+    fs::write(src.join("lib.rs"), renamed).unwrap();
+    let manifest = copy.path().join("Cargo.toml");
+
+    // when
+    let output = xtask(&[
+        "architecture",
+        "--manifest-path",
+        manifest.to_str().unwrap(),
+    ]);
+
+    // then
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "{stderr}");
+    assert!(
+        stderr
+            .lines()
+            .any(|l| l.starts_with("ARCH-missing-selector:")
+                && l.contains("module `queries`")
+                && l.ends_with("(at crates/preview-application/src/queries)")),
+        "{stderr}"
+    );
 }

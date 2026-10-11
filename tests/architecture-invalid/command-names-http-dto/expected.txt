@@ -1,0 +1,3 @@
+rule: ARCH-command-isolation
+at: crates/preview-application/src/commands/mod.rs:8
+contains: `http::Request` (written `HttpRequest`)

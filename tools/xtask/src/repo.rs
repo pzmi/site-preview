@@ -1,6 +1,6 @@
 //! The repository root, resolved from this crate's own location rather than the current
 //! directory, so a stage run from a subdirectory checks the same files as one run from the
-//! root (ADR 0041).
+//! root (ADR 0042).
 
 use std::path::{Path, PathBuf};
 

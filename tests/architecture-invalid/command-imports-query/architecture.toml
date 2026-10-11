@@ -1,0 +1,10 @@
+schema = 1
+
+[workspace]
+production = ["preview-application"]
+
+[dependencies.normal]
+preview-application = []
+
+[semantic]
+absent = ["preview-adapter-fs", "preview-adapter-http", "preview-cli", "preview-composition", "preview-conformance", "preview-domain", "preview-testkit"]

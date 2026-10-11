@@ -109,8 +109,8 @@ rules! {
         "Owned code contains an unsafe block, fn, impl, trait, extern block or unsafe attribute.",
         ["unsafe-block"];
     MissingSelector => "ARCH-missing-selector", "ARCH-07",
-        "A crate or file the semantic rules name is missing and not listed in [semantic] absent, absent lists a member, or production composition lacks src/bootstrap.rs.",
-        ["missing-bootstrap", "missing-selector"];
+        "A crate or file the semantic rules name is missing and not listed in [semantic] absent, absent lists a member, production composition lacks src/bootstrap.rs, or production application lacks its commands or queries module or impl ReloadState.",
+        ["missing-bootstrap", "missing-query-selector", "missing-selector"];
     LintConfig => "ARCH-lint-config", "ARCH-07",
         "A lint is relaxed outside source: a member's [lints] is not workspace = true, a workspace lint is allowed, rustflags allow or cap lints, or clippy.toml allows.",
         ["clippy-toml-allow", "member-lints-override", "rustflags-allow"];
@@ -132,6 +132,15 @@ rules! {
     TestStructure => "ARCH-test-structure", "ARCH-07",
         "A test function's body lacks the // given, // when and // then comments in that order.",
         ["missing-given-when-then"];
+    CommandIsolation => "ARCH-command-isolation", "ARCH-09",
+        "preview-application command code names crate::queries or an HTTP type (axum, http, hyper, tower, preview_adapter_http), also through re-exports.",
+        ["command-imports-query", "command-names-http-dto"];
+    QueryPurity => "ARCH-query-purity", "ARCH-09",
+        "preview-application query code names crate::commands, takes &mut self or &mut of domain/application state, or calls a ReloadState method outside its read allowlist.",
+        ["query-calls-command", "query-mutates-state"];
+    ObservabilityIsolation => "ARCH-observability-isolation", "ARCH-09",
+        "The domain names an instrumentation crate, or a tracing/log/observability/metrics value reaches a branch condition or returned value in domain or application code.",
+        ["instrumentation-drives-decision"];
 }
 
 /// Compares the catalog with the negative fixtures in `dir`: every rule has fixtures, each

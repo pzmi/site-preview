@@ -146,21 +146,31 @@ impl Scopes {
     /// target starts with `crate`; any other starts with the crate it names. A one-segment
     /// path that no binding or glob explains is a local value and yields nothing.
     pub fn resolve(&self, module: &[String], path: &Written) -> Vec<Vec<String>> {
+        self.resolve_through(module, path, false).0
+    }
+
+    /// The candidates of [`Scopes::resolve`], plus every module of this target the resolution passed through, as
+    /// `crate::..` paths. A re-export keeps only its final target as a candidate, so a rule
+    /// about naming a module (`crate::commands`) also looks at the modules on the way: a path
+    /// through `crate::commands::X` names that module even when `X` is defined elsewhere.
+    /// With `import` set, a lone unbound name is an extern crate, as in a `use` tree
+    /// (`use tokio;`) or an `extern crate`.
+    pub fn resolve_through(
+        &self,
+        module: &[String],
+        path: &Written,
+        import: bool,
+    ) -> (Vec<Vec<String>>, Vec<Vec<String>>) {
         let mut walk = Walk::default();
-        if path.segments.len() == 1 && !path.absolute {
+        if !import && path.segments.len() == 1 && !path.absolute {
             self.lookup(module, &path.segments, Fallback::None, &mut walk);
         } else {
             self.resolve_into(module, path, &mut walk);
         }
-        walk.out.into_iter().collect()
-    }
-
-    /// Like [`Scopes::resolve`], but a lone unbound name is an extern crate, as in a `use`
-    /// tree (`use tokio;`) or an `extern crate`.
-    pub fn resolve_import(&self, module: &[String], path: &Written) -> Vec<Vec<String>> {
-        let mut walk = Walk::default();
-        self.resolve_into(module, path, &mut walk);
-        walk.out.into_iter().collect()
+        (
+            walk.out.into_iter().collect(),
+            walk.through.into_iter().collect(),
+        )
     }
 
     fn resolve_into(&self, module: &[String], path: &Written, walk: &mut Walk) {
@@ -225,7 +235,10 @@ impl Scopes {
                         walk.depth -= 1;
                     }
                 }
-                Binding::Module(path) => self.lookup(path, rest, Fallback::Local, walk),
+                Binding::Module(path) => {
+                    walk.through.insert(local(path, &[]));
+                    self.lookup(path, rest, Fallback::Local, walk);
+                }
                 Binding::Item => {
                     walk.out.insert(local(module, segments));
                 }
@@ -281,6 +294,8 @@ struct Walk {
     depth: usize,
     globs: Vec<(Vec<String>, Written)>,
     out: BTreeSet<Vec<String>>,
+    /// Modules of this target passed through, as `crate::..` paths.
+    through: BTreeSet<Vec<String>>,
 }
 
 /// What an unbound first segment stands for.
@@ -770,7 +785,7 @@ mod tests {
 
         // when
         let value = scopes.resolve(&[], &written("tokio"));
-        let import = scopes.resolve_import(&[], &written("tokio"));
+        let import = scopes.resolve_through(&[], &written("tokio"), true).0;
         let item = scopes.resolve(&[], &written("Local::new"));
 
         // then

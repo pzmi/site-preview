@@ -290,6 +290,8 @@ mod tests {
             open_tail: open.0,
             open_head: open.1,
             kind: RefKind::Path,
+            module: Vec::new(),
+            through: Vec::new(),
         }
     }
 

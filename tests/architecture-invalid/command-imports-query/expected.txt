@@ -1,0 +1,4 @@
+rule: ARCH-command-isolation
+at: crates/preview-application/src/commands/mod.rs:3
+contains: `crate::queries::Read` (written `crate::Read`)
+only: true

@@ -9,10 +9,12 @@ use std::path::{Path, PathBuf};
 use syn::visit::{self, Visit};
 use syn::{Attribute, Item, Meta};
 
+use super::flow;
 use super::paths::{self, Scopes, TokenScan, Written, scan_tokens, use_leaves};
 use super::{
-    AttributeUse, Context, Facts, RefKind, Reference, Site, TestFn, Unit, effective_metas,
-    include_path, is_include, is_test_attribute, is_test_only, non_literal, relative,
+    AttributeUse, Context, Facts, ImplMethod, MethodCall, MutParam, RefKind, Reference, Site,
+    TestFn, Unit, effective_metas, include_path, is_include, is_test_attribute, is_test_only,
+    non_literal, relative,
 };
 
 /// Collects the facts of one target into `facts`.
@@ -36,6 +38,9 @@ pub fn collect_target(
         }
     }
     for unit in units {
+        if !unit.test {
+            facts.modules.insert(unit.module.clone());
+        }
         let mut collector = Collector {
             root,
             scopes: &scopes,
@@ -45,6 +50,7 @@ pub fn collect_target(
             test: unit.test,
             facts: &mut *facts,
             depth: 0,
+            impl_generics: Vec::new(),
         };
         for attr in &unit.attrs {
             collector.visit_attribute(attr);
@@ -131,6 +137,8 @@ struct Collector<'a> {
     test: bool,
     facts: &'a mut Facts,
     depth: usize,
+    /// Type parameters of the enclosing `impl` or `trait`.
+    impl_generics: Vec<String>,
 }
 
 impl Collector<'_> {
@@ -148,17 +156,16 @@ impl Collector<'_> {
 
     fn reference(&mut self, path: &Written, line: usize, kind: RefKind, open_tail: bool) {
         // An unbound macro name is a prelude macro (`todo!`), not a local value.
-        let resolved = match kind {
-            RefKind::Macro => self.scopes.resolve_import(&self.module, path),
-            RefKind::Path => self.scopes.resolve(&self.module, path),
-        };
+        let resolved = self
+            .scopes
+            .resolve_through(&self.module, path, kind == RefKind::Macro);
         self.push(path, resolved, line, kind, (open_tail, false));
     }
 
     fn push(
         &mut self,
         path: &Written,
-        resolved: Vec<Vec<String>>,
+        (resolved, through): (Vec<Vec<String>>, Vec<Vec<String>>),
         line: usize,
         kind: RefKind,
         (open_tail, open_head): (bool, bool),
@@ -174,12 +181,14 @@ impl Collector<'_> {
             open_tail,
             open_head,
             kind,
+            module: self.module.clone(),
+            through,
         });
     }
 
     fn use_item(&mut self, item: &syn::ItemUse) {
         for leaf in use_leaves(item) {
-            let resolved = self.scopes.resolve_import(&self.module, &leaf.path);
+            let resolved = self.scopes.resolve_through(&self.module, &leaf.path, true);
             self.push(
                 &leaf.path,
                 resolved,
@@ -195,7 +204,7 @@ impl Collector<'_> {
             absolute: true,
             segments: vec![paths::name(&item.ident)],
         };
-        let resolved = self.scopes.resolve_import(&self.module, &path);
+        let resolved = self.scopes.resolve_through(&self.module, &path, true);
         self.push(
             &path,
             resolved,
@@ -222,11 +231,11 @@ impl Collector<'_> {
             };
             if found.open_head {
                 // `$m::fs::read`: no resolution; the rules match the tail.
-                let resolved = vec![found.path.segments.clone()];
+                let resolved = (vec![found.path.segments.clone()], Vec::new());
                 self.push(&found.path, resolved, found.line, kind, (false, true));
             } else if found.path.segments.len() == 1 && kind == RefKind::Path {
                 // A lone name in a token stream may be a crate handed to a macro.
-                let resolved = self.scopes.resolve_import(&self.module, &found.path);
+                let resolved = self.scopes.resolve_through(&self.module, &found.path, true);
                 self.push(
                     &found.path,
                     resolved,
@@ -249,6 +258,9 @@ impl Collector<'_> {
         }
         for (meta, line) in &scan.attributes {
             self.attribute(meta, *line);
+        }
+        for (name, line) in flow::token_method_calls(tokens) {
+            self.method_call(name, line);
         }
         for test in scan.test_fns {
             let site = self.site(test.line);
@@ -291,6 +303,81 @@ impl Collector<'_> {
             self.facts
                 .attributes
                 .push(AttributeUse { site, name, lints });
+        }
+    }
+
+    fn method_call(&mut self, name: String, line: usize) {
+        let site = self.site(line);
+        self.facts.method_calls.push(MethodCall {
+            site,
+            module: self.module.clone(),
+            name,
+        });
+    }
+
+    /// Records every `&mut` parameter of `sig`, with the candidates of the paths in its type.
+    fn signature_mut_params(&mut self, sig: &syn::Signature) {
+        let mut generics: Vec<String> = self.impl_generics.clone();
+        generics.extend(sig.generics.type_params().map(|p| paths::name(&p.ident)));
+        for input in &sig.inputs {
+            let (paths, receiver, line, written) = match input {
+                syn::FnArg::Receiver(r) => {
+                    let paths = match &r.kind {
+                        syn::ReceiverKind::Reference(_, _, Some(_)) => Some(Vec::new()),
+                        syn::ReceiverKind::Typed(_, ty) => flow::mut_reference_paths(ty),
+                        _ => None,
+                    };
+                    (
+                        paths,
+                        true,
+                        r.self_token.span.start().line,
+                        "self".to_owned(),
+                    )
+                }
+                syn::FnArg::Typed(t) => {
+                    let (name, line) = flow::pattern_name(&t.pat)
+                        .unwrap_or_else(|| ("_".to_owned(), sig.ident.span().start().line));
+                    (flow::mut_reference_paths(&t.ty), false, line, name)
+                }
+            };
+            let Some(paths) = paths else {
+                continue;
+            };
+            let generic = paths.iter().any(|p| {
+                p.leading_colon.is_none()
+                    && p.segments.len() == 1
+                    && (p.segments[0].ident == "Self"
+                        || generics.contains(&paths::name(&p.segments[0].ident)))
+            });
+            let resolved: Vec<Vec<String>> = paths
+                .iter()
+                .flat_map(|p| self.scopes.resolve(&self.module, &Written::from_syn(p)))
+                .collect();
+            let site = self.site(line);
+            self.facts.mut_params.push(MutParam {
+                site,
+                module: self.module.clone(),
+                function: paths::name(&sig.ident),
+                written,
+                receiver,
+                generic: generic || receiver,
+                resolved,
+            });
+        }
+    }
+
+    /// Records instrumentation that reaches a decision in `block`.
+    fn decisions(&mut self, block: &syn::Block, output: &syn::ReturnType) {
+        for (line, position, instrumentation) in
+            flow::decisions(self.scopes, &self.module, block, output)
+        {
+            let site = self.site(line);
+            self.facts.decisions.push(super::Decision {
+                site,
+                module: self.module.clone(),
+                position,
+                instrumentation,
+            });
         }
     }
 
@@ -456,6 +543,7 @@ impl<'ast> Visit<'ast> for Collector<'_> {
     }
 
     fn visit_item_fn(&mut self, item: &'ast syn::ItemFn) {
+        self.decisions(&item.block, &item.sig.output);
         if item.attrs.iter().any(is_test_attribute) {
             let site = self.site(item.sig.ident.span().start().line);
             let braces = item.block.brace_token.span;
@@ -468,6 +556,23 @@ impl<'ast> Visit<'ast> for Collector<'_> {
         visit::visit_item_fn(self, item);
     }
 
+    fn visit_impl_item_fn(&mut self, item: &'ast syn::ImplItemFn) {
+        self.decisions(&item.block, &item.sig.output);
+        visit::visit_impl_item_fn(self, item);
+    }
+
+    fn visit_trait_item_fn(&mut self, item: &'ast syn::TraitItemFn) {
+        if let Some(block) = &item.default {
+            self.decisions(block, &item.sig.output);
+        }
+        visit::visit_trait_item_fn(self, item);
+    }
+
+    fn visit_expr_method_call(&mut self, expr: &'ast syn::ExprMethodCall) {
+        self.method_call(paths::name(&expr.method), expr.method.span().start().line);
+        visit::visit_expr_method_call(self, expr);
+    }
+
     fn visit_expr_unsafe(&mut self, expr: &'ast syn::ExprUnsafe) {
         self.unsafe_site(expr.unsafe_token.span.start().line, "an `unsafe` block");
         visit::visit_expr_unsafe(self, expr);
@@ -477,6 +582,7 @@ impl<'ast> Visit<'ast> for Collector<'_> {
         if let syn::Safety::Unsafe(token) = &sig.safety {
             self.unsafe_site(token.span.start().line, "an `unsafe fn`");
         }
+        self.signature_mut_params(sig);
         visit::visit_signature(self, sig);
     }
 
@@ -484,14 +590,46 @@ impl<'ast> Visit<'ast> for Collector<'_> {
         if let Some(token) = &item.unsafety {
             self.unsafe_site(token.span.start().line, "an `unsafe impl`");
         }
+        let self_type = match &*item.self_ty {
+            syn::Type::Path(p) => self
+                .scopes
+                .resolve(&self.module, &Written::from_syn(&p.path)),
+            _ => Vec::new(),
+        };
+        for inner in &item.items {
+            if let syn::ImplItem::Fn(f) = inner {
+                let site = self.site(f.sig.ident.span().start().line);
+                self.facts.impl_methods.push(ImplMethod {
+                    site,
+                    self_type: self_type.clone(),
+                    name: paths::name(&f.sig.ident),
+                });
+            }
+        }
+        let outer = std::mem::replace(
+            &mut self.impl_generics,
+            item.generics
+                .type_params()
+                .map(|p| paths::name(&p.ident))
+                .collect(),
+        );
         visit::visit_item_impl(self, item);
+        self.impl_generics = outer;
     }
 
     fn visit_item_trait(&mut self, item: &'ast syn::ItemTrait) {
         if let Some(token) = &item.unsafety {
             self.unsafe_site(token.span.start().line, "an `unsafe trait`");
         }
+        let outer = std::mem::replace(
+            &mut self.impl_generics,
+            item.generics
+                .type_params()
+                .map(|p| paths::name(&p.ident))
+                .collect(),
+        );
         visit::visit_item_trait(self, item);
+        self.impl_generics = outer;
     }
 
     fn visit_item_foreign_mod(&mut self, item: &'ast syn::ItemForeignMod) {

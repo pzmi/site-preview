@@ -55,7 +55,7 @@ and the ADRs that explain it.
 | `ARCH-fs-authority` | Production code outside preview-adapter-fs and preview-composition/src/bootstrap.rs names filesystem authority. | xtask semantic | ARCH-06 | [`ambient-fs-in-application`](../tests/architecture-invalid/ambient-fs-in-application) | [0004](adr/0004-rustix-openat-capability.md), [ 0035](adr/0035-semantic-rules-scope-and-resolution.md) |
 | `ARCH-layer-isolation` | An adapter names a sibling adapter, composition or watcher, or the application names adapter technology. | xtask semantic | ARCH-06 | [`composition-names-fs-adapter`](../tests/architecture-invalid/composition-names-fs-adapter), [`http-names-fs-adapter`](../tests/architecture-invalid/http-names-fs-adapter) | [0028](adr/0028-composition-owns-runtime-and-processes.md), [ 0035](adr/0035-semantic-rules-scope-and-resolution.md) |
 | `ARCH-unsafe-code` | Owned code contains an unsafe block, fn, impl, trait, extern block or unsafe attribute. | xtask semantic | ARCH-06 | [`unsafe-block`](../tests/architecture-invalid/unsafe-block) | [0035](adr/0035-semantic-rules-scope-and-resolution.md) |
-| `ARCH-missing-selector` | A crate or file the semantic rules name is missing and not listed in [semantic] absent, absent lists a member, or production composition lacks src/bootstrap.rs. | xtask semantic | ARCH-07 | [`missing-bootstrap`](../tests/architecture-invalid/missing-bootstrap), [`missing-selector`](../tests/architecture-invalid/missing-selector) | [0035](adr/0035-semantic-rules-scope-and-resolution.md) |
+| `ARCH-missing-selector` | A crate or file the semantic rules name is missing and not listed in [semantic] absent, absent lists a member, production composition lacks src/bootstrap.rs, or production application lacks its commands or queries module or impl ReloadState. | xtask semantic | ARCH-07 | [`missing-bootstrap`](../tests/architecture-invalid/missing-bootstrap), [`missing-query-selector`](../tests/architecture-invalid/missing-query-selector), [`missing-selector`](../tests/architecture-invalid/missing-selector) | [0035](adr/0035-semantic-rules-scope-and-resolution.md), [0042](adr/0042-command-query-and-observability-rules.md) |
 | `ARCH-lint-config` | A lint is relaxed outside source: a member's [lints] is not workspace = true, a workspace lint is allowed, rustflags allow or cap lints, or clippy.toml allows. | xtask graph | ARCH-07 | [`clippy-toml-allow`](../tests/architecture-invalid/clippy-toml-allow), [`member-lints-override`](../tests/architecture-invalid/member-lints-override), [`rustflags-allow`](../tests/architecture-invalid/rustflags-allow) | [0036](adr/0036-hygiene-and-test-quality-rules.md) |
 | `ARCH-unfinished-code` | Production code calls todo!, unimplemented! or dbg! without an [exceptions.lints] entry. | xtask semantic | ARCH-07 | [`todo-in-production`](../tests/architecture-invalid/todo-in-production) | [0036](adr/0036-hygiene-and-test-quality-rules.md) |
 | `ARCH-ignored-test` | Code carries an #[ignore] attribute. | xtask semantic | ARCH-07 | [`ignored-test`](../tests/architecture-invalid/ignored-test) | [0036](adr/0036-hygiene-and-test-quality-rules.md) |
@@ -63,6 +63,9 @@ and the ADRs that explain it.
 | `ARCH-test-sleep` | Test code sleeps outside the bounded poll helper preview-testkit/src/poll.rs. | xtask semantic | ARCH-07 | [`sleep-in-test`](../tests/architecture-invalid/sleep-in-test) | [0036](adr/0036-hygiene-and-test-quality-rules.md) |
 | `ARCH-test-name` | A test function's name does not match should_<outcome>_when_<condition>, or a macro hides a test. | xtask semantic | ARCH-07 | [`badly-named-proptest`](../tests/architecture-invalid/badly-named-proptest), [`badly-named-test`](../tests/architecture-invalid/badly-named-test) | [0036](adr/0036-hygiene-and-test-quality-rules.md) |
 | `ARCH-test-structure` | A test function's body lacks the // given, // when and // then comments in that order. | xtask semantic | ARCH-07 | [`missing-given-when-then`](../tests/architecture-invalid/missing-given-when-then) | [0036](adr/0036-hygiene-and-test-quality-rules.md) |
+| `ARCH-command-isolation` | preview-application command code names crate::queries or an HTTP type (axum, http, hyper, tower, preview_adapter_http), also through re-exports. | xtask semantic | ARCH-09 | [`command-imports-query`](../tests/architecture-invalid/command-imports-query), [`command-names-http-dto`](../tests/architecture-invalid/command-names-http-dto) | [0042](adr/0042-command-query-and-observability-rules.md) |
+| `ARCH-query-purity` | preview-application query code names crate::commands, takes &mut self or &mut of domain/application state, or calls a ReloadState method outside its read allowlist. | xtask semantic | ARCH-09 | [`query-calls-command`](../tests/architecture-invalid/query-calls-command), [`query-mutates-state`](../tests/architecture-invalid/query-mutates-state) | [0042](adr/0042-command-query-and-observability-rules.md) |
+| `ARCH-observability-isolation` | The domain names an instrumentation crate, or a tracing/log/observability/metrics value reaches a branch condition or returned value in domain or application code. | xtask semantic | ARCH-09 | [`instrumentation-drives-decision`](../tests/architecture-invalid/instrumentation-drives-decision) | [0042](adr/0042-command-query-and-observability-rules.md) |
 
 ## What the checker does not see
 
@@ -87,6 +90,13 @@ where a rule could be evaded by it; each is covered by another mechanism or is a
 - **Unlisted test macros.** Only `#[test]`, `#[tokio::test]` and `proptest!` are known
   test forms. A test written inside any other macro fails `ARCH-test-name` because it cannot
   be checked; another attribute ending in `test` does not make test code (ADR 0036).
+- **Data flow for commands, queries and instrumentation.** `ARCH-query-purity` matches
+  `ReloadState` method calls by name, not by receiver type, and does not follow a state
+  handle a query passes to a helper outside `queries`. `ARCH-observability-isolation` follows
+  instrumentation values only through `let` bindings and assignments inside one function,
+  into branch conditions, `match` scrutinees and guards, `let .. else` and returned values;
+  a value passed to another function, stored in a field or used inside a `macro_rules!`
+  body is not followed. Behaviour tests and review are the second line (ADR 0042).
 - **Platforms.** Dependency edges are evaluated for `x86_64-unknown-linux-gnu`,
   `aarch64-apple-darwin`, `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl`
   only (ADR 0033, ADR 0003).

@@ -10,11 +10,13 @@
 //!
 //! The collector records facts (resolved path references, `unsafe` sites, lint and
 //! `ignore` attributes, test functions) with their file, line and context (production or
-//! test code); `rules_purity` (ADR 0035) and `rules_hygiene` (ADR 0036) turn facts into
-//! diagnostics.
+//! test code); `rules_purity` (ADR 0035), `rules_hygiene` (ADR 0036) and `rules_cqrs`
+//! (ADR 0042) turn facts into diagnostics.
 
 mod collect;
+mod flow;
 mod paths;
+mod rules_cqrs;
 mod rules_hygiene;
 mod rules_purity;
 
@@ -84,6 +86,66 @@ pub struct Reference {
     pub open_head: bool,
     /// Path or macro invocation.
     pub kind: RefKind,
+    /// The module of the target it is written in (the root is empty).
+    pub module: Vec<String>,
+    /// Modules of the same target the resolution passed through (`crate::..`), so a
+    /// re-export through `crate::queries` still names `crate::queries`.
+    pub through: Vec<Vec<String>>,
+}
+
+/// A function signature that takes something by `&mut`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MutParam {
+    /// Where the parameter is.
+    pub site: Site,
+    /// The module of the target it is written in.
+    pub module: Vec<String>,
+    /// The function's name.
+    pub function: String,
+    /// The parameter as written, for the diagnostic.
+    pub written: String,
+    /// It is the receiver (`&mut self`).
+    pub receiver: bool,
+    /// The referenced type is a generic parameter or `Self`: unknown, so possibly state.
+    pub generic: bool,
+    /// Candidates of every path inside the `&mut` type.
+    pub resolved: Vec<Vec<String>>,
+}
+
+/// A method call, by name: method calls are not type-resolved (ADR 0035).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MethodCall {
+    /// Where the method name is.
+    pub site: Site,
+    /// The module of the target it is written in.
+    pub module: Vec<String>,
+    /// The method's name.
+    pub name: String,
+}
+
+/// A function defined in an `impl` block.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImplMethod {
+    /// Where its name is.
+    pub site: Site,
+    /// Candidates of the implemented type.
+    pub self_type: Vec<Vec<String>>,
+    /// The function's name.
+    pub name: String,
+}
+
+/// An instrumentation value in a decision position: a branch condition, a `match`
+/// scrutinee, a `let .. else` initializer or a returned value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Decision {
+    /// Where the instrumentation is named.
+    pub site: Site,
+    /// The module of the target it is written in.
+    pub module: Vec<String>,
+    /// Which decision position (`an if condition`, `a returned value`, ..).
+    pub position: &'static str,
+    /// The instrumentation as written, or the local it was bound to.
+    pub instrumentation: String,
 }
 
 /// What the collector found in one workspace package, across all its targets.
@@ -105,6 +167,16 @@ pub struct Facts {
     pub tests: Vec<TestFn>,
     /// Text of every analysed file, by workspace-relative path.
     pub sources: BTreeMap<String, String>,
+    /// Module paths of every production unit of every target.
+    pub modules: BTreeSet<Vec<String>>,
+    /// Signatures that take something by `&mut`.
+    pub mut_params: Vec<MutParam>,
+    /// Method calls, by name.
+    pub method_calls: Vec<MethodCall>,
+    /// Functions defined in `impl` blocks.
+    pub impl_methods: Vec<ImplMethod>,
+    /// Instrumentation values in decision positions.
+    pub decisions: Vec<Decision>,
 }
 
 /// One attribute the hygiene rules look at, after `cfg_attr` expansion.
@@ -165,6 +237,7 @@ pub fn check(
             ));
         }
         out.extend(rules_purity::check(&facts, policy));
+        out.extend(rules_cqrs::check(&facts, policy));
         out.extend(hygiene.check(&facts));
     }
     out.extend(hygiene.finish());
@@ -181,6 +254,7 @@ fn selector_crates() -> BTreeSet<String> {
         rules_purity::FS_ADAPTER,
         rules_purity::BOOTSTRAP.0,
         rules_hygiene::POLL_HELPER.0,
+        rules_cqrs::APPLICATION,
     ]
     .into_iter()
     .map(str::to_owned)

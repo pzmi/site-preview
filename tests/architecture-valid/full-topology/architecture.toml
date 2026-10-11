@@ -10,7 +10,9 @@
 # - a git source approved in [exceptions.sources] by an ADR that exists;
 # - semantic constructs that pass: filesystem authority in the fs adapter and bootstrap,
 #   test-only code, literal include!, macro_rules, cfg branches, the testkit poll helper's
-#   sleep, todo! in test code, and a lint suppression approved in [[exceptions.lints]].
+#   sleep, todo! in test code, and a lint suppression approved in [[exceptions.lints]];
+# - application commands that publish and are traced, queries that only read (a `&mut` of a
+#   non-state buffer, a Formatter), and an instrumentation module whose values decide nothing.
 # Third-party crates are empty stubs behind .cargo/config.toml; Cargo.lock is committed.
 schema = 1
 

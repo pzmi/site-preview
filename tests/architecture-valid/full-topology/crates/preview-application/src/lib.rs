@@ -1,4 +1,15 @@
-//! Positive fixture: the application uses domain types and tokio's sync primitives.
+//! Positive fixture: the application uses domain types and tokio's sync primitives, and keeps
+//! commands, queries and instrumentation apart: a command that publishes and is traced, a
+//! query that reads and fills a buffer, and an instrumentation module (ADR 0042).
+
+pub mod commands;
+pub mod observability;
+pub mod queries;
+pub mod reload_state;
+
+pub use commands::{Apply, Outcome};
+pub use queries::Read;
+pub use reload_state::ReloadState;
 
 use preview_domain::Revision;
 use tokio::sync::watch;

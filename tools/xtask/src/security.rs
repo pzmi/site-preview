@@ -6,7 +6,7 @@
 //! full commit SHA. A missing pinned tool is `UNAVAILABLE`, never a pass (D9).
 //!
 //! The secret scan refuses to run where it would silently see less than the whole history
-//! (ADR 0041): outside a git work tree, in a work tree that is not this repository's root, in
+//! (ADR 0042): outside a git work tree, in a work tree that is not this repository's root, in
 //! a shallow clone, or in a repository without commits. It also fails when Gitleaks reports
 //! no scanned commits, so an exit code of 0 over nothing is not a pass.
 

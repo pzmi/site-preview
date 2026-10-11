@@ -1,4 +1,4 @@
-//! The action-pinning check of `cargo xtask security` (foundation.md section 8, D23, ADR 0041):
+//! The action-pinning check of `cargo xtask security` (foundation.md section 8, D23, ADR 0042):
 //! every `uses:` in a workflow or local action must name a full commit SHA, so a moved tag
 //! cannot change what CI runs. Local actions (`./path`) and digest-pinned `docker://` images
 //! pass.
