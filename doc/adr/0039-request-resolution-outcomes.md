@@ -14,7 +14,7 @@ refused paths and §5.2 rule 5 denies directories such as `node_modules` and `ve
 Whether `/vendor` is a directory is known only after the open, so a redirect, a 403 or an
 I/O error at that point would reveal that the denied directory exists. The `SiteContent`
 port (ADR 0038) has an `Io(kind)` refusal that the task's result list does not name, and the
-reload channel the snapshot reads from (APP-02) is built in parallel.
+reload channel the snapshot reads from (APP-02) was built in parallel.
 
 ## Decision
 
@@ -34,7 +34,7 @@ reload channel the snapshot reads from (APP-02) is built in parallel.
 - A file requested with a trailing slash is `NotFound`. `RedirectToSlash` carries the decoded
   `SitePath`, so the `Location` is encoded from validated components.
 - The snapshot is a parameter `impl FnOnce() -> SiteState`, called at most once, so the
-  query needs no runtime; the HTTP adapter passes `|| reload_state.current()`.
+  query needs no runtime; the HTTP adapter passes `|| reload.current()` over the shared `ReloadState` (APP-02).
 
 ## Consequences
 

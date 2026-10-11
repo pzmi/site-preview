@@ -98,8 +98,9 @@ impl ResolveRequest<'_> {
     /// Runs the query against `content`, calling `snapshot` at most once, after the path is
     /// found eligible and immediately before the open.
     ///
-    /// `snapshot` is the latest-state read: `|| reload_state.current()` once the reload
-    /// channel exists. It is not called for a malformed or ineligible path.
+    /// `snapshot` is the latest-state read; in production `|| reload.current()` over the
+    /// shared [`ReloadState`](crate::ReloadState). It is not called for a malformed or
+    /// ineligible path.
     ///
     /// Pinned by the component tests in `tests/resolve_request.rs`, among them
     /// `should_snapshot_state_before_open_when_resolving_file`,

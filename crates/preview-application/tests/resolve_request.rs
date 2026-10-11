@@ -2,11 +2,10 @@
 
 use std::cell::Cell;
 use std::io::{ErrorKind, Read};
-use std::sync::{Arc, Mutex};
 
-use preview_application::{ForbiddenCause, ForbiddenReason, ResolveRequest, Resolved};
+use preview_application::{ForbiddenCause, ForbiddenReason, ReloadState, ResolveRequest, Resolved};
 use preview_domain::eligibility::DenyReason;
-use preview_domain::{SiteState, decode_request_path};
+use preview_domain::{ChangeSet, SiteState, decode_request_path};
 use preview_testkit::{FixedInstanceIds, InMemorySite};
 
 fn state() -> SiteState {
@@ -193,22 +192,22 @@ fn should_serve_file_when_name_is_excluded_only_for_directories() {
 fn should_snapshot_state_before_open_when_resolving_file() {
     // given
     let site = site();
-    let published = Arc::new(Mutex::new(state()));
-    let writer = Arc::clone(&published);
+    let reload = ReloadState::new(FixedInstanceIds::default().next_id());
+    let writer = reload.clone();
     site.on_open(move || {
-        let mut current = writer.lock().expect("state lock");
-        *current = current.advanced().expect("revision advances");
+        writer
+            .publish_next(ChangeSet::new())
+            .expect("revision advances");
     });
     // when
     let resolved = ResolveRequest {
         raw_path: "/index.html",
     }
-    .execute(&site, || published.lock().expect("state lock").clone());
+    .execute(&site, || reload.current());
     // then
     let (_, _, snapshot) = served(resolved);
     assert_eq!(snapshot, state());
-    let after = published.lock().expect("state lock").clone();
-    assert_eq!(after.revision().get(), 1);
+    assert_eq!(reload.current().revision().get(), 1);
     assert_eq!(site.open_count(), 1);
 }
 
