@@ -18,4 +18,6 @@ Implement a capability handle type (`RootDir`) in `preview-adapter-fs` over `rus
 
 - `unsafe_code = "forbid"` still holds (rustix is a safe API).
 - This is HTTP-serving confinement, not a sandbox against same-user processes.
-- Implemented by FS-01; race-tested by FS-04; contract-tested by TEST-04.
+- Implemented by FS-01 in [`capability.rs`](../../crates/preview-adapter-fs/src/capability.rs); race-tested by FS-04; contract-tested by TEST-04.
+- The opens also carry `O_NONBLOCK` (an intermediate, and the final component, cleared again on a regular file) so that a FIFO is refused instead of blocking the open, and the final open carries `O_NOCTTY` so that a terminal device never becomes the controlling terminal before it is refused.
+- `ENXIO`, `ENODEV` and `EOPNOTSUPP` from the final open (a socket or a device without a driver) are refused as not regular, like any non-regular object `fstat` finds.

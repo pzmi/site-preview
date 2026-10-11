@@ -441,6 +441,8 @@ version = "0.1.0"
 dependencies = [
  "preview-application",
  "preview-domain",
+ "rustix",
+ "tempfile",
 ]
 
 [[package]]
