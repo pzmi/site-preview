@@ -1,10 +1,13 @@
 //! Pure policies, transitions and invariants of the preview server; performs no I/O.
 
+mod change;
 mod debounce;
 mod events;
+mod rel_path;
 mod site_state;
 mod time;
 
+pub use change::{ChangeEvent, ChangeKind, Classification, IgnoreReason, classify};
 pub use debounce::{Deadline, Debouncer, Poll, Settled};
 pub use events::{DegradeReason, DomainEvent};
 pub use site_state::{InstanceId, InstanceIdError, Revision, RevisionExhausted, SiteState};
@@ -19,4 +22,5 @@ pub mod eligibility;
 pub mod path;
 
 pub use path::{Component, PathRefusal, SitePath, decode_request_path};
+pub use rel_path::RelPath;
 pub use time::{DebounceWindow, DebounceWindowError, Tick};

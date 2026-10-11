@@ -91,13 +91,28 @@ pub fn component(name: &Component, kind: ComponentKind, level: Level) -> Eligibi
 /// `should_check_last_component_as_directory_when_path_has_trailing_slash`.
 #[must_use]
 pub fn path(path: &SitePath) -> Eligibility {
-    let components = path.components();
-    let last = components.len().saturating_sub(1);
-    for (index, name) in components.iter().enumerate() {
-        let kind = if index < last || path.has_trailing_slash() {
+    let last = if path.has_trailing_slash() {
+        ComponentKind::Dir
+    } else {
+        ComponentKind::File
+    };
+    components(path.components(), last)
+}
+
+/// Decides whether a root-relative sequence of components is eligible: every component but
+/// the last is a directory, the last has the kind `last`. The first verdict that denies wins;
+/// an empty sequence (the root) is eligible. This is the walk behind [`path`], shared with
+/// the watcher so that watching applies exactly the rules serving does (ADR 0012). Pinned by
+/// `should_deny_when_any_component_is_hidden` and
+/// `should_check_last_as_given_kind_when_components_are_walked`.
+#[must_use]
+pub fn components(names: &[Component], last: ComponentKind) -> Eligibility {
+    let last_index = names.len().saturating_sub(1);
+    for (index, name) in names.iter().enumerate() {
+        let kind = if index < last_index {
             ComponentKind::Dir
         } else {
-            ComponentKind::File
+            last
         };
         let level = if index == 0 {
             Level::Root
@@ -387,6 +402,22 @@ mod tests {
                 Eligibility::Denied(DenyReason::ExcludedDirectory),
             ]
         );
+    }
+
+    #[test]
+    fn should_check_last_as_given_kind_when_components_are_walked() {
+        // given
+        let names = [name("lib"), name("vendor")];
+
+        // when
+        let as_file = components(&names, ComponentKind::File);
+        let as_dir = components(&names, ComponentKind::Dir);
+        let root = components(&[], ComponentKind::Dir);
+
+        // then
+        assert_eq!(as_file, Eligibility::Eligible);
+        assert_eq!(as_dir, Eligibility::Denied(DenyReason::ExcludedDirectory));
+        assert_eq!(root, Eligibility::Eligible);
     }
 
     #[test]
