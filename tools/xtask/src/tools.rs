@@ -230,6 +230,25 @@ pub fn doctor() -> i32 {
     }
 }
 
+/// What `install` does for a Cargo or Rustup tool, given what the probe found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Plan {
+    /// Pinned version already present: nothing to do (a restored CI cache).
+    Skip,
+    /// Not present: a plain install.
+    Install,
+    /// Present at another version: `cargo install` refuses to replace it without `--force`.
+    Reinstall,
+}
+
+fn plan(status: &Status) -> Plan {
+    match status {
+        Status::Ok => Plan::Skip,
+        Status::Missing => Plan::Install,
+        Status::Wrong(_) => Plan::Reinstall,
+    }
+}
+
 /// `cargo xtask install-tools [tool...]`: installs the named tools, or all installable
 /// ones. Binary tools print their manual step. Returns the exit code.
 pub fn install(names: &[String]) -> i32 {
@@ -257,15 +276,22 @@ pub fn install(names: &[String]) -> i32 {
     };
     let mut failed = false;
     for tool in selected {
+        let action = plan(&check_with_path(tool, None));
+        if action == Plan::Skip && matches!(tool.method, Method::Cargo | Method::Rustup) {
+            println!("ok {} {} (already installed)", tool.name, tool.version);
+            continue;
+        }
+        let force = action == Plan::Reinstall;
         let ran = match &tool.method {
-            Method::Cargo => run(
-                "cargo",
-                &[
-                    "install",
-                    "--locked",
-                    &format!("{}@{}", tool.name, tool.version),
-                ],
-            ),
+            Method::Cargo => {
+                let spec = format!("{}@{}", tool.name, tool.version);
+                let mut args = vec!["install", "--locked"];
+                if force {
+                    args.push("--force");
+                }
+                args.push(&spec);
+                run("cargo", &args)
+            }
             Method::Rustup => run(
                 "rustup",
                 &[
@@ -337,6 +363,43 @@ mod tests {
                 && err.contains("run 'cargo xtask install-tools cargo-nextest'"),
             "{err}"
         );
+    }
+
+    #[test]
+    fn should_skip_install_when_pinned_version_is_present() {
+        // given
+        let dir = tempfile::TempDir::new().unwrap();
+        let script = dir.path().join("fake-nextest");
+        std::fs::write(
+            &script,
+            format!("#!/bin/sh\necho \"cargo-nextest {}\"\n", nextest().version),
+        )
+        .unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let mut tool = nextest();
+        tool.probe = vec![script.to_str().unwrap().to_owned()];
+
+        // when
+        let status = check_with_path(&tool, None);
+
+        // then
+        assert_eq!(plan(&status), Plan::Skip);
+    }
+
+    #[test]
+    fn should_force_reinstall_when_another_version_is_present() {
+        // given
+        let status = Status::Wrong("cargo-nextest 0.0.1".into());
+
+        // when
+        let action = plan(&status);
+
+        // then
+        assert_eq!(action, Plan::Reinstall);
+        assert_eq!(plan(&Status::Missing), Plan::Install);
     }
 
     #[test]
