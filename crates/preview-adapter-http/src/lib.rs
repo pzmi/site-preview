@@ -4,6 +4,7 @@
 //! domain owns and decides no path policy. [`build_router`] is the single entry point; the
 //! composition root supplies an [`AppState`] and serves the returned router.
 
+mod client;
 mod directory;
 mod errors;
 mod files;

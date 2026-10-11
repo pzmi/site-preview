@@ -64,6 +64,13 @@ pub const CATALOG: &[Check] = &[
         "TEST-01",
         true,
     ),
+    row(
+        "client-js",
+        "unit",
+        "node --test crates/*/assets/*.test.mjs",
+        "HTTP-09",
+        true,
+    ),
     row("fmt", "tooling", "cargo xtask fmt", "FND-03", false),
     row("quick", "gate", "cargo xtask quick", "FND-03", false),
     row(

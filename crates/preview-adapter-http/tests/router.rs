@@ -85,7 +85,7 @@ async fn should_not_touch_disk_when_internal_path_requested() {
         for uri in [
             "/__site_preview",
             "/__site_preview/",
-            "/__site_preview/client.js",
+            "/__site_preview/client.js/extra",
             "/__site_preview/a/b/c?x=1",
         ] {
             // when

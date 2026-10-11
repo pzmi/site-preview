@@ -67,6 +67,15 @@ method = "rustup"
 probe = ["rustup", "toolchain", "list"]
 contains = true
 
+# Node runs the client.js unit tests (D15) and the Quint CLI; development only (foundation.md
+# section 1, item 4). The pin is the major line; `node --test` with globs needs 22 or newer.
+[tools.node]
+version = "v22."
+method = "manual"
+url = "https://nodejs.org/en/download"
+probe = ["node", "--version"]
+contains = true
+
 # Node tools. Their versions are owned by the lockfiles; they are noted here, not checked.
 [tools.quint]
 version = "0.33.0"

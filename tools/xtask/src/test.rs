@@ -1,6 +1,6 @@
 //! `cargo xtask test`: every ordinary test level. Today that is the workspace tests under the
-//! `ci` nextest profile and the doctests; stages for `client-js` and `browser` join here when
-//! the tasks that create them register them (D18, ADR 0019).
+//! `ci` nextest profile and the doctests; the `client-js` stage runs the dependency-free `node --test` suites beside the embedded
+//! scripts; the `browser` stage joins here when its task registers it (D18, ADR 0019).
 
 use crate::process::{Stage, finish, run_report};
 use crate::tools;
@@ -26,6 +26,12 @@ pub fn stages() -> Vec<Stage> {
             "cargo",
             &["test", "--locked", "--workspace", "--doc"],
         ),
+        Stage::new(
+            "client-js",
+            "node",
+            &["--test", "crates/*/assets/*.test.mjs"],
+        )
+        .needs("node"),
     ]
 }
 
@@ -48,9 +54,22 @@ mod tests {
         let names: Vec<_> = stages.iter().map(|s| s.name).collect();
 
         // then
-        assert_eq!(names, ["unit-tests", "doctests"]);
+        assert_eq!(names, ["unit-tests", "doctests", "client-js"]);
         assert!(format!("{:?}", stages[0].action).contains("\"ci\""));
         assert_eq!(stages[0].tool, Some("cargo-nextest"));
+    }
+
+    #[test]
+    fn should_require_node_when_client_js_stage_is_built() {
+        // given
+        let stages = stages();
+
+        // when
+        let stage = stages.iter().find(|s| s.name == "client-js").unwrap();
+
+        // then
+        assert_eq!(stage.tool, Some("node"));
+        assert!(format!("{:?}", stage.action).contains("--test"));
     }
 
     #[test]
