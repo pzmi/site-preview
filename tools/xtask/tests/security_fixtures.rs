@@ -1,6 +1,13 @@
-//! Black-box check of the dependency policy (foundation.md section 8): a mini workspace that
+//! Black-box checks of the security stage (foundation.md section 8).
+//!
+//! Dependency policy: a mini workspace that
 //! depends on a git source must fail the repository's own `deny.toml`, and the same workspace
 //! without that dependency must pass it, so the failure is the policy and not the harness.
+//!
+//!
+//! Secret scanning: a temporary git repository holding a fake cloud key (built at run time, so
+//! the committed tree stays clean) must fail Gitleaks with the repository's own config, and the
+//! same repository without it must pass. A workflow with a bad expression must fail `actionlint`.
 //!
 //! The git source is a local repository, because the policy denies every git source and
 //! `cargo metadata` has to be able to resolve it offline.
@@ -119,4 +126,119 @@ fn should_pass_sources_check_when_a_crate_has_no_dependencies() {
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
+}
+
+fn commit_all(dir: &Path, message: &str) {
+    run_ok(dir, "git", &["add", "."]);
+    run_ok(
+        dir,
+        "git",
+        &[
+            "-c",
+            "user.name=fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--quiet",
+            "-m",
+            message,
+        ],
+    );
+}
+
+/// A git repository with one committed file of `content`.
+fn scanned_repository(parent: &Path, content: &str) -> PathBuf {
+    let dir = parent.join("scanned");
+    fs::create_dir_all(&dir).expect("create repository");
+    run_ok(&dir, "git", &["init", "--quiet"]);
+    fs::write(dir.join("notes.txt"), content).expect("write file");
+    commit_all(&dir, "fixture");
+    dir
+}
+
+fn gitleaks(dir: &Path) -> Output {
+    let config = repository_root().join(".gitleaks.toml");
+    run(
+        dir,
+        "gitleaks",
+        &[
+            "git",
+            "--no-banner",
+            "--redact",
+            "--config",
+            config.to_str().expect("utf-8 path"),
+        ],
+    )
+}
+
+#[test]
+fn should_fail_secret_scan_when_history_holds_an_aws_style_key() {
+    // given
+    let temp = tempfile::tempdir().expect("tempdir");
+    let key = format!("AKIA{}", "QYLPMST7XRZ2KDW4");
+    let dir = scanned_repository(temp.path(), &format!("aws_access_key_id = {key}\n"));
+
+    // when
+    let out = gitleaks(&dir);
+
+    // then
+    let text = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "key accepted: {text}");
+    assert!(text.contains("leaks found"), "{text}");
+    assert!(!text.contains(&key), "finding was not redacted: {text}");
+}
+
+#[test]
+fn should_fail_secret_scan_when_key_was_removed_but_stays_in_history() {
+    // given
+    let temp = tempfile::tempdir().expect("tempdir");
+    let key = format!("AKIA{}", "QYLPMST7XRZ2KDW4");
+    let dir = scanned_repository(temp.path(), &format!("aws_access_key_id = {key}\n"));
+    fs::write(dir.join("notes.txt"), "nothing here\n").expect("rewrite file");
+    commit_all(&dir, "remove the key");
+
+    // when
+    let out = gitleaks(&dir);
+
+    // then
+    assert!(!out.status.success(), "history was not scanned");
+}
+
+#[test]
+fn should_pass_secret_scan_when_history_holds_no_secret() {
+    // given
+    let temp = tempfile::tempdir().expect("tempdir");
+    let dir = scanned_repository(temp.path(), "nothing secret here\n");
+
+    // when
+    let out = gitleaks(&dir);
+
+    // then
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn should_fail_workflow_lint_when_expression_is_invalid() {
+    // given
+    let temp = tempfile::tempdir().expect("tempdir");
+    let dir = temp.path().join("repo");
+    fs::create_dir_all(dir.join(".github/workflows")).expect("create dir");
+    fs::write(
+        dir.join(".github/workflows/bad.yml"),
+        "on: push\njobs:\n  j:\n    runs-on: ubuntu-24.04\n    steps:\n      \
+         - run: echo ${{ github.nonexistent_property }}\n",
+    )
+    .expect("write workflow");
+
+    // when
+    let out = run(&dir, "actionlint", &[]);
+
+    // then
+    assert!(!out.status.success(), "invalid workflow accepted");
 }

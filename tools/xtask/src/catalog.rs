@@ -95,6 +95,21 @@ pub const CATALOG: &[Check] = &[
         "SEC-01",
         true,
     ),
+    row(
+        "secrets",
+        "security",
+        "gitleaks git --no-banner --redact --config .gitleaks.toml",
+        "SEC-02",
+        true,
+    ),
+    row("workflows", "security", "actionlint", "SEC-02", true),
+    row(
+        "action-pins",
+        "security",
+        "cargo xtask security (in-process)",
+        "SEC-02",
+        true,
+    ),
     row("check", "gate", "cargo xtask check", "OPS-01", false),
     row(
         "mutation",

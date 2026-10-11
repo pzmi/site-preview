@@ -25,6 +25,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0 # the security stage scans the whole history
 
       - name: Install toolchain from rust-toolchain.toml
         run: rustup show active-toolchain || rustup toolchain install
@@ -41,6 +42,9 @@ jobs:
           key: check-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'tools/versions.toml') }}
           restore-keys: |
             check-${{ runner.os }}-
+
+      - name: Install Gitleaks and actionlint
+        uses: ./.github/actions/install-scanners
 
       - name: Install pinned dev tools
         run: cargo xtask install-tools cargo-nextest cargo-deny

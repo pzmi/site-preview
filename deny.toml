@@ -30,12 +30,9 @@ confidence-threshold = 0.8
 
 [bans]
 multiple-versions = "warn"
-# Intended to be "deny". preview-cli is publishable (ADR 0007) and has a path dependency
-# without a version, which cargo-deny reports as a wildcard even with allow-wildcard-paths.
-# ADR 0025 defers publishing; when it is resolved (a version on the path dependency, or the
-# crate made unpublishable) change this to "deny". Until then the finding is a warning, and
-# `cargo xtask security` still prints it.
-wildcards = "warn"
+# A path dependency must carry a version (preview-cli's does), so a wildcard requirement
+# is a real finding; allow-wildcard-paths only covers unpublished path crates.
+wildcards = "deny"
 allow-wildcard-paths = true
 
 [sources]

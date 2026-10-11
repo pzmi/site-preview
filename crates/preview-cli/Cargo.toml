@@ -19,7 +19,7 @@ workspace = true
 
 [dependencies]
 clap = { version = "4.6.7", features = ["derive", "std", "help", "usage", "error-context"] }
-preview-composition = { path = "../preview-composition" }
+preview-composition = { path = "../preview-composition", version = "0.1.0" }
 
 [dev-dependencies]
 assert_cmd = "2.2.2"

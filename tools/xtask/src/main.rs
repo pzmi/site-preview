@@ -1,5 +1,6 @@
 //! Repository automation entry point, invoked as `cargo xtask`.
 
+mod action_pins;
 mod architecture;
 mod catalog;
 mod check;
