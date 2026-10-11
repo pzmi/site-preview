@@ -72,14 +72,17 @@ Consequences the checker enforces:
 - **Application** owns use cases, command and query types, port traits and deterministic
   orchestration. It names no adapter technology; no HTTP or watcher type escapes an adapter.
 - **FS adapter** owns the root-directory capability, byte reading, metadata and the watcher.
-  Only it, plus the bootstrap file of composition, may obtain ambient filesystem authority
+  Only it, plus the bootstrap file of composition (`src/bootstrap.rs`, which must exist:
+  `ARCH-missing-selector`), may obtain ambient filesystem authority
   (`ARCH-fs-authority`, [ADR 0004](adr/0004-rustix-openat-capability.md)).
 - **HTTP adapter** owns routes, handlers, content negotiation, HTML injection and the SSE
   transport. It converts requests into application commands and queries and holds no
   domain policy.
 - **Composition** constructs dependencies, selects configuration, wires tasks and
   cancellation, and owns the async runtime and process resources
-  ([ADR 0028](adr/0028-composition-owns-runtime-and-processes.md)). It is not a service
+  ([ADR 0028](adr/0028-composition-owns-runtime-and-processes.md)): `bootstrap.rs` opens
+  the root, `server.rs` builds the Tokio runtime, binds the listener, reports readiness
+  through the CLI's `StartupReporter` and serves until Ctrl-C. It is not a service
   locator for the domain.
 - **CLI** parses flags, maps outcomes to exit codes, picks loopback defaults and delegates
   through composition.

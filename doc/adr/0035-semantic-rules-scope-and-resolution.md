@@ -55,8 +55,10 @@ domain test needs `Instant::now()` to make an `Instant` value at all.
   in `architecture.toml` lists it (a fixture with part of the topology); `absent` may not
   list a member or a crate no rule names, and the poll helper file of ADR 0036 must exist
   (`ARCH-missing-selector`). A rename therefore fails instead of turning a rule into a
-  no-op. An exemption file that is missing (`bootstrap.rs`, which composition has not
-  written yet) only narrows the exemption and is not required.
+  no-op. Once composition opened the root there (CLI-01), `src/bootstrap.rs` is required
+  too whenever `preview-composition` is a production member, so renaming the bootstrap
+  file cannot quietly drop the filesystem-authority exemption (fixture
+  `missing-bootstrap`).
 
 ## Consequences
 

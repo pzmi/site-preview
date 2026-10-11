@@ -24,3 +24,6 @@ preview-composition = { path = "../preview-composition", version = "0.1.0" }
 [dev-dependencies]
 assert_cmd = "2.2.2"
 predicates = "3.1.4"
+preview-testkit = { path = "../preview-testkit" }
+tempfile = "3.27.0"
+ureq = { version = "3.4.2", default-features = false }

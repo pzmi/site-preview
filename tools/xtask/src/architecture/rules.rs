@@ -109,8 +109,8 @@ rules! {
         "Owned code contains an unsafe block, fn, impl, trait, extern block or unsafe attribute.",
         ["unsafe-block"];
     MissingSelector => "ARCH-missing-selector", "ARCH-07",
-        "A crate or file the semantic rules name is missing and not listed in [semantic] absent, or absent lists a member.",
-        ["missing-selector"];
+        "A crate or file the semantic rules name is missing and not listed in [semantic] absent, absent lists a member, or production composition lacks src/bootstrap.rs.",
+        ["missing-bootstrap", "missing-selector"];
     LintConfig => "ARCH-lint-config", "ARCH-07",
         "A lint is relaxed outside source: a member's [lints] is not workspace = true, a workspace lint is allowed, rustflags allow or cap lints, or clippy.toml allows.",
         ["clippy-toml-allow", "member-lints-override", "rustflags-allow"];

@@ -199,7 +199,9 @@ fn selector_crates() -> BTreeSet<String> {
 
 /// `ARCH-missing-selector`: each crate the rules name must be a workspace member unless
 /// `[semantic] absent` lists it (fixtures with part of the topology), an `absent` entry
-/// must not name a member, and the poll helper's file must exist.
+/// must not name a member, the poll helper's file must exist, and so must composition's
+/// bootstrap file when composition is a production member (pinned by the `missing-bootstrap`
+/// fixture).
 fn selector_problems(root: &Path, metadata: &Metadata, policy: &Policy) -> Vec<Diagnostic> {
     let members: BTreeMap<String, &Package> = metadata
         .workspace_packages()
@@ -242,6 +244,25 @@ fn selector_problems(root: &Path, metadata: &Metadata, policy: &Policy) -> Vec<D
         out.push(Diagnostic::new(
             Rule::MissingSelector,
             format!("the test-sleep exemption names `{file}` in {helper}, which does not exist"),
+            relative(root, &dir.as_std_path().join(file)),
+        ));
+    }
+    let (composition, file) = rules_purity::BOOTSTRAP;
+    let production = policy
+        .workspace
+        .production
+        .as_ref()
+        .is_some_and(|p| p.iter().any(|name| name == composition));
+    if production
+        && let Some(package) = members.get(composition)
+        && let Some(dir) = package.manifest_path.parent()
+        && !dir.as_std_path().join(file).is_file()
+    {
+        out.push(Diagnostic::new(
+            Rule::MissingSelector,
+            format!(
+                "the filesystem-authority exemption names `{file}` in {composition}, which does not exist: the site root is opened there and nowhere else in composition (ADR 0035)"
+            ),
             relative(root, &dir.as_std_path().join(file)),
         ));
     }

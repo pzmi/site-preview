@@ -1,0 +1,6 @@
+{
+  "routes": [
+    { "name": "Coast loop", "km": 42 },
+    { "name": "Hill climb", "km": 17 }
+  ]
+}

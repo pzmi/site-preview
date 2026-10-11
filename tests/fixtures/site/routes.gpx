@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="site-preview fixture" xmlns="http://www.topografix.com/GPX/1/1">
+  <trk>
+    <name>Coast loop</name>
+    <trkseg>
+      <trkpt lat="0.0000" lon="0.0000"></trkpt>
+      <trkpt lat="0.0010" lon="0.0010"></trkpt>
+    </trkseg>
+  </trk>
+</gpx>

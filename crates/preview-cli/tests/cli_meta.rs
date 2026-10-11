@@ -36,13 +36,3 @@ fn should_exit_2_when_given_unknown_flag() {
     // then
     assert.code(2).stderr(predicate::str::contains("Usage"));
 }
-
-#[test]
-fn should_exit_2_when_serve_is_not_wired_yet() {
-    // given
-    let mut command = site_preview();
-    // when
-    let assert = command.arg("serve").assert();
-    // then
-    assert.code(2).stderr(predicate::str::contains("Usage"));
-}

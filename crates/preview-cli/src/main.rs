@@ -2,13 +2,17 @@
 
 mod args;
 mod exit;
+mod output;
 
+use std::io;
 use std::process::ExitCode;
 
-use clap::{CommandFactory, Parser, error::ErrorKind};
+use clap::Parser;
+use preview_composition::ServeConfig;
 
 use crate::args::{Cli, Command};
 use crate::exit::Outcome;
+use crate::output::HumanReport;
 
 fn main() -> ExitCode {
     run().into()
@@ -29,13 +33,15 @@ fn run() -> Outcome {
         }
     };
     match cli.command {
-        Command::Serve => {
-            let error = Cli::command().error(
-                ErrorKind::MissingRequiredArgument,
-                "`serve` is not available yet",
-            );
-            let _ = error.print();
-            Outcome::Usage
+        Command::Serve(args) => {
+            let config = ServeConfig::new(args.directory);
+            match preview_composition::run(&config, &mut HumanReport::new(io::stdout())) {
+                Ok(()) => Outcome::Success,
+                Err(error) => {
+                    eprintln!("site-preview: error: {error}");
+                    Outcome::Failure
+                }
+            }
         }
     }
 }

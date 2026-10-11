@@ -1,0 +1,4 @@
+rule: ARCH-missing-selector
+at: crates/preview-composition/src/bootstrap.rs
+contains: `src/bootstrap.rs` in preview-composition, which does not exist
+only: true
