@@ -103,7 +103,7 @@ the task names come from `doc/tasks.md`.
 | `SiteContent`: open a validated path as a file or a directory with an optional index | sync, `&dyn`; defined by APP-01 | `preview-adapter-fs` (FS-01, FS-02) | testkit in-memory store (TEST-03) |
 | `ChangeSource`: next batch of events, overflow, failure or close | async, cancellation safe, generic; defined by APP-01 | `preview-adapter-fs` watcher (FS-05..08) | testkit scripted source (TEST-03) |
 | `Clock`: current tick | sync; defined by APP-01 | composition | testkit fixed clock (TEST-03) |
-| Notification publication to connected pages (the `ReloadState` latest-state channel) | planned by APP-02 | application, served by `preview-adapter-http` | testkit recording sink (TEST-03) |
+| Notification publication to connected pages (the `ReloadState` latest-state channel) | `preview_application::ReloadState` (APP-02) | application, served by `preview-adapter-http` | testkit recording sink (TEST-03) |
 
 Application-level queries and commands planned alongside them: `ResolveRequest`
 (APP-03) and the change commands record, settle, overflow and health (APP-04). Each port's
