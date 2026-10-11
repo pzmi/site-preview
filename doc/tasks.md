@@ -403,7 +403,7 @@ Each decision is an ADR. Tasks cite the D-id, and D*n* is ADR *n*+1. ADR 0001 is
   - `ChangedPath { url_path: String, kind }` builds a percent-encoded root-relative URL path (`/css/site.css`) from the validated components.
   - `ChangeSet { changes: BTreeSet<ChangedPath>, full: bool, reason: Option<FullReason> }` has `accumulate(&ChangeEvent, Classification)`, `mark_full(reason)` and `take()`. `full` is forced by: more than 64 entries (`CapExceeded`), `Rescan`/overflow (`Rescan`), `dir_changed` (`DirectoryChanged`), and an `Html` or `Other` kind (`DocumentChanged`). A `Remove` of a css, js or asset path also forces full (`Removed`), because no in-place swap can apply. Duplicate events for one path yield one entry.
 
-  Extend `Debouncer` so the fire carries the accumulated `ChangeSet`: `Poll::Fire(Settled { rescan, changes })`.
+  Extend `Debouncer` so the fire carries the accumulated `ChangeSet`: `Poll::Fire(Settled { rescan, changes })`, with `record(now, &ChangeEvent, Classification)`. The fields of `ChangeSet` are private (`changes()`, `is_full()`, `reason()`), so a hot set can never exceed the cap.
 - **Accept:** `should_mark_full_when_html_changes`, `should_keep_hot_when_only_css_changes`, `should_mark_full_when_more_than_64_paths_change`, `should_mark_full_when_overflow_rescan`, `should_deduplicate_when_same_path_changes_twice`, `should_percent_encode_url_path_when_name_has_space`, and a proptest: `full == false` implies every change kind is in {Css, Js, Asset} and the count is ≤ 64.
 - **Impact:** model, public API (domain).
 

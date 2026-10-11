@@ -1,6 +1,7 @@
 //! Pure policies, transitions and invariants of the preview server; performs no I/O.
 
 mod change;
+mod change_set;
 mod debounce;
 mod events;
 mod lifecycle;
@@ -11,6 +12,7 @@ mod watch_set;
 mod watcher_health;
 
 pub use change::{ChangeEvent, ChangeKind, Classification, IgnoreReason, classify};
+pub use change_set::{AssetKind, ChangeSet, ChangedPath, FullReason, MAX_CHANGES};
 pub use debounce::{Deadline, Debouncer, Poll, Settled};
 pub use events::{DegradeReason, DomainEvent};
 pub use lifecycle::{
