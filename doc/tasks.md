@@ -512,7 +512,7 @@ Each decision is an ADR. Tasks cite the D-id, and D*n* is ADR *n*+1. ADR 0001 is
 ### FS-04: Concurrent symlink-swap race test
 - **Depends on:** FS-02. **Model:** opus. **Size:** S. Parallel with TEST-04, ARCH-08.
 - **Read:** plan §5.3 (last paragraph).
-- **Create/Change:** `crates/preview-adapter-fs/tests/symlink_race.rs`. One thread loops (bounded iterations, not time) atomically renaming between a real directory `d/` (containing `secret-inside.txt`) and a symlink `d -> /outside` (containing `secret.txt` with a sentinel). Another thread repeatedly calls `RootDir::open("d/secret.txt")`. Assert the sentinel bytes are never returned over N iterations, and that both outcomes (opened inside, forbidden) were observed. The test is in the `os-watcher` nextest group if it needs isolation.
+- **Create/Change:** `crates/preview-adapter-fs/tests/symlink_race.rs`. One thread loops (bounded iterations, not time) atomically renaming between a real directory `d/` (containing its own `secret.txt`) and a symlink `d -> /outside` (containing `secret.txt` with a sentinel). Another thread repeatedly calls `RootDir::open("d/secret.txt")`. Assert the sentinel bytes are never returned over N iterations, and that both outcomes (opened inside, forbidden) were observed. The test is in the `os-watcher` nextest group if it needs isolation.
 - **Accept:** the test passes repeatedly (`cargo nextest run -p preview-adapter-fs symlink_race --retries 0` run 5 times in the commit's verification). A negative variant that uses `std::fs::File::open(root.join(p))` on the same loop observes the sentinel; it lives under `#[cfg(test)]` as a test that asserts the naive approach is unsafe.
 - **Impact:** security boundary.
 
