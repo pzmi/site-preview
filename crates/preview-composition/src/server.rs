@@ -6,7 +6,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use preview_adapter_http::{AppState, build_router};
+use preview_adapter_http::{AppState, DEFAULT_KEEP_ALIVE, Shutdown, build_router};
 use preview_application::ReloadState;
 use preview_domain::{BoundAddr, HostPolicy, InstanceId};
 use tokio::net::TcpListener;
@@ -73,10 +73,13 @@ impl core::error::Error for StartupError {}
 /// Serves `config.root` until Ctrl-C.
 ///
 /// In order (plan.md section 9): open the root, build a multi-thread runtime, bind the
-/// listener, install the Ctrl-C handler, build the router over a fresh [`ReloadState`] and a
-/// [`HostPolicy`] for the address actually bound and `--allow-remote`, report [`Ready`],
-/// then serve. A non-loopback host without `--allow-remote` is refused before anything
-/// opens; an explicit port in use is [`StartupError::Bind`]
+/// listener, install the Ctrl-C handler, build the router over a fresh [`ReloadState`], a
+/// [`HostPolicy`] for the address actually bound and `--allow-remote`, and a [`Shutdown`]
+/// for the event streams, report [`Ready`], then serve. Ctrl-C stops accepting and ends every
+/// open event stream, so the graceful shutdown does not wait on a browser tab (the stream side
+/// is pinned by `should_end_stream_when_shutdown_token_cancelled` in the HTTP adapter; the
+/// process side by the lifecycle tests). A non-loopback host without `--allow-remote` is
+/// refused before anything opens; an explicit port in use is [`StartupError::Bind`]
 /// (`should_exit_1_when_explicit_port_in_use`). A clean Ctrl-C returns `Ok(())`. Pinned end to end by
 /// `should_serve_index_when_started_on_fixture` and `should_exit_1_when_directory_does_not_exist`.
 ///
@@ -104,6 +107,7 @@ pub fn run(config: &ServeConfig, out: &mut dyn StartupReporter) -> Result<(), St
         })?;
         let interrupt =
             signal(SignalKind::interrupt()).map_err(|e| StartupError::Signal(e.kind()))?;
+        let streams = Shutdown::new();
         let state = AppState {
             content: root.content,
             reload: ReloadState::new(instance_id()),
@@ -113,6 +117,8 @@ pub fn run(config: &ServeConfig, out: &mut dyn StartupReporter) -> Result<(), St
                 BoundAddr::new(local.ip(), local.port()),
                 config.allow_remote,
             ),
+            shutdown: streams.signal(),
+            keep_alive: DEFAULT_KEEP_ALIVE,
         };
         let url = format!("http://{}/", reachable(local));
         out.ready(&Ready {
@@ -120,7 +126,12 @@ pub fn run(config: &ServeConfig, out: &mut dyn StartupReporter) -> Result<(), St
             url: &url,
         });
         axum::serve(listener, build_router(state))
-            .with_graceful_shutdown(interrupted(interrupt))
+            .with_graceful_shutdown(async move {
+                interrupted(interrupt).await;
+                // A graceful shutdown waits for open responses, and an event stream never
+                // ends on its own: end them now, or one open tab holds the process.
+                streams.trigger();
+            })
             .await
             .map_err(|e| StartupError::Serve(e.kind()))
     })

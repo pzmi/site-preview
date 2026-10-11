@@ -589,7 +589,7 @@ Each decision is an ADR. Tasks cite the D-id, and D*n* is ADR *n*+1. ADR 0001 is
 ### HTTP-10: SSE endpoint
 - **Depends on:** HTTP-09, APP-02. **Model:** opus. **Size:** M. Parallel with HTTP-08.
 - **Read:** plan §7.2 (whole), plan §7.4 bullets 2–3; D16.
-- **Create/Change:** `crates/preview-adapter-http/src/sse.rs`. `GET /__site_preview/events` subscribes first and then sends `event: state` with `id: <rev>` and `data: {"instance_id":…,"revision":…}`, serialized with `serde_json` (allowlisted). It sends `event: reload` for each later changed value seen by the subscription. The keepalive comment interval is injectable (15 s default). Headers are `text/event-stream`, `no-store` and `nosniff`. The stream ends when the `CancellationToken` passed in `AppState` fires. `Last-Event-ID` is accepted and ignored.
+- **Create/Change:** `crates/preview-adapter-http/src/sse.rs`. `GET /__site_preview/events` subscribes first and then sends `event: state` with `id: <rev>` and `data: {"instance_id":…,"revision":…}`, serialized with `serde_json` (allowlisted). It sends `event: reload` for each later changed value seen by the subscription. The keepalive comment interval is injectable (15 s default). Headers are `text/event-stream`, `no-store` and `nosniff`. The stream ends when the `ShutdownSignal` passed in `AppState` fires (its owner, `Shutdown`, is a tokio `watch` flag rather than `tokio-util`'s `CancellationToken`, so no new dependency; dropping the owner counts as firing) or when the `ReloadState` closes. `Last-Event-ID` is accepted and ignored.
 - **Accept:** with `tokio::time::pause`: `should_send_state_baseline_when_connected`, `should_send_reload_with_new_revision_when_published`, `should_send_only_latest_when_several_published_before_poll`, `should_send_keepalive_when_interval_elapses`, and `should_end_stream_when_shutdown_token_cancelled`. This is the M2 component-level exit check: one publish produces exactly one `reload`.
 - **Impact:** public API (SSE protocol), model.
 
@@ -674,7 +674,7 @@ Each decision is an ADR. Tasks cite the D-id, and D*n* is ADR *n*+1. ADR 0001 is
 ### CLI-05: Signals and graceful shutdown
 - **Depends on:** CLI-04. **Model:** opus. **Size:** M.
 - **Read:** plan §3 (exit codes), plan §7.4 bullet 5, plan §9 (shutdown line, last paragraph); D27.
-- **Create/Change:** `crates/preview-composition/src/shutdown.rs` handles SIGINT and SIGTERM via `tokio::signal::unix`. The shutdown order is: stop accepting (axum graceful shutdown), cancel the SSE token (open streams end), stop the watcher (drop it and join the pipeline task), then join the remaining tasks with a bounded timeout. The process exits 0. Tests are black-box in `crates/preview-cli/tests/lifecycle.rs`.
+- **Create/Change:** `crates/preview-composition/src/shutdown.rs` handles SIGINT and SIGTERM via `tokio::signal::unix`. The shutdown order is: stop accepting (axum graceful shutdown), trigger the SSE `Shutdown` (open streams end; HTTP-10 already triggers it on SIGINT), stop the watcher (drop it and join the pipeline task), then join the remaining tasks with a bounded timeout. The process exits 0. Tests are black-box in `crates/preview-cli/tests/lifecycle.rs`.
 - **Accept:** `should_exit_0_when_sigterm_received`, `should_exit_0_when_sigint_received_with_open_sse_connection` (exit within a bounded wait; no hang), and `should_close_listener_when_shut_down` (connect refused afterwards).
 - **Impact:** model.
 

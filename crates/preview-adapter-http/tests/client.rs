@@ -6,7 +6,7 @@ use std::sync::Arc;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
-use preview_adapter_http::{AppState, build_router};
+use preview_adapter_http::{AppState, DEFAULT_KEEP_ALIVE, Shutdown, build_router};
 use preview_application::ReloadState;
 use preview_domain::{BoundAddr, HostPolicy};
 use preview_testkit::{FixedInstanceIds, InMemorySite};
@@ -19,6 +19,8 @@ async fn request(method: &str, host: &str) -> (axum::http::response::Parts, Stri
         content: Arc::new(site.clone()),
         reload: ReloadState::new(ids.next_id()),
         host: HostPolicy::new(BoundAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 80), false),
+        shutdown: Shutdown::new().signal(),
+        keep_alive: DEFAULT_KEEP_ALIVE,
     });
     let request = Request::builder()
         .header("host", host)

@@ -10,6 +10,7 @@ use crate::client::client_js;
 use crate::errors::{harden, method_gate, plain};
 use crate::files::serve;
 use crate::host::host_gate;
+use crate::sse::events;
 use crate::state::AppState;
 
 /// Builds the router for one server instance.
@@ -20,7 +21,8 @@ use crate::state::AppState;
 ///   `Allow: GET, HEAD`).
 /// - `/__site_preview`, `/__site_preview/` and everything beneath it are matched before the
 ///   file fallback and answered by internal handlers, never from disk. `/__site_preview/client.js`
-///   serves the embedded script; until the event stream lands, every other internal path is a 404.
+///   serves the embedded script, `/__site_preview/events` the live-reload event stream; every
+///   other internal path is a 404.
 /// - Everything else goes to the file fallback.
 ///
 /// Percent-encoded spellings of the reserved name are not matched by the routes; the
@@ -28,6 +30,7 @@ use crate::state::AppState;
 pub fn build_router(state: AppState) -> Router {
     Router::new()
         .route("/__site_preview/client.js", get(client_js))
+        .route("/__site_preview/events", get(events))
         .route("/__site_preview", any(internal_not_found))
         .route("/__site_preview/", any(internal_not_found))
         .route("/__site_preview/{*rest}", any(internal_not_found))

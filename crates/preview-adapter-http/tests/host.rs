@@ -7,7 +7,7 @@ use axum::body::Body;
 use axum::http::request::Builder;
 use axum::http::{HeaderValue, Request, Response, StatusCode};
 use http_body_util::BodyExt;
-use preview_adapter_http::{AppState, build_router};
+use preview_adapter_http::{AppState, DEFAULT_KEEP_ALIVE, Shutdown, build_router};
 use preview_application::ReloadState;
 use preview_domain::{BoundAddr, HostPolicy};
 use preview_testkit::{FixedInstanceIds, InMemorySite};
@@ -30,6 +30,8 @@ async fn send_to(
         content: Arc::new(site.clone()),
         reload: ReloadState::new(ids.next_id()),
         host: HostPolicy::new(BoundAddr::new(bound, PORT), allow_remote),
+        shutdown: Shutdown::new().signal(),
+        keep_alive: DEFAULT_KEEP_ALIVE,
     });
     let response = app.oneshot(request).await.expect("response");
     let (parts, body) = response.into_parts();

@@ -12,8 +12,12 @@ mod host;
 pub mod inject;
 mod mime;
 mod router;
+mod shutdown;
+mod sse;
 mod state;
 mod stream;
 
 pub use router::build_router;
+pub use shutdown::{Shutdown, ShutdownSignal};
+pub use sse::DEFAULT_KEEP_ALIVE;
 pub use state::AppState;
