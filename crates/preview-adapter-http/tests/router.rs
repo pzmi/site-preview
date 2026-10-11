@@ -184,8 +184,8 @@ async fn should_not_pass_query_to_resolution_when_path_has_query() {
     // when: a query that would be an invalid path if it were not stripped
     let (response, _) = send(&site, "GET", "/page.html?a=%zz/../..").await;
 
-    // then: the file resolves (stub 501 until streaming lands), not 400/404
-    assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+    // then: the file resolves, not 400/404
+    assert_eq!(response.status(), StatusCode::OK);
 }
 
 #[tokio::test]
