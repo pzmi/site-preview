@@ -9,6 +9,7 @@ mod directory;
 mod errors;
 mod files;
 mod host;
+pub mod inject;
 mod mime;
 mod router;
 mod state;

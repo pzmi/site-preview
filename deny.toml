@@ -30,6 +30,25 @@ allow = [
 ]
 confidence-threshold = 0.8
 
+# MPL-2.0 (file-level copyleft) is accepted only for these unmodified crates, which lol_html
+# (plan.md section 6, the HTML injection rewriter) needs for its CSS selector engine. Scoped
+# per crate so no other MPL-2.0 dependency slips in unreviewed (ADR 0043).
+[[licenses.exceptions]]
+crate = "cssparser"
+allow = ["MPL-2.0"]
+
+[[licenses.exceptions]]
+crate = "cssparser-macros"
+allow = ["MPL-2.0"]
+
+[[licenses.exceptions]]
+crate = "dtoa-short"
+allow = ["MPL-2.0"]
+
+[[licenses.exceptions]]
+crate = "selectors"
+allow = ["MPL-2.0"]
+
 [bans]
 multiple-versions = "warn"
 # A path dependency must carry a version (preview-cli's does), so a wildcard requirement

@@ -38,7 +38,7 @@ xtask = []
 [external.normal]
 preview-domain = { percent-encoding = ["default"] }
 preview-adapter-fs = { rustix = ["fs", "std"] }
-preview-adapter-http = { axum = ["http1", "tokio"], mime_guess = [], tokio = ["rt", "sync"], tokio-stream = ["default"] }
+preview-adapter-http = { axum = ["http1", "tokio"], lol_html = [], mime_guess = [], tokio = ["rt", "sync"], tokio-stream = ["default"] }
 preview-application = { tokio = ["sync"] }
 preview-composition = { axum = ["http1", "tokio"], tokio = ["rt-multi-thread", "net", "signal"] }
 preview-cli = { clap = ["default", "derive", "std", "help", "usage", "error-context"] }
