@@ -81,11 +81,13 @@ impl Server {
                 .map(str::to_owned)
         };
         let content_type = header("content-type");
+        let location = header("location");
         let status = response.status().as_u16();
         let body = response.body_mut().read_to_vec().expect("a readable body");
         Reply {
             status,
             content_type,
+            location,
             body,
         }
     }
@@ -95,6 +97,7 @@ impl Server {
 struct Reply {
     status: u16,
     content_type: Option<String>,
+    location: Option<String>,
     body: Vec<u8>,
 }
 
@@ -232,6 +235,25 @@ fn should_label_content_type_when_serving_fixture_files() {
         assert_eq!(reply.status, 200, "{path}");
         assert_eq!(reply.content_type.as_deref(), Some(*content_type), "{path}");
     }
+}
+
+#[test]
+fn should_redirect_to_slash_with_query_when_directory_requested() {
+    // given
+    let site = copy_of_fixture();
+    let server = Server::start(site.path());
+
+    // when
+    let redirect = server.fetch("/guide?from=home");
+    let target = server.fetch(redirect.location.as_deref().unwrap_or_default());
+
+    // then
+    assert_eq!(redirect.status, 307);
+    assert_eq!(redirect.location.as_deref(), Some("/guide/?from=home"));
+    assert_eq!(target.status, 200);
+    // Compared by content, not bytes: served HTML gains the reload client once injection exists.
+    let page = String::from_utf8(target.body).expect("a UTF-8 page");
+    assert!(page.contains("<h1>Guide</h1>"), "{page}");
 }
 
 #[test]

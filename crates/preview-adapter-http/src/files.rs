@@ -12,6 +12,7 @@ use preview_domain::MAX_INJECTION_INPUT_BYTES;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
+use crate::directory::redirect_to_slash;
 use crate::errors::plain;
 use crate::mime::{MediaType, html_content_type, media_type};
 use crate::state::AppState;
@@ -27,8 +28,9 @@ const QUEUE: usize = 2;
 /// Resolves `uri.path()` (never the query) on a blocking thread and maps the outcome.
 ///
 /// A file answers 200 with `Content-Length` and, for GET, a streamed body (see
-/// [`stream_body`]); HEAD answers the same headers with an empty body and reads nothing. The
-/// directory redirect (HTTP-04) is not here yet and answers a fixed 501. No `Accept-Ranges`
+/// [`stream_body`]); HEAD answers the same headers with an empty body and reads nothing. A
+/// directory without its trailing slash is redirected (see [`redirect_to_slash`]), with the
+/// request's query re-attached; a directory index is served like any file. No `Accept-Ranges`
 /// is sent and a `Range` request header is never read, so a range request gets the full 200
 /// (plan.md §5.1). The `Content-Type` comes from the served file's own name (see
 /// [`crate::mime`]); HTML is handled by [`html_response`].
@@ -51,7 +53,7 @@ pub(crate) async fn serve(State(state): State<AppState>, method: Method, uri: Ur
         Resolved::NotFound => plain(StatusCode::NOT_FOUND),
         Resolved::Forbidden(_) => plain(StatusCode::FORBIDDEN),
         Resolved::Unavailable(_) => plain(StatusCode::INTERNAL_SERVER_ERROR),
-        Resolved::RedirectToSlash { .. } => plain(StatusCode::NOT_IMPLEMENTED),
+        Resolved::RedirectToSlash { path } => redirect_to_slash(&path, uri.query()),
     }
 }
 
