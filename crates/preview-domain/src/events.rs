@@ -10,6 +10,9 @@ pub enum DegradeReason {
     RegistrationFailed,
     /// The OS watcher reported a runtime failure (plan §8.5).
     RuntimeFailure,
+    /// The revision counter reached `u64::MAX`, so no further change can be published.
+    /// Permanent: the watcher health never recovers from it.
+    RevisionExhausted,
 }
 
 /// A fact the domain reports; it carries no I/O handle and no wall-clock time.
