@@ -11,5 +11,6 @@ mod config;
 mod server;
 
 pub use bootstrap::RootRefusal;
-pub use config::ServeConfig;
+pub use config::{BindRefusal, BindScope, ServeConfig};
+pub use preview_domain::{DebounceWindow, DebounceWindowError};
 pub use server::{Ready, StartupError, StartupReporter, run};
