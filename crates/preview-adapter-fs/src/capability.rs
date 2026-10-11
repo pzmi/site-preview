@@ -85,6 +85,13 @@ impl RootDir {
         Ok(Self { fd })
     }
 
+    /// The root descriptor, for checks made relative to the root inside this crate (the
+    /// reserved-name `statat` of `root.rs`). Never exported: outside the crate, the root is
+    /// reachable only through [`RootDir::open`].
+    pub(crate) fn as_fd(&self) -> BorrowedFd<'_> {
+        self.fd.as_fd()
+    }
+
     /// Opens `path` beneath the root, one component at a time, never following a link.
     ///
     /// The root path opens a new descriptor of the root directory itself.
