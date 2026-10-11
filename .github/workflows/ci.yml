@@ -43,7 +43,7 @@ jobs:
             check-${{ runner.os }}-
 
       - name: Install pinned dev tools
-        run: cargo xtask install-tools cargo-nextest
+        run: cargo xtask install-tools cargo-nextest cargo-deny
 
       - name: Full gate
         run: cargo xtask check

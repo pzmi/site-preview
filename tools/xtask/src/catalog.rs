@@ -93,7 +93,7 @@ pub const CATALOG: &[Check] = &[
         "security",
         "cargo xtask security",
         "SEC-01",
-        false,
+        true,
     ),
     row("check", "gate", "cargo xtask check", "OPS-01", false),
     row(

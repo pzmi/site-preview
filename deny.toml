@@ -1,0 +1,45 @@
+# cargo-deny policy (foundation.md section 8, D23). Run through `cargo xtask security`.
+# Loosening anything here needs a reviewed reason in a comment, and an ADR when it is a
+# policy change.
+
+[graph]
+all-features = true
+
+[advisories]
+# Unmaintained crates are reported but do not fail the stage; a vulnerability or a yanked
+# crate does. Each ignore needs the advisory id, the reason and an ADR.
+unmaintained = "workspace"
+yanked = "deny"
+ignore = []
+
+[licenses]
+# This repository's own `MIT OR Apache-2.0` must be accepted. Add a licence only with a
+# comment saying which dependency needs it. A first run found only MIT, Apache-2.0 and
+# Unicode-3.0 in use; the BSD, ISC and Zlib entries are the permissive licences foundation.md
+# pre-approves, and cargo-deny reports them as not yet encountered.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+]
+confidence-threshold = 0.8
+
+[bans]
+multiple-versions = "warn"
+# Intended to be "deny". preview-cli is publishable (ADR 0007) and has a path dependency
+# without a version, which cargo-deny reports as a wildcard even with allow-wildcard-paths.
+# ADR 0025 defers publishing; when it is resolved (a version on the path dependency, or the
+# crate made unpublishable) change this to "deny". Until then the finding is a warning, and
+# `cargo xtask security` still prints it.
+wildcards = "warn"
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

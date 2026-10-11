@@ -6,6 +6,7 @@ mod check;
 mod cli;
 mod process;
 mod quick;
+mod security;
 mod test;
 mod tools;
 
@@ -23,6 +24,7 @@ fn main() -> ExitCode {
         Command::Quick => quick::run(),
         Command::Test => test::run(),
         Command::Check => check::run(),
+        Command::Security => security::run(),
         Command::Fmt => run_fmt(),
         Command::Architecture { manifest_path } => architecture::run(manifest_path.as_deref()),
         Command::ListChecks => {
