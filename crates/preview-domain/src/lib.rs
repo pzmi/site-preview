@@ -6,6 +6,7 @@ mod events;
 mod rel_path;
 mod site_state;
 mod time;
+mod watch_set;
 
 pub use change::{ChangeEvent, ChangeKind, Classification, IgnoreReason, classify};
 pub use debounce::{Deadline, Debouncer, Poll, Settled};
@@ -24,3 +25,4 @@ pub mod path;
 pub use path::{Component, PathRefusal, SitePath, decode_request_path};
 pub use rel_path::RelPath;
 pub use time::{DebounceWindow, DebounceWindowError, Tick};
+pub use watch_set::{WatchDiff, WatchSet};
