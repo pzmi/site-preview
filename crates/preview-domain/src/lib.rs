@@ -20,8 +20,13 @@ pub use request_policy::{
     OriginPolicy, OriginReject,
 };
 pub mod eligibility;
+pub mod injection;
 pub mod path;
 
+pub use injection::{
+    FetchDest, InjectionDecision, InjectionInput, InjectionWarning, MAX_INJECTION_INPUT_BYTES,
+    Media, RequestMethod, SkipReason,
+};
 pub use path::{Component, PathRefusal, SitePath, decode_request_path};
 pub use rel_path::RelPath;
 pub use time::{DebounceWindow, DebounceWindowError, Tick};
