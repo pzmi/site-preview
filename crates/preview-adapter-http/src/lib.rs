@@ -10,6 +10,7 @@ mod files;
 mod mime;
 mod router;
 mod state;
+mod stream;
 
 pub use router::build_router;
 pub use state::AppState;
