@@ -10,9 +10,14 @@
 //! | [`FakeClock`] | `Clock` | advances only when told to |
 //! | [`ScriptedChangeSource`] | `ChangeSource` | fed through a [`ScriptedHandle`] |
 //! | [`FixedInstanceIds`] | none | deterministic [`InstanceId`](preview_domain::InstanceId)s |
+//!
+//! The shared contract harnesses live in [`contracts`]: [`contracts::site_content_contract`]
+//! runs the `SiteContent` contract against any [`contracts::SiteContentFactory`], and
+//! [`InMemorySite`] is one.
 
 pub mod change_source;
 pub mod clock;
+pub mod contracts;
 pub mod ids;
 pub mod poll;
 pub mod site;

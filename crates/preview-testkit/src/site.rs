@@ -6,9 +6,13 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use preview_application::{ContentFile, ContentRefusal, ForbiddenReason, Opened, SiteContent};
-use preview_domain::SitePath;
+use preview_domain::{Component, SitePath};
+
+use crate::contracts::{SiteContentFactory, SiteEntry, SiteTree};
 
 const INDEX: &str = "index.html";
+/// `NAME_MAX`: a longer component is refused by the operating system before any lookup.
+const NAME_MAX: usize = 255;
 
 #[derive(Clone)]
 enum Node {
@@ -45,6 +49,9 @@ struct Inner {
 /// Paths in the builders are `/`-separated and relative to the root; missing parent
 /// directories are created. A builder panics when a parent is already a non-directory: that is
 /// a mistake in the test, not a behaviour to model.
+///
+/// A component longer than 255 bytes (`NAME_MAX`) is `Io(InvalidFilename)` when the walk
+/// reaches it, as the operating system reports it, never `NotFound`.
 #[derive(Clone)]
 pub struct InMemorySite {
     inner: Arc<Inner>,
@@ -227,6 +234,7 @@ impl SiteContent for InMemorySite {
         };
         let mut dir = &*root;
         for name in parents {
+            check_length(name)?;
             match dir.get(name.as_str()) {
                 None => return Err(ContentRefusal::NotFound),
                 Some(Node::Dir(children)) => dir = children,
@@ -239,10 +247,35 @@ impl SiteContent for InMemorySite {
                 Some(_) => return Err(ContentRefusal::Forbidden(ForbiddenReason::Symlink)),
             }
         }
+        check_length(last)?;
         match dir.get(last.as_str()) {
             None => Err(ContentRefusal::NotFound),
             Some(node) => open_leaf(node),
         }
+    }
+}
+
+fn check_length(name: &Component) -> Result<(), ContentRefusal> {
+    if name.as_str().len() > NAME_MAX {
+        return Err(ContentRefusal::Io(ErrorKind::InvalidFilename));
+    }
+    Ok(())
+}
+
+/// Builds the fake from a contract tree. A link's target is dropped: the fake never follows a
+/// link, so where it points cannot matter. Files outside the root have no place in the fake.
+impl SiteContentFactory for InMemorySite {
+    type Site = Self;
+
+    fn build(tree: &SiteTree) -> Self {
+        tree.entries()
+            .iter()
+            .fold(Self::new(), |site, (path, entry)| match entry {
+                SiteEntry::Dir => site.with_dir(path),
+                SiteEntry::File(content) => site.with_file(path, content),
+                SiteEntry::Symlink(_) => site.with_symlink(path),
+                SiteEntry::Special => site.with_special(path),
+            })
     }
 }
 
@@ -466,6 +499,25 @@ mod tests {
         assert_eq!(body(opened.expect("opens")), b"mid-request");
         assert_eq!(missing.unwrap_err(), ContentRefusal::NotFound);
         assert_eq!(site.open_count(), 2);
+    }
+
+    #[test]
+    fn should_refuse_as_io_when_component_exceeds_name_max() {
+        // given
+        let site = InMemorySite::new().with_file("a/b.html", b"b");
+        let over = "n".repeat(NAME_MAX + 1);
+        let at_max = "n".repeat(NAME_MAX);
+        // when
+        let leaf = refusal(&site, &format!("/a/{over}"));
+        let parent = refusal(&site, &format!("/{over}/b.html"));
+        let boundary = refusal(&site, &format!("/{at_max}"));
+        let after_missing = refusal(&site, &format!("/missing/{over}"));
+        // then
+        let too_long = ContentRefusal::Io(ErrorKind::InvalidFilename);
+        assert_eq!(leaf, too_long);
+        assert_eq!(parent, too_long);
+        assert_eq!(boundary, ContentRefusal::NotFound);
+        assert_eq!(after_missing, ContentRefusal::NotFound);
     }
 
     #[test]
