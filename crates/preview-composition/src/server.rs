@@ -8,7 +8,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use preview_adapter_http::{AppState, build_router};
 use preview_application::ReloadState;
-use preview_domain::InstanceId;
+use preview_domain::{BoundAddr, HostPolicy, InstanceId};
 use tokio::net::TcpListener;
 use tokio::runtime::Builder;
 use tokio::signal::unix::{Signal, SignalKind, signal};
@@ -69,8 +69,9 @@ impl core::error::Error for StartupError {}
 /// Serves `config.root` until Ctrl-C.
 ///
 /// In order (plan.md section 9): open the root, build a multi-thread runtime, bind the
-/// listener, install the Ctrl-C handler, build the router over a fresh [`ReloadState`],
-/// report [`Ready`], then serve. A clean Ctrl-C returns `Ok(())`. Pinned end to end by
+/// listener, install the Ctrl-C handler, build the router over a fresh [`ReloadState`] and a
+/// [`HostPolicy`] for the bound address (no `--allow-remote` yet), report [`Ready`], then
+/// serve. A clean Ctrl-C returns `Ok(())`. Pinned end to end by
 /// `should_serve_index_when_started_on_fixture` and `should_exit_1_when_directory_does_not_exist`.
 ///
 /// # Errors
@@ -99,6 +100,9 @@ pub fn run(config: &ServeConfig, out: &mut dyn StartupReporter) -> Result<(), St
         let state = AppState {
             content: root.content,
             reload: ReloadState::new(instance_id()),
+            // From the address actually bound: with `--port 0` the request said 0, and a
+            // policy over port 0 would refuse every Host.
+            host: HostPolicy::new(BoundAddr::new(local.ip(), local.port()), false),
         };
         let url = format!("http://{local}/");
         out.ready(&Ready {

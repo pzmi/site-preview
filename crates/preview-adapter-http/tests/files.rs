@@ -1,6 +1,7 @@
 //! File streaming tests, driven in process with `tower::ServiceExt::oneshot`.
 
 use std::io::{self, Cursor, Read};
+use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
 
 use axum::Router;
@@ -9,7 +10,7 @@ use axum::http::{Request, Response, StatusCode};
 use http_body_util::BodyExt;
 use preview_adapter_http::{AppState, build_router};
 use preview_application::{ContentFile, ContentRefusal, Opened, ReloadState, SiteContent};
-use preview_domain::SitePath;
+use preview_domain::{BoundAddr, HostPolicy, SitePath};
 use preview_testkit::{FixedInstanceIds, InMemorySite};
 use tower::ServiceExt;
 
@@ -18,11 +19,13 @@ fn app(content: Arc<dyn SiteContent>) -> Router {
     build_router(AppState {
         content,
         reload: ReloadState::new(ids.next_id()),
+        host: HostPolicy::new(BoundAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 80), false),
     })
 }
 
 fn request(method: &str, uri: &str) -> Request<Body> {
     Request::builder()
+        .header("host", "127.0.0.1")
         .method(method)
         .uri(uri)
         .body(Body::empty())
@@ -95,6 +98,7 @@ async fn should_return_full_200_when_range_requested() {
     let data = noise(10_000);
     let site = InMemorySite::new().with_file("a.bin", &data);
     let req = Request::builder()
+        .header("host", "127.0.0.1")
         .uri("/a.bin")
         .header("range", "bytes=10-19")
         .body(Body::empty())

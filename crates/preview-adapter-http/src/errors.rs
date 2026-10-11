@@ -10,13 +10,15 @@ use axum::http::{HeaderValue, Method, StatusCode};
 use axum::middleware::Next;
 use axum::response::Response;
 
-/// A plain-text response whose body is the status line, e.g. `404 Not Found`.
+/// A plain-text response whose body is the status line, e.g. `404 Not Found`; a 421 says
+/// `Host not allowed` (plan.md §5.4, HTTP-05).
 pub(crate) fn plain(status: StatusCode) -> Response {
     let body = match status {
         StatusCode::BAD_REQUEST => "400 Bad Request",
         StatusCode::FORBIDDEN => "403 Forbidden",
         StatusCode::NOT_FOUND => "404 Not Found",
         StatusCode::METHOD_NOT_ALLOWED => "405 Method Not Allowed",
+        StatusCode::MISDIRECTED_REQUEST => "Host not allowed",
         _ => "500 Internal Server Error",
     };
     let mut response = Response::new(Body::from(body));

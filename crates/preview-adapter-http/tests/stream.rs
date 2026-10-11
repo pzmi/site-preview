@@ -2,6 +2,7 @@
 //! dropped body stops the reading.
 
 use std::io::{self, Cursor, Read};
+use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
@@ -14,7 +15,7 @@ use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use preview_adapter_http::{AppState, build_router};
 use preview_application::{ContentFile, ContentRefusal, Opened, ReloadState, SiteContent};
-use preview_domain::SitePath;
+use preview_domain::{BoundAddr, HostPolicy, SitePath};
 use preview_testkit::poll::wait_until;
 use preview_testkit::{FixedInstanceIds, InMemorySite};
 use tower::ServiceExt;
@@ -27,11 +28,13 @@ fn app(content: Arc<dyn SiteContent>) -> Router {
     build_router(AppState {
         content,
         reload: ReloadState::new(ids.next_id()),
+        host: HostPolicy::new(BoundAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 80), false),
     })
 }
 
 fn get(uri: &str) -> Request<Body> {
     Request::builder()
+        .header("host", "127.0.0.1")
         .uri(uri)
         .body(Body::empty())
         .expect("request")

@@ -7,6 +7,7 @@
 mod directory;
 mod errors;
 mod files;
+mod host;
 mod mime;
 mod router;
 mod state;

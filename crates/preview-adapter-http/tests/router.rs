@@ -1,5 +1,6 @@
 //! In-process tests of the router, driven with `tower::ServiceExt::oneshot`.
 
+use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
 
 use axum::Router;
@@ -8,6 +9,7 @@ use axum::http::{Request, Response, StatusCode};
 use http_body_util::BodyExt;
 use preview_adapter_http::{AppState, build_router};
 use preview_application::ReloadState;
+use preview_domain::{BoundAddr, HostPolicy};
 use preview_testkit::{FixedInstanceIds, InMemorySite};
 use tower::ServiceExt;
 
@@ -16,11 +18,13 @@ fn app(site: &InMemorySite) -> Router {
     build_router(AppState {
         content: Arc::new(site.clone()),
         reload: ReloadState::new(ids.next_id()),
+        host: HostPolicy::new(BoundAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 80), false),
     })
 }
 
 async fn send(site: &InMemorySite, method: &str, uri: &str) -> (Response<Body>, String) {
     let request = Request::builder()
+        .header("host", "127.0.0.1")
         .method(method)
         .uri(uri)
         .body(Body::empty())

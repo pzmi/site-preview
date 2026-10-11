@@ -3,7 +3,8 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
@@ -90,6 +91,41 @@ impl Server {
             location,
             body,
         }
+    }
+}
+
+impl Server {
+    /// The `host:port` the server printed, e.g. `127.0.0.1:49152`.
+    fn authority(&self) -> &str {
+        self.url.trim_start_matches("http://").trim_end_matches('/')
+    }
+
+    /// Sends `head` (request line and headers, without the final blank line) verbatim over a
+    /// fresh connection and returns the status code and body. Raw bytes, because an HTTP
+    /// client sets Host from the URL and would not send a forged, duplicated or absolute-form
+    /// one.
+    fn raw(&self, head: &[u8]) -> (u16, String) {
+        let mut stream = TcpStream::connect(self.authority()).expect("the server accepts");
+        stream
+            .set_read_timeout(Some(STARTUP_DEADLINE))
+            .expect("a read timeout");
+        stream.write_all(head).expect("the request is sent");
+        stream
+            .write_all(b"Connection: close\r\n\r\n")
+            .expect("the request is sent");
+        let mut reply = Vec::new();
+        stream.read_to_end(&mut reply).expect("a complete reply");
+        let reply = String::from_utf8_lossy(&reply).into_owned();
+        let status = reply
+            .split(' ')
+            .nth(1)
+            .and_then(|code| code.parse().ok())
+            .expect("a status line");
+        let body = reply
+            .split_once("\r\n\r\n")
+            .map(|(_, body)| body.to_owned())
+            .unwrap_or_default();
+        (status, body)
     }
 }
 
@@ -292,4 +328,59 @@ fn should_exit_1_when_directory_does_not_exist() {
             "site-preview: error: cannot serve ",
         ))
         .stderr(predicate::str::contains("does not exist"));
+}
+
+#[test]
+fn should_reject_with_421_when_host_names_another_site() {
+    // given
+    let site = copy_of_fixture();
+    let server = Server::start(site.path());
+    let port = server
+        .authority()
+        .rsplit(':')
+        .next()
+        .expect("a port")
+        .to_owned();
+    let bound = server.authority().to_owned();
+    let forged: [Vec<u8>; 5] = [
+        format!("GET / HTTP/1.1\r\nHost: evil.example:{port}\r\n").into_bytes(),
+        b"GET / HTTP/1.1\r\nHost: 127.0.0.1\r\n".to_vec(),
+        format!("GET / HTTP/1.1\r\nHost: {bound}\r\nHost: evil.example:{port}\r\n").into_bytes(),
+        format!("GET http://evil.example:{port}/ HTTP/1.1\r\nHost: {bound}\r\n").into_bytes(),
+        format!("GET /__site_preview/events HTTP/1.1\r\nHost: evil.example:{port}\r\n")
+            .into_bytes(),
+    ];
+
+    for head in forged {
+        // when
+        let (status, body) = server.raw(&head);
+
+        // then
+        let case = String::from_utf8_lossy(&head);
+        assert_eq!(status, 421, "{case}");
+        assert_eq!(body, "Host not allowed", "{case}");
+    }
+}
+
+#[test]
+fn should_serve_when_host_is_bound_address_or_localhost() {
+    // given
+    let site = copy_of_fixture();
+    let server = Server::start(site.path());
+    let port = server
+        .authority()
+        .rsplit(':')
+        .next()
+        .expect("a port")
+        .to_owned();
+    let bound = server.authority().to_owned();
+
+    for host in [bound, format!("localhost:{port}")] {
+        // when
+        let (status, body) = server.raw(format!("GET / HTTP/1.1\r\nHost: {host}\r\n").as_bytes());
+
+        // then
+        assert_eq!(status, 200, "{host}");
+        assert!(body.contains("<h1>"), "{host}: {body}");
+    }
 }
