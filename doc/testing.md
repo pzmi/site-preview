@@ -17,12 +17,12 @@ is one of its entries, or a planned one it lists as not yet available.
 | Doctest | Examples in `///` and `//!` compile and pass | Doc comments; e.g. the `wait_until` example in `crates/preview-testkit/src/poll.rs` | `doctests` | in place |
 | Property | Invariants over generated values, with persisted counterexamples | `proptest!` inside `crates/preview-domain/src/` and `crates/preview-application/src/`; black-box properties in `crates/preview-domain/tests/properties.rs` | `unit-tests`; the `ci` profile raises the case count | in place |
 | Component | Real application code over testkit fakes, no external services | `crates/preview-application/tests/`, `crates/preview-adapter-http/tests/` (router, files, directory, host, client and the SSE stream in `sse.rs` and `stream.rs`, over `InMemorySite`) | `unit-tests` | in place |
-| Contract | Each fake and each real adapter of a port meets one shared harness | `crates/preview-testkit/src/contracts/`; runs in `crates/preview-testkit/tests/site_content_fake.rs` and `crates/preview-adapter-fs/tests/site_content_contract.rs` | `unit-tests` | in place for `SiteContent`; `ChangeSource` planned (TEST-05) |
+| Contract | Each fake and each real adapter of a port meets one shared harness | `crates/preview-testkit/src/contracts/`; runs in `crates/preview-testkit/tests/{site_content_fake,change_source_fake}.rs` and `crates/preview-adapter-fs/tests/{site_content_contract,change_source_contract}.rs` | `unit-tests` | in place for `SiteContent` and `ChangeSource` (TEST-05) |
 | Architecture | Crate, dependency, lint and test-hygiene rules, and each rule's negative control | `tools/xtask/src/architecture/`; fixtures in `tests/architecture-valid/` and `tests/architecture-invalid/`; `tools/xtask/tests/architecture_fixtures.rs` | `architecture` (inside `quick` and `check`) | in place |
 | Security fixtures | The dependency policy, secret scanning and workflow lint reject a seeded bad input | `tools/xtask/tests/security_fixtures.rs` | `unit-tests` | in place |
-| Integration | Real tempdir filesystem, threads, the root capability under a concurrent symlink swap | `crates/preview-adapter-fs/tests/` (`root.rs`, `capability.rs`, `symlink_race.rs`) | `unit-tests` | in place; OS watcher tests planned with the watcher |
+| Integration | Real tempdir filesystem, threads, the root capability under a concurrent symlink swap | `crates/preview-adapter-fs/tests/` (`root.rs`, `capability.rs`, `symlink_race.rs`) | `unit-tests` | in place; the OS watcher tests (`os_watcher::`, `crates/preview-adapter-fs/src/watcher/os_watcher_tests.rs`) run in the `os-watcher` nextest group |
 | CLI black box | The built binary's flags, output and exit codes through `assert_cmd` | `crates/preview-cli/tests/cli_meta.rs` (version, help), `serve_slice.rs` (the served slice), `flags.rs` (port, host and `--allow-remote` flags, warnings, exit codes) | `unit-tests` | in place |
-| E2E | The built binary's HTTP and security behaviour over a real socket against a copy of the hostile fixture site, and that serving leaves the tree unchanged | `crates/preview-cli/tests/http_security.rs`, with `crates/preview-cli/tests/support/mod.rs` | `unit-tests` | in place (E2E-01); E2E-02 planned |
+| E2E | The built binary's HTTP and security behaviour over a real socket against a copy of the hostile fixture site, and that serving leaves the tree unchanged | `crates/preview-cli/tests/http_security.rs`, with `crates/preview-cli/tests/support/mod.rs` | `unit-tests` | in place (E2E-01); injection and SSE black-box suite `injection_sse.rs` (E2E-02); watcher suite `watcher.rs` and `watch_reload.rs` (E2E-03) |
 | Browser E2E | The real binary under `--json --port 0` driven by Chromium through Playwright (`@playwright/test` 1.56.1, locked): harness fixtures `site` and `preview`, `startPreview`, `trackNavigations` | `tests/e2e/browser/` (`support/preview.ts`, `playwright.config.ts`, `*.spec.ts`) | `browser` (`cargo xtask test --only browser`) | harness and smoke spec in place (E2E-04); load, edit, assets and widths spec `reload.spec.ts` (E2E-05); reconnect and restart recovery spec `reconnect.spec.ts` (E2E-06); hot-reload spec `hot.spec.ts` for CSS swap, asset cache-bust, script reload with scroll restore and the accept API (E2E-09); agent workflow spec `agent-workflow.spec.ts` (E2E-07: plays the agent of `AGENTS.md` and fails when its commands or ready example drift from behaviour) |
 | Compile-fail | An invalid API use does not compile (`trybuild`) | `crates/preview-domain/tests/compile_fail.rs`, `crates/preview-adapter-fs/tests/compile_fail.rs` | `unit-tests` | in place (ARCH-08) |
 | Client JavaScript | The reload client's `node:test` suite, with no npm dependency | `crates/preview-adapter-http/assets/client.test.mjs` | `client-js` (`node --test crates/*/assets/*.test.mjs`) | in place (HTTP-09) |
@@ -150,7 +150,7 @@ has been found yet.
   The xtask stage also sets `PROPTEST_CASES=1024` and fails if nextest prints "ignoring unknown
   configuration key".
 - `os-watcher` test group: `max-threads = 4`. Tests whose name starts with `os_watcher::` join it
-  automatically through a profile override. Nothing uses it yet; the watcher adds the first tests.
+  automatically through a profile override; the OS watcher tests are its users.
   Use the group only for tests that share a real OS resource, and prefer dynamic ports and
   tempdirs over serialising the whole suite.
 
@@ -176,7 +176,7 @@ cargo clippy --locked --workspace --all-targets -- -D warnings   # clippy
 cargo nextest run --workspace --locked --profile ci       # unit-tests: the catalog command
 cargo test --locked --workspace --doc                     # doctests (nextest does not run them)
 cargo xtask architecture                                  # rules, fixtures, test hygiene
-cargo xtask test                                          # unit-tests under the ci profile, then doctests
+cargo xtask test                                          # unit-tests under the ci profile, doctests, client-js, then browser
 cargo xtask security                                      # deny, secrets, workflows, action pins
 node --test crates/*/assets/*.test.mjs                    # client-js: the reload client's tests
 cargo xtask test --only browser                           # browser: build, npm ci, npx playwright test (needs Node 22 and Chromium 1194)

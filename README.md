@@ -291,7 +291,10 @@ cargo xtask quick                         # formatter, Clippy, fast tests (while
 cargo xtask check                         # the full gate, run before every commit
 ```
 
-`quick` is not `check`. See [CONTRIBUTING.md](CONTRIBUTING.md).
+`quick` is not `check`. `check` also runs the browser stage (`cargo xtask test --only browser`),
+which needs Node 22, npm and the Chromium build 1194 that the pinned Playwright launches;
+`install-tools` does not install it, so run `npx --prefix tests/e2e/browser playwright install chromium`
+once. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Documentation
 

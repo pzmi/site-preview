@@ -2,8 +2,8 @@
 
 [test-groups]
 # Real OS watcher tests share inotify/FSEvents resources; cap their parallelism.
-# Tests join the group with a `[[profile.<name>.overrides]]` filter such as
-# `test(/^os_watcher::/)` once they exist.
+# Tests join the group with a `[[profile.<name>.overrides]]` filter; the
+# `test(/^os_watcher::/)` filter below puts the OS watcher tests in it.
 os-watcher = { max-threads = 4 }
 
 [profile.default]

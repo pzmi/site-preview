@@ -319,6 +319,8 @@ A page navigated/reloaded normally gets a new render-time baseline. A still-open
 
 In P0, **always full-page reload**, including CSS-only changes. P1 may send CSS-specific events with safe fallback.
 
+> **Superseded:** [ADR 0030](adr/0030-css-js-asset-hot-reload-in-p0.md) and [ADR 0031](adr/0031-hot-reload-protocol-details.md) (D29, D30) bring stylesheet swap, asset cache-busting, script reload with scroll restore and the accept API into P0. The paragraph above is kept as the original plan; the ADRs decide.
+
 ### 7.4 SSE resource limits
 
 - Limit to **64 simultaneous** SSE connections by default; return 503 if exceeded.

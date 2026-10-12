@@ -13,8 +13,8 @@ exits with a nonzero code (1 for a refused start, 2 for a usage error).
    [The watcher is degraded or unavailable](#the-watcher-is-degraded-or-unavailable).
 2. Read stderr for `warning[...]` lines. Page warnings are printed once per request path.
 3. Open the browser developer console: CSP and mixed-content problems appear only there.
-4. `curl -i <url>/__site_preview/client.js` should answer `200` with JavaScript, and
-   `curl -N <url>/__site_preview/events` should print an `event: state` block. If those work,
+4. `curl -i <url>__site_preview/client.js` should answer `200` with JavaScript, and
+   `curl -N <url>__site_preview/events` should print an `event: state` block. If those work,
    the server side is fine and the problem is in the page or the watcher.
 
 ## Start-up refusals

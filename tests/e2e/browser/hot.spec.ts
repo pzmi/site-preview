@@ -33,8 +33,13 @@ const test = base.extend<{ seeded: (files: Record<string, string>) => Promise<Pr
       return started;
     });
     if (!started) return;
-    if (testInfo.status === 'passed') await started.stop();
-    else await started.kill();
+    if (testInfo.status === 'passed') {
+      await started.stop();
+    } else {
+      // The test already failed: keep the server log as evidence.
+      await testInfo.attach('server-stderr', { body: started.log, contentType: 'text/plain' });
+      await started.kill();
+    }
   },
 });
 
@@ -111,6 +116,9 @@ test('should_swap_stylesheet_without_navigation_when_css_changes', async ({ page
   const counts = await page.evaluate(() => (window as unknown as { __linkCounts: number[] }).__linkCounts);
   expect(counts.length, 'the swap changed the head').toBeGreaterThan(0);
   expect(Math.min(...counts), 'a moment without a stylesheet').toBeGreaterThanOrEqual(1);
+  // Both links were in the head at once: a swap that removed the old link before inserting the
+  // clone in the same task would record only [1] and look gapless.
+  expect(Math.max(...counts), 'the old link stayed until the new one loaded').toBeGreaterThanOrEqual(2);
   expect(await markerOf(page)).toBe(marker);
   await expectQuietFor(page, navigations, 1);
 });
@@ -178,6 +186,9 @@ test('should_reload_once_and_restore_scroll_when_script_changes', async ({ page,
   const preview = await seeded({
     'long.html': page_(
       '<h1>Long page</h1><div style="height:4000px"></div><p id="end">End</p><script src="app.js"></script>',
+      // The browser restores the scroll of a reload by itself; turning that off leaves the
+      // restore to the client, which is what this test proves.
+      '<script>history.scrollRestoration = "manual";</script>',
     ),
   });
   const { loads } = await open(page, preview.url, 'long.html');
@@ -277,6 +288,22 @@ test('should_reload_once_when_script_change_is_not_accepted', async ({ page, see
   // then
   await expect.poll(() => loads.count()).toBe(2);
   await expectQuietFor(page, loads, 2);
+});
+
+test('should_navigate_exactly_once_and_stay_stable_when_html_changes', async ({ page, preview, site }) => {
+  // given
+  const { loads, navigations, marker } = await open(page, preview.url);
+  const html = await site.read('index.html');
+
+  // when
+  await site.write('index.html', html.replace('Route planner</h1>', 'Edited title</h1>'));
+
+  // then: one new document, with the edit, and nothing further over a longer window.
+  await expect(page.getByRole('heading', { name: 'Edited title' })).toBeVisible();
+  expect(await markerOf(page)).not.toBe(marker);
+  await expect.poll(() => loads.count()).toBe(2);
+  await expectQuietFor(page, loads, 2, 2_000);
+  expect(navigations.count(), 'one navigation for the edit').toBe(2);
 });
 
 test('should_reload_once_when_html_and_css_change_together', async ({ page, preview, site }) => {

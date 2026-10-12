@@ -18,7 +18,7 @@
 // `expect.poll` and locator assertions; nothing here sleeps.
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { copyFixtureSite, expect, REPO_ROOT, startPreview, test } from './support/preview';
+import { copyFixtureSite, expect, PreviewStartError, REPO_ROOT, startPreview, test } from './support/preview';
 
 const AGENTS_MD = join(REPO_ROOT, 'AGENTS.md');
 const SKILL_MD = join(REPO_ROOT, 'examples/claude-skill/static-html-preview/SKILL.md');
@@ -206,31 +206,39 @@ test('should_stop_cleanly_when_a_check_fails_in_the_middle_of_the_workflow', asy
     (await site.read('index.html')).replace('</body>', '<script>throw new Error("broken");</script></body>'),
   );
   const preview = await startPreview(site.dir);
+  let failure: unknown;
   try {
     const errors: string[] = [];
     page.on('pageerror', (e) => errors.push(e.message));
-
-    // when
     await page.goto(preview.url);
-
-    // then: the check fails, and the failure path still stops the server.
     await expect.poll(() => errors).toContain('broken');
+
+    // when: the check fails and throws inside the try.
+    throw new Error('check failed: the page raised "broken"');
+  } catch (error) {
+    failure = error;
   } finally {
-    await preview.stop();
+    // The original error stays primary: a throwing stop() must not mask it.
+    await preview.stop().catch(() => preview.kill());
     await site.dispose();
   }
+
+  // then: the check really failed, and the failure path still stopped the server.
+  expect(String(failure)).toContain('check failed');
   expect(preview.running).toBe(false);
 });
 
-test('should_exit_without_a_ready_line_when_the_port_is_taken', async ({ preview, site }) => {
+test('should_exit_with_status_1_and_no_ready_line_when_the_port_is_taken', async ({ preview, site }) => {
   // given: a server already on the port.
   const port = preview.port;
 
   // when: a second start on that exact port, as an agent would after a bad guess.
-  const second = startPreview(site.dir, { port });
+  const second = await startPreview(site.dir, { port }).catch((error: unknown) => error);
 
-  // then: the agent gets an exit and a stderr message, not a hang waiting for `ready`.
-  await expect(second).rejects.toThrow(/no ready event.*exited first/s);
+  // then: the agent gets exit status 1 (AGENTS.md) and a stderr message, not a hang.
+  expect(second).toBeInstanceOf(PreviewStartError);
+  expect((second as PreviewStartError).exitCode).toBe(1);
+  expect((second as PreviewStartError).message).toMatch(/no ready event.*exited first/s);
   expect(preview.running).toBe(true);
 });
 

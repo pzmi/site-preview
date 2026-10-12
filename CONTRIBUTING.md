@@ -1,12 +1,13 @@
 # Contributing
 
-Thanks for your interest. The project is pre-alpha; the tooling below is planned and may not exist yet. See [doc/tasks.md](doc/tasks.md) for current work.
+Thanks for your interest. The project is pre-alpha. See [doc/tasks.md](doc/tasks.md) for current work.
 
-## Build and test (planned)
+## Build and test
 
 - The Rust toolchain is pinned via `rust-toolchain.toml`.
 - `cargo xtask quick` - formatter, Clippy, fast tests (not a substitute for `check`).
 - `cargo xtask check` - the full PR-quality gate; the same gate runs in CI.
+- `cargo xtask check` includes the `browser` stage (Playwright specs in `tests/e2e/browser/`). It needs Node 22 and npm, plus the Chromium build the pinned Playwright launches (build 1194). `cargo xtask install-tools` does not install Chromium: run `npx --prefix tests/e2e/browser playwright install chromium` once, or point `PLAYWRIGHT_BROWSERS_PATH` at a directory that has `chromium_headless_shell-1194`. Without them the stage fails with that hint; `cargo xtask test --only browser` runs it alone.
 - Quint (formal models) is a development-only tool that needs Node; the installed binary never does.
 
 If a required local tool is missing, the command fails with instructions rather than reporting success.

@@ -28,8 +28,11 @@ test('should_show_initial_text_without_reload_loop_when_page_loads', async ({ pa
   // given
   const navigations = trackNavigations(page);
 
-  // when
+  // when: the window starts only once the page's event stream is open, so a reload loop
+  // (which needs the stream) has had the chance to begin.
+  const connected = page.waitForResponse((response) => response.url().endsWith('/__site_preview/events'));
   await page.goto(preview.url);
+  await connected;
 
   // then
   await expect(page.getByRole('heading', { name: 'Route planner' })).toBeVisible();

@@ -153,8 +153,12 @@ export class PreviewServer {
       }
     });
     const ready = await this.waitForEvent((e) => e.event === 'ready', DEADLINE_MS).catch((error) => {
+      const exitCode = child.exitCode;
       child.kill('SIGKILL');
-      throw new Error(`${bin} ${args.join(' ')}: no ready event: ${error}\nstderr: ${this.stderr}`);
+      throw new PreviewStartError(
+        `${bin} ${args.join(' ')}: no ready event: ${error}\nstderr: ${this.stderr}`,
+        exitCode,
+      );
     });
     this.ready = ready as ReadyEvent;
     this.url = this.ready.url;
@@ -235,6 +239,17 @@ export class PreviewServer {
       this.child.kill('SIGKILL');
       await once(this.child, 'exit');
     }
+  }
+}
+
+/** A start that produced no `ready` event; `exitCode` is the process's status if it had exited. */
+export class PreviewStartError extends Error {
+  constructor(
+    message: string,
+    readonly exitCode: number | null,
+  ) {
+    super(message);
+    this.name = 'PreviewStartError';
   }
 }
 
