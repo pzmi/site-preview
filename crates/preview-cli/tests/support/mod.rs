@@ -14,7 +14,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::ffi::OsStr;
 use std::fs;
 use std::hash::{Hash, Hasher};
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
@@ -283,6 +283,13 @@ impl PreviewProcess {
         self.raw(head.as_bytes())
     }
 
+    /// Opens `GET /__site_preview/events` with the printed authority as Host plus `headers` and
+    /// keeps the connection open to read events from. A reply that is not `200` is returned as
+    /// the finished [`Reply`] instead (the server closes after it).
+    pub fn events(&self, headers: &[(&str, &str)]) -> Result<EventStream, Reply> {
+        EventStream::open(self.authority(), headers)
+    }
+
     /// Sends `head` (request line and headers, without the final blank line) verbatim over a
     /// fresh connection, adds `Connection: close`, and reads the reply to the end. Raw bytes,
     /// because an HTTP client sets Host from the URL and would not send a forged, duplicated
@@ -375,6 +382,20 @@ pub struct Reply {
 }
 
 impl Reply {
+    fn parse_head(head: &str) -> (u16, Vec<(String, String)>) {
+        let mut lines = head.split("\r\n");
+        let status = lines
+            .next()
+            .and_then(|line| line.split(' ').nth(1))
+            .and_then(|code| code.parse().ok())
+            .expect("a status line");
+        let headers = lines
+            .filter_map(|line| line.split_once(':'))
+            .map(|(name, value)| (name.trim().to_ascii_lowercase(), value.trim().to_owned()))
+            .collect();
+        (status, headers)
+    }
+
     fn parse(bytes: &[u8]) -> Self {
         let split = bytes
             .windows(4)
@@ -382,16 +403,7 @@ impl Reply {
             .expect("a complete header block");
         let head = String::from_utf8_lossy(&bytes[..split]).into_owned();
         let rest = &bytes[split + 4..];
-        let mut lines = head.split("\r\n");
-        let status = lines
-            .next()
-            .and_then(|line| line.split(' ').nth(1))
-            .and_then(|code| code.parse().ok())
-            .expect("a status line");
-        let headers: Vec<(String, String)> = lines
-            .filter_map(|line| line.split_once(':'))
-            .map(|(name, value)| (name.trim().to_ascii_lowercase(), value.trim().to_owned()))
-            .collect();
+        let (status, headers) = Self::parse_head(&head);
         let chunked = headers
             .iter()
             .any(|(name, value)| name == "transfer-encoding" && value.contains("chunked"));
@@ -456,5 +468,160 @@ fn dechunk(mut rest: &[u8]) -> Vec<u8> {
         }
         body.extend_from_slice(&rest[..size]);
         rest = &rest[size + 2..];
+    }
+}
+
+/// One server-sent event frame, as the wire spelled it.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Frame {
+    /// The `event:` field.
+    pub event: Option<String>,
+    /// The `id:` field.
+    pub id: Option<String>,
+    /// The `data:` fields, in order.
+    pub data: Vec<String>,
+    /// Whether the frame held a comment line (`:`), which is what a keepalive is.
+    pub comment: bool,
+    /// The frame's lines joined with `\n`, without the blank line that ends it.
+    pub raw: String,
+}
+
+/// An open `/__site_preview/events` connection that reads one frame at a time.
+///
+/// Every read is bounded by [`DEADLINE`] through the socket's read timeout, so a frame that
+/// never comes fails the test instead of hanging it; nothing sleeps. The body is de-chunked
+/// incrementally, because the stream has no end to read to.
+pub struct EventStream {
+    reader: BufReader<Dechunk<BufReader<TcpStream>>>,
+    /// The status line's headers, names lowercased.
+    pub headers: Vec<(String, String)>,
+}
+
+impl EventStream {
+    fn open(authority: &str, headers: &[(&str, &str)]) -> Result<Self, Reply> {
+        let mut stream = TcpStream::connect(authority).expect("the server accepts");
+        stream
+            .set_read_timeout(Some(DEADLINE))
+            .expect("a read timeout");
+        let mut head = format!("GET /__site_preview/events HTTP/1.1\r\nHost: {authority}\r\n");
+        for (name, value) in headers {
+            head.push_str(&format!("{name}: {value}\r\n"));
+        }
+        head.push_str("Connection: close\r\n\r\n");
+        stream
+            .write_all(head.as_bytes())
+            .expect("the request is sent");
+        let mut reader = BufReader::new(stream);
+        let mut block = Vec::new();
+        while !block.ends_with(b"\r\n\r\n") {
+            let read = reader
+                .read_until(b'\n', &mut block)
+                .expect("a response head");
+            assert!(read > 0, "the connection closed inside the head: {block:?}");
+        }
+        let head = String::from_utf8_lossy(&block[..block.len() - 4]).into_owned();
+        let (status, response_headers) = Reply::parse_head(&head);
+        if status != 200 {
+            reader.read_to_end(&mut block).expect("a complete reply");
+            return Err(Reply::parse(&block));
+        }
+        Ok(Self {
+            reader: BufReader::new(Dechunk::new(reader)),
+            headers: response_headers,
+        })
+    }
+
+    /// The value of the first response header named `name` (any case).
+    pub fn header(&self, name: &str) -> Option<&str> {
+        let name = name.to_ascii_lowercase();
+        self.headers
+            .iter()
+            .find(|(n, _)| *n == name)
+            .map(|(_, v)| v.as_str())
+    }
+
+    /// Reads up to and including the next blank line and returns the frame; fails the test
+    /// when the stream ends or [`DEADLINE`] passes first.
+    pub fn next_frame(&mut self) -> Frame {
+        let mut frame = Frame::default();
+        let mut lines = Vec::new();
+        loop {
+            let mut line = String::new();
+            let read = self
+                .reader
+                .read_line(&mut line)
+                .unwrap_or_else(|error| panic!("no complete frame in time: {error}; {lines:?}"));
+            assert!(read > 0, "the stream ended inside a frame: {lines:?}");
+            let line = line.trim_end_matches('\n');
+            if line.is_empty() {
+                frame.raw = lines.join("\n");
+                return frame;
+            }
+            lines.push(line.to_owned());
+            if line.starts_with(':') {
+                frame.comment = true;
+            } else if let Some(value) = line.strip_prefix("event:") {
+                frame.event = Some(value.trim_start().to_owned());
+            } else if let Some(value) = line.strip_prefix("id:") {
+                frame.id = Some(value.trim_start().to_owned());
+            } else if let Some(value) = line.strip_prefix("data:") {
+                frame.data.push(value.trim_start().to_owned());
+            }
+        }
+    }
+
+    /// Reads the next frame, which must be the `state` baseline, and returns it.
+    pub fn baseline(&mut self) -> Frame {
+        let frame = self.next_frame();
+        assert_eq!(frame.event.as_deref(), Some("state"), "{frame:?}");
+        frame
+    }
+}
+
+/// Undoes `Transfer-Encoding: chunked` as bytes arrive.
+struct Dechunk<R> {
+    inner: R,
+    left: usize,
+    done: bool,
+}
+
+impl<R: BufRead> Dechunk<R> {
+    fn new(inner: R) -> Self {
+        Self {
+            inner,
+            left: 0,
+            done: false,
+        }
+    }
+}
+
+impl<R: BufRead> Read for Dechunk<R> {
+    fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+        if self.done || out.is_empty() {
+            return Ok(0);
+        }
+        if self.left == 0 {
+            let mut size_line = String::new();
+            if self.inner.read_line(&mut size_line)? == 0 {
+                self.done = true;
+                return Ok(0);
+            }
+            let size_text = size_line.split(';').next().unwrap_or_default().trim();
+            let size = usize::from_str_radix(size_text, 16)
+                .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "a chunk size"))?;
+            if size == 0 {
+                self.done = true;
+                return Ok(0);
+            }
+            self.left = size;
+        }
+        let want = out.len().min(self.left);
+        let read = self.inner.read(&mut out[..want])?;
+        self.left -= read;
+        if self.left == 0 {
+            let mut crlf = [0_u8; 2];
+            self.inner.read_exact(&mut crlf)?;
+        }
+        Ok(read)
     }
 }
