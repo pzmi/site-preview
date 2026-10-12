@@ -7,6 +7,9 @@ production = [
 ]
 test_only = ["preview-testkit", "preview-conformance"]
 tool_only = ["xtask"]
+# The fuzz crate is not a workspace member: fuzz/Cargo.toml is its own workspace root, built with
+# the pinned nightly only (ADR 0026, ADR 0063).
+fuzz_only = ["preview-fuzz"]
 
 # Allowed workspace edges (foundation.md section 2.1). A dev-dependency may target a
 # test_only crate or a crate in the dependent's normal list. No production crate may reach a
@@ -27,6 +30,8 @@ preview-conformance = [
   "preview-adapter-fs", "preview-adapter-http", "preview-composition",
 ]
 xtask = []
+# A fuzz crate may reach only the workspace crates listed here (ADR 0063).
+preview-fuzz = ["preview-domain"]
 
 # Workspace build-dependencies; none are allowed unless listed here.
 [dependencies.build]
@@ -44,6 +49,7 @@ preview-composition = { axum = ["http1"], hyper = ["server", "http1"], hyper-uti
 preview-cli = { clap = ["default", "derive", "std", "help", "usage", "error-context"], serde_json = ["std"] }
 preview-conformance = { axum = [], serde_json = ["std"], tokio = ["rt", "time", "test-util"], tower = ["util"] }
 xtask = { cargo_metadata = ["default"], clap = ["default", "derive"], proc-macro2 = ["span-locations"], serde = ["default", "derive"], syn = ["parsing", "full", "visit", "clone-impls"], toml = ["default"], yaml-rust2 = [] }
+preview-fuzz = { libfuzzer-sys = [] }
 
 [external.dev]
 preview-adapter-fs = { tempfile = ["default"], trybuild = ["default"] }

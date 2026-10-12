@@ -52,6 +52,8 @@ pub enum Category {
     TestOnly,
     /// Repository tooling, never in a production closure.
     ToolOnly,
+    /// A fuzz crate: outside the root workspace, built only with the pinned nightly.
+    FuzzOnly,
 }
 
 impl Category {
@@ -61,6 +63,7 @@ impl Category {
             Self::Production => "production",
             Self::TestOnly => "test_only",
             Self::ToolOnly => "tool_only",
+            Self::FuzzOnly => "fuzz_only",
         }
     }
 }
@@ -75,15 +78,19 @@ pub struct Categories {
     pub test_only: Option<Vec<String>>,
     /// Tooling crates.
     pub tool_only: Option<Vec<String>>,
+    /// Fuzz crates (ADR 0026, ADR 0063). They are not workspace members: each is the
+    /// `fuzz/Cargo.toml` package with its own `[workspace]` table.
+    pub fuzz_only: Option<Vec<String>>,
 }
 
 impl Categories {
     /// Each category with its list, in a fixed order.
-    pub fn lists(&self) -> [(Category, Option<&Vec<String>>); 3] {
+    pub fn lists(&self) -> [(Category, Option<&Vec<String>>); 4] {
         [
             (Category::Production, self.production.as_ref()),
             (Category::TestOnly, self.test_only.as_ref()),
             (Category::ToolOnly, self.tool_only.as_ref()),
+            (Category::FuzzOnly, self.fuzz_only.as_ref()),
         ]
     }
 }

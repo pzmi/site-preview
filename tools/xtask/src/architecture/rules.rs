@@ -69,6 +69,9 @@ rules! {
     DuplicateCategory => "ARCH-duplicate-category", "ARCH-01",
         "A crate is listed in more than one category, or twice in one.",
         ["duplicate-category"];
+    FuzzCrate => "ARCH-fuzz-crate", "ARCH-01",
+        "The fuzz crate is not listed in fuzz_only, is a workspace member or lacks its own [workspace] table, fuzz_only names a crate that is not fuzz/Cargo.toml's package, or the fuzz crate depends on a crate its policy entries do not allow.",
+        ["fuzz-crate-without-own-workspace", "fuzz-depends-on-unlisted-crate", "unlisted-fuzz-crate"];
     ForbiddenEdge => "ARCH-forbidden-edge", "ARCH-02",
         "A normal workspace edge is not in [dependencies.normal].",
         ["cli-bypasses-composition", "reversed-edge"];

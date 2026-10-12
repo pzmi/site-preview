@@ -111,22 +111,153 @@ pub fn check_crates(policy: &Policy, members: &[Crate], disk: &[Crate]) -> Vec<D
 /// so one stale name in one place yields one diagnostic.
 fn policy_names(policy: &Policy) -> BTreeSet<(String, &str)> {
     let mut out = BTreeSet::new();
+    let fuzz = fuzz_names(policy);
     for (category, list) in policy.workspace.lists() {
+        if category == Category::FuzzOnly {
+            continue;
+        }
         for name in list.into_iter().flatten() {
             out.insert((format!("[workspace] {}", category.key()), name.as_str()));
         }
     }
     for (kind, table) in policy.dependencies.tables() {
         for (krate, deps) in table {
-            out.insert((format!("[dependencies.{kind}]"), krate.as_str()));
+            if !fuzz.contains(krate.as_str()) {
+                out.insert((format!("[dependencies.{kind}]"), krate.as_str()));
+            }
             for dep in deps {
                 out.insert((format!("[dependencies.{kind}] {krate}"), dep.as_str()));
             }
         }
     }
     for (kind, table) in policy.external.tables() {
-        for krate in table.keys() {
+        for krate in table.keys().filter(|k| !fuzz.contains(k.as_str())) {
             out.insert((format!("[external.{kind}]"), krate.as_str()));
+        }
+    }
+    out
+}
+
+/// The fuzz crates the policy lists.
+fn fuzz_names(policy: &Policy) -> BTreeSet<&str> {
+    policy
+        .workspace
+        .fuzz_only
+        .iter()
+        .flatten()
+        .map(String::as_str)
+        .collect()
+}
+
+/// Where the one fuzz crate lives (the cargo-fuzz layout), relative to the workspace root.
+pub const FUZZ_MANIFEST: &str = "fuzz/Cargo.toml";
+
+/// The `fuzz_only` rules (ADR 0063): the fuzz crate at [`FUZZ_MANIFEST`] is listed, is no
+/// workspace member, is its own workspace root, and depends only on the workspace crates
+/// `[dependencies.normal]` and the third-party crates `[external.normal]` allow it.
+pub fn check_fuzz(policy: &Policy, root: &Path, members: &[Crate]) -> Vec<Diagnostic> {
+    let mut out = Vec::new();
+    let listed = fuzz_names(policy);
+    let manifest = if root.join(FUZZ_MANIFEST).is_file() {
+        match read_toml(root, FUZZ_MANIFEST) {
+            Ok(table) => Some(table),
+            Err(diagnostic) => return vec![diagnostic],
+        }
+    } else {
+        None
+    };
+    let name = manifest
+        .as_ref()
+        .and_then(|m| m.get("package"))
+        .and_then(|p| p.get("name"))
+        .and_then(toml::Value::as_str);
+    for krate in members.iter().filter(|c| listed.contains(c.name.as_str())) {
+        out.push(Diagnostic::new(
+            Rule::FuzzCrate,
+            format!(
+                "fuzz crate `{}` is a workspace member; it must be its own workspace root",
+                krate.name
+            ),
+            &krate.manifest,
+        ));
+    }
+    for listed_name in &listed {
+        if name != Some(*listed_name) && !members.iter().any(|c| c.name == *listed_name) {
+            out.push(Diagnostic::new(
+                Rule::FuzzCrate,
+                format!(
+                    "`[workspace] fuzz_only` names `{listed_name}`, which is not the package of {FUZZ_MANIFEST}"
+                ),
+                POLICY_FILE,
+            ));
+        }
+    }
+    let Some(manifest) = manifest.as_ref() else {
+        return out;
+    };
+    let Some(name) = name else {
+        out.push(Diagnostic::new(
+            Rule::FuzzCrate,
+            format!("{FUZZ_MANIFEST} has no [package] name; the fuzz crate must be a package"),
+            FUZZ_MANIFEST,
+        ));
+        return out;
+    };
+    if !listed.contains(name) {
+        out.push(Diagnostic::new(
+            Rule::FuzzCrate,
+            format!("fuzz crate `{name}` is not in `[workspace] fuzz_only` of {POLICY_FILE}"),
+            FUZZ_MANIFEST,
+        ));
+        return out;
+    }
+    if manifest.get("workspace").is_none() {
+        out.push(Diagnostic::new(
+            Rule::FuzzCrate,
+            format!("fuzz crate `{name}` has no `[workspace]` table of its own"),
+            FUZZ_MANIFEST,
+        ));
+    }
+    out.extend(check_fuzz_dependencies(policy, manifest, name));
+    out
+}
+
+/// Every dependency of the fuzz crate, of any kind: a path dependency must name a workspace
+/// crate in `[dependencies.normal] <fuzz crate>`, any other must be in
+/// `[external.normal] <fuzz crate>` (features are not checked: the fuzz crate has its own
+/// lockfile and is built on the nightly only).
+fn check_fuzz_dependencies(policy: &Policy, manifest: &toml::Table, name: &str) -> Vec<Diagnostic> {
+    let mut out = Vec::new();
+    let workspace_allowed = policy.dependencies.normal.get(name);
+    let external_allowed = policy.external.normal.get(name);
+    for kind in ["dependencies", "dev-dependencies", "build-dependencies"] {
+        let Some(table) = manifest.get(kind).and_then(toml::Value::as_table) else {
+            continue;
+        };
+        for (key, spec) in table {
+            let package = spec
+                .get("package")
+                .and_then(toml::Value::as_str)
+                .unwrap_or(key);
+            if spec.get("path").is_some() {
+                if !workspace_allowed.is_some_and(|list| list.iter().any(|d| d == package)) {
+                    out.push(Diagnostic::new(
+                        Rule::FuzzCrate,
+                        format!(
+                            "fuzz crate `{name}` depends on `{package}`, which is not in `[dependencies.normal] {name}`"
+                        ),
+                        FUZZ_MANIFEST,
+                    ));
+                }
+            } else if !external_allowed.is_some_and(|list| list.contains_key(package)) {
+                out.push(Diagnostic::new(
+                    Rule::FuzzCrate,
+                    format!(
+                        "fuzz crate `{name}` depends on `{package}`, which is not in `[external.normal] {name}`"
+                    ),
+                    FUZZ_MANIFEST,
+                ));
+            }
         }
     }
     out
@@ -305,5 +436,113 @@ mod tests {
         // then
         assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
         assert!(diagnostics[0].message.contains("[external.dev]"));
+    }
+
+    const FUZZ_POLICY: &str = "schema = 1\n[workspace]\nproduction = [\"a\"]\nfuzz_only = [\"fz\"]\n[dependencies.normal]\na = []\nfz = [\"a\"]\n[external.normal]\nfz = { libfuzzer-sys = [] }\n";
+
+    fn fuzz_root(manifest: &str) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir(dir.path().join("fuzz")).unwrap();
+        fs::write(dir.path().join(FUZZ_MANIFEST), manifest).unwrap();
+        dir
+    }
+
+    const FUZZ_OK: &str = "[package]\nname = \"fz\"\n[dependencies]\nlibfuzzer-sys = \"0.4\"\na = { path = \"../crates/a\" }\n[workspace]\n";
+
+    #[test]
+    fn should_pass_when_fuzz_crate_is_listed_and_self_contained() {
+        // given
+        let root = fuzz_root(FUZZ_OK);
+        let members = [krate("a", "crates")];
+
+        // when
+        let diagnostics = check_fuzz(&policy(FUZZ_POLICY), root.path(), &members);
+        let names = check_crates(&policy(FUZZ_POLICY), &members, &members);
+
+        // then
+        assert_eq!(diagnostics, []);
+        assert_eq!(names, []);
+    }
+
+    #[test]
+    fn should_report_fuzz_crate_when_it_is_not_in_fuzz_only() {
+        // given
+        let root = fuzz_root(FUZZ_OK);
+        let text = "schema = 1\n[workspace]\nproduction = [\"a\"]\n[dependencies.normal]\na = []\n";
+
+        // when
+        let diagnostics = check_fuzz(&policy(text), root.path(), &[krate("a", "crates")]);
+
+        // then
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+        assert_eq!(diagnostics[0].rule, Rule::FuzzCrate);
+        assert!(
+            diagnostics[0]
+                .message
+                .contains("not in `[workspace] fuzz_only`")
+        );
+    }
+
+    #[test]
+    fn should_report_fuzz_crate_when_fuzz_only_names_a_missing_package() {
+        // given
+        let dir = tempfile::tempdir().unwrap();
+
+        // when
+        let diagnostics = check_fuzz(&policy(FUZZ_POLICY), dir.path(), &[krate("a", "crates")]);
+
+        // then
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+        assert!(diagnostics[0].message.contains("names `fz`"));
+    }
+
+    #[test]
+    fn should_report_fuzz_crate_when_it_is_a_workspace_member() {
+        // given
+        let root = fuzz_root(FUZZ_OK);
+        let members = [krate("a", "crates"), krate("fz", "fuzz")];
+
+        // when
+        let diagnostics = check_fuzz(&policy(FUZZ_POLICY), root.path(), &members);
+
+        // then
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+        assert!(diagnostics[0].message.contains("workspace member"));
+    }
+
+    #[test]
+    fn should_report_fuzz_crate_when_it_has_no_workspace_table() {
+        // given
+        let root = fuzz_root(&FUZZ_OK.replace("[workspace]\n", ""));
+
+        // when
+        let diagnostics = check_fuzz(&policy(FUZZ_POLICY), root.path(), &[krate("a", "crates")]);
+
+        // then
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+        assert!(diagnostics[0].message.contains("no `[workspace]` table"));
+    }
+
+    #[test]
+    fn should_report_fuzz_crate_when_it_depends_on_unlisted_crates() {
+        // given
+        let root = fuzz_root(
+            "[package]\nname = \"fz\"\n[dependencies]\nrand = \"0.9\"\nb = { path = \"../crates/b\" }\n[workspace]\n",
+        );
+
+        // when
+        let diagnostics = check_fuzz(&policy(FUZZ_POLICY), root.path(), &[krate("a", "crates")]);
+
+        // then
+        assert_eq!(diagnostics.len(), 2, "{diagnostics:?}");
+        let text: Vec<_> = diagnostics.iter().map(|d| d.message.as_str()).collect();
+        assert!(
+            text.iter()
+                .any(|m| m.contains("`b`") && m.contains("[dependencies.normal] fz"))
+        );
+        assert!(
+            text.iter()
+                .any(|m| m.contains("`rand`") && m.contains("[external.normal] fz"))
+        );
     }
 }

@@ -188,7 +188,13 @@ pub const CATALOG: &[Check] = &[
         "TEST-08",
         false,
     ),
-    row("fuzz", "fuzz", "cargo xtask fuzz", "SEC-04", false),
+    row(
+        "fuzz",
+        "fuzz",
+        "cargo xtask fuzz <target> [--time N] [--reproduce <artifact>]",
+        "SEC-04",
+        false,
+    ),
     row(
         "formal-verify",
         "formal",

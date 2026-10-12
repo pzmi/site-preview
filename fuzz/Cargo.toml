@@ -1,0 +1,27 @@
+# The fuzz crate (SEC-04, ADR 0026, ADR 0063): cargo-fuzz layout, built only with the pinned
+# nightly of fuzz/rust-toolchain.toml. It is not a member of the root workspace and has its own
+# lockfile, so the stable production build, `cargo xtask check` and `cargo deny` never see it.
+# `architecture.toml` lists it under `fuzz_only`; `cargo xtask fuzz` runs it.
+[package]
+name = "preview-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+description = "Fuzz targets for the preview server's security-critical parsers (never published)."
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4.13"
+preview-domain = { path = "../crates/preview-domain" }
+
+[[bin]]
+name = "decode_path"
+path = "fuzz_targets/decode_path.rs"
+test = false
+doc = false
+bench = false
+
+# Its own workspace root keeps Cargo from attaching this crate to the repository workspace.
+[workspace]

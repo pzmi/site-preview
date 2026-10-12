@@ -198,6 +198,7 @@ fn check_into(manifest: &Path, out: &mut Vec<Diagnostic>) -> usize {
         Ok(disk) => out.extend(inventory::check_crates(&policy, &members, &disk)),
         Err(diagnostic) => out.push(diagnostic),
     }
+    out.extend(inventory::check_fuzz(&policy, &root, &members));
     let manifests: BTreeMap<String, String> = members
         .iter()
         .map(|c| (c.name.clone(), c.manifest.clone()))

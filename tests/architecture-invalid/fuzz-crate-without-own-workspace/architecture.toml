@@ -1,0 +1,15 @@
+schema = 1
+
+[workspace]
+production = ["app"]
+fuzz_only = ["fz"]
+
+[dependencies.normal]
+app = []
+fz = []
+
+[external.normal]
+fz = { }
+
+[semantic]
+absent = ["preview-adapter-fs", "preview-adapter-http", "preview-application", "preview-cli", "preview-composition", "preview-conformance", "preview-domain", "preview-testkit"]

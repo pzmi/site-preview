@@ -1,0 +1,5 @@
+# The one dated nightly (ADR 0026): cargo-fuzz and Miri only, never production builds.
+# Keep it equal to `tools.nightly` in tools/versions.toml; a xtask unit test checks that.
+[toolchain]
+channel = "nightly-2026-10-01"
+profile = "minimal"

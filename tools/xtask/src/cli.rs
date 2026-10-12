@@ -49,7 +49,16 @@ pub enum Command {
     /// Longer source mutation analysis.
     Mutation,
     /// Bounded fuzz run or reproduction.
-    Fuzz,
+    Fuzz {
+        /// The target, a file name in `fuzz/fuzz_targets/` without `.rs`.
+        target: String,
+        /// Seconds to fuzz.
+        #[arg(long, value_name = "SECONDS", default_value_t = 60, value_parser = clap::value_parser!(u64).range(1..))]
+        time: u64,
+        /// Run one saved input (a crash artifact) instead of fuzzing.
+        #[arg(long, value_name = "ARTIFACT")]
+        reproduce: Option<PathBuf>,
+    },
     /// Apalache and Kani deep lane.
     FormalVerify,
     /// Clean packaged artifact tests.
@@ -78,7 +87,7 @@ impl Command {
             Self::Security => "security",
             Self::Check => "check",
             Self::Mutation => "mutation",
-            Self::Fuzz => "fuzz",
+            Self::Fuzz { .. } => "fuzz",
             Self::FormalVerify => "formal-verify",
             Self::ReleaseCheck => "release-check",
             Self::ListChecks => "list-checks",

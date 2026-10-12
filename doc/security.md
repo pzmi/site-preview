@@ -336,6 +336,12 @@ Not yet enforced; do not rely on them until the task lands. Nothing is planned a
 
 ## Fuzzing
 
-Placeholder. SEC-04 adds the fuzz crate and the `decode_path` target; SEC-05 adds the rewriter,
-Host header and change-sequence targets, the scheduled `fuzz.yml` workflow and the triage
-steps, which will be written here.
+The `fuzz/` crate (ADR 0063) is outside the workspace and builds only with the pinned nightly.
+Its `decode_path` target feeds arbitrary bytes to `decode_request_path` and asserts: no panic;
+every accepted path has only single-entry components (no `.`, `..`, empty, `/`, `\` or control
+character); `eligibility::path` agrees with the component walk and with an independent oracle
+of the deny rules; decoding is deterministic and a re-encoded path decodes to itself. Run it
+with `cargo xtask fuzz decode_path --time 60`, replay a crash with
+`cargo xtask fuzz decode_path --reproduce fuzz/artifacts/decode_path/<file>`. SEC-05 adds the
+rewriter, Host header and change-sequence targets, the scheduled `fuzz.yml` workflow and the
+triage steps, which will be written here.

@@ -7,6 +7,7 @@ mod catalog;
 mod check;
 mod cli;
 mod conformance;
+mod fuzz;
 mod process;
 mod quick;
 mod repo;
@@ -36,6 +37,11 @@ fn main() -> ExitCode {
             print!("{}", catalog::to_json(&catalog::all_rows()));
             0
         }
+        Command::Fuzz {
+            target,
+            time,
+            reproduce,
+        } => fuzz::run(target, *time, reproduce.as_deref()),
         Command::Doctor => tools::doctor(),
         Command::InstallTools { tools } => tools::install(tools),
         other => not_available(other.id()),
