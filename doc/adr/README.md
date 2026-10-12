@@ -57,8 +57,7 @@ This directory holds the decisions behind site-preview, one file per decision, i
 | [0051](0051-lifecycle-driven-server-handle.md) | The server handle: start-up and shutdown driven by the domain lifecycle machine | Proposed |
 | [0052](0052-quint-toolchain-and-lifecycle-model.md) | Quint toolchain: lockfile-only evaluator; the lifecycle model's two step relations | Proposed |
 | [0053](0053-conformance-harness.md) | Conformance harness: an explicit ITF replay path; Quint Connect not adopted yet | Proposed |
-| [0054](0054-watcher-model.md) | The watcher model: abstraction, a settled-state encoding of no lost change, root deletion | Proposed |
-| [0056](0056-lifecycle-conformance-driver.md) | Lifecycle conformance driver: composition seams, scripted named traces, a sampling relation | Proposed |
 | [0054](0054-watcher-model.md) | The watcher model: abstraction, a settled-state encoding of no lost change, a full reload at recovery, root deletion | Proposed |
+| [0056](0056-lifecycle-conformance-driver.md) | Lifecycle conformance driver: composition seams, scripted named traces, a sampling relation | Proposed |
 | [0057](0057-reload-conformance-driver.md) | Reload conformance driver: in-process SSE bodies, the client's choice read from the model | Proposed |
 | [0058](0058-watcher-conformance-driver.md) | Watcher conformance driver: the coordinator in process, the environment from the trace | Proposed |
