@@ -36,6 +36,10 @@
   var ACCEPT_TIMEOUT_MS = 5000;
   var IMPORT_DEPTH = 8;
   var SCROLL_KEY = '__sitePreview';
+  var EVENTS_URL = '/__site_preview/events';
+  var CLOSED = 2; // EventSource.CLOSED
+  var RETRY_MIN_MS = 1000;
+  var RETRY_MAX_MS = 30000;
 
   function normalize(state) {
     if (!state || typeof state.instance_id !== 'string') return null;
@@ -198,14 +202,24 @@
       Object.prototype.toString.call(state) === '[object Object]';
   }
 
+  // Copies the own enumerable keys of `source` onto `target` (except `skip`) as data
+  // properties. Plain assignment would turn an own `__proto__` key into the copy's prototype
+  // and drop it from the site's state.
+  function copyOwn(target, source, skip) {
+    Object.keys(source).forEach(function (key) {
+      if (key === skip) return;
+      Object.defineProperty(target, key, {
+        value: source[key], writable: true, enumerable: true, configurable: true,
+      });
+    });
+  }
+
   // `state` with the scroll position added under `__sitePreview`, or null when the site keeps
   // a non-object state there (then the reload goes without restore, ADR 0031).
   function markScroll(state, scrollX, scrollY, revision) {
     if (!mergeable(state)) return null;
     var marked = {};
-    if (state !== null && state !== undefined) {
-      Object.keys(state).forEach(function (key) { marked[key] = state[key]; });
-    }
+    if (state !== null && state !== undefined) copyOwn(marked, state, null);
     var mark = { scrollX: scrollX, scrollY: scrollY, revision: String(revision) };
     if (state === null || state === undefined) mark.empty = true;
     marked[SCROLL_KEY] = mark;
@@ -221,9 +235,7 @@
       return null;
     }
     var rest = {};
-    Object.keys(state).forEach(function (key) {
-      if (key !== SCROLL_KEY) rest[key] = state[key];
-    });
+    copyOwn(rest, state, SCROLL_KEY);
     if (mark.empty === true && Object.keys(rest).length === 0) rest = null;
     return { scroll: { x: mark.scrollX, y: mark.scrollY }, state: rest };
   }
@@ -610,7 +622,61 @@
 
   window.__sitePreview = Object.freeze({ accept: accept, version: 1 });
   restoreScroll();
-  var connection = new EventSource('/__site_preview/events');
-  connection.addEventListener('state', function (event) { handle('state', event); });
-  connection.addEventListener('reload', function (event) { handle('reload', event); });
+  // The event stream. A network error while connected is retried by the browser itself, but
+  // a non-200 answer (503 at the stream limit, a transient 403 or 421) or a wrong content type
+  // fails the connection for good: readyState CLOSED, no retry, Retry-After ignored. Then a new
+  // EventSource is created after a bounded exponential backoff, without reloading the page; its
+  // first `state` event is compared with the baseline as usual, so a change missed while
+  // disconnected costs one reload and an unchanged server none. No retry after the page is
+  // hidden for unload or once a reload is under way.
+  var connection = null;
+  var retryDelay = RETRY_MIN_MS;
+  var retryTimer = null;
+  var hidden = false;
+
+  function connect() {
+    retryTimer = null;
+    if (hidden || reloading) return;
+    var source = new EventSource(EVENTS_URL);
+    connection = source;
+    source.addEventListener('open', function () {
+      if (source === connection) retryDelay = RETRY_MIN_MS;
+    });
+    source.addEventListener('state', function (event) {
+      if (source === connection) handle('state', event);
+    });
+    source.addEventListener('reload', function (event) {
+      if (source === connection) handle('reload', event);
+    });
+    source.addEventListener('error', function () {
+      if (source !== connection || source.readyState !== CLOSED) return;
+      scheduleConnect();
+    });
+  }
+
+  function scheduleConnect() {
+    if (hidden || reloading || retryTimer !== null) return;
+    var delay = retryDelay;
+    retryDelay = Math.min(retryDelay * 2, RETRY_MAX_MS);
+    retryTimer = setTimeout(connect, delay);
+  }
+
+  window.addEventListener('pagehide', function () {
+    hidden = true;
+    if (retryTimer !== null) {
+      clearTimeout(retryTimer);
+      retryTimer = null;
+    }
+  });
+  // A page restored from the back-forward cache reconnects at once if its stream is gone.
+  window.addEventListener('pageshow', function (event) {
+    hidden = false;
+    if (event && event.persisted && retryTimer === null &&
+        (connection === null || connection.readyState === CLOSED)) {
+      retryDelay = RETRY_MIN_MS;
+      connect();
+    }
+  });
+
+  connect();
 })();

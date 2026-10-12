@@ -208,7 +208,9 @@ first, before anything is subscribed:
   headers.
 - At most 64 streams per server (`DEFAULT_MAX_STREAMS`); the 65th gets 503 with
   `Retry-After: 2`. The permit is owned by the stream, so a disconnect, a shutdown and a closed
-  reload state all return it. `HEAD` takes no permit.
+  reload state all return it. `HEAD` takes no permit. A browser's `EventSource` never retries a
+  non-200 answer, so the reload client re-creates it after a backoff of 1 s doubling to 30 s,
+  without reloading the page (ADR 0044, amendment).
 
 Pinned by `crates/preview-domain/src/request_policy.rs` (`should_reject_when_origin_is_cross_site`,
 `should_reject_when_origin_conflicts_with_host`, `should_reject_when_origin_is_null`,

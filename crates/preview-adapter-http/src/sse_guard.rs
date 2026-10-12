@@ -46,8 +46,9 @@ impl StreamLimit {
     }
 }
 
-/// The answer when no permit is left: `503` with `Retry-After: 2`, so a browser's
-/// `EventSource` retries on its own schedule.
+/// The answer when no permit is left: `503` with `Retry-After: 2`. A browser's `EventSource`
+/// does not retry a non-200 answer (it fails the connection and ignores `Retry-After`); the
+/// injected client re-creates it with a bounded backoff (ADR 0044, amendment).
 pub(crate) fn busy() -> Response {
     let mut response = plain(StatusCode::SERVICE_UNAVAILABLE);
     response

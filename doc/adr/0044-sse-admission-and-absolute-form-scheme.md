@@ -47,3 +47,17 @@ ignored its scheme, so `GET https://127.0.0.1:P/` and `GET ftp://127.0.0.1:P/` w
   no `Origin` and no `Sec-Fetch-Site`, passes the check and can hold slots until the limit;
   the limit bounds that cost, it does not prevent it.
 - DOC-03 documents these rules with the tests that pin them.
+
+## Amendment (2026-10-12, M2 checkpoint review)
+
+A `503` (or a transient `403` or `421`) does not make a browser retry: a non-200 answer to an
+`EventSource` fails the connection (readyState `CLOSED`), and `Retry-After` is ignored, so
+live reload stayed dead until the page was reloaded by hand. The decision above is unchanged;
+the injected client now owns the retry. On `error` with readyState `CLOSED` it creates a new
+`EventSource` after 1 s, doubling to at most 30 s and reset once a stream opens, and stops
+after `pagehide`; it never reloads the page to reconnect. The new stream's first `state`
+event is compared with the page's baseline as usual (ADR 0030, ADR 0031), so a change missed
+while disconnected costs one reload and an unchanged server none. `Retry-After: 2` stays for
+non-browser clients. Pinned by `crates/preview-adapter-http/assets/client.test.mjs`
+(`should_recreate_event_source_with_backoff_when_stream_refused`,
+`should_reload_once_when_reconnected_state_differs`).

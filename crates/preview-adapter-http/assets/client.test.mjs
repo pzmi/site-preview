@@ -79,6 +79,7 @@ function fakePage({
   };
   const page = {
     reloads: 0,
+    sources: [],
     timers: [],
     listeners: {},
     windowListeners: {},
@@ -127,10 +128,23 @@ function fakePage({
       addEventListener(name, fn) { page.windowListeners[name] = fn; },
     },
     EventSource: function (url) {
+      const source = this;
       page.url = url;
-      this.addEventListener = (name, fn) => { page.listeners[name] = fn; };
+      page.sources.push(source);
+      page.listeners = {};
+      const own = page.listeners;
+      source.readyState = 0;
+      source.addEventListener = (name, fn) => { own[name] = fn; };
+      source.fire = (name, event = {}) => { if (own[name]) own[name](event); };
+      source.close = () => { source.readyState = 2; };
     },
-    setTimeout(fn, ms) { page.timers.push({ fn, ms }); },
+    setTimeout(fn, ms) {
+      const timer = { fn, ms, cleared: false };
+      page.timers.push(timer);
+      return timer;
+    },
+    clearTimeout(timer) { if (timer) timer.cleared = true; },
+    Math,
     URL,
   };
   page.start = () => vm.runInNewContext(source, page.context);
@@ -229,7 +243,7 @@ test('should_connect_and_reload_once_when_run_with_current_script', () => {
   const context = {
     document: { currentScript: { dataset: { instance: 'a', revision: '3' } } },
     location: { reload() { reloads += 1; } },
-    window: { history: { state: null } },
+    window: { history: { state: null }, addEventListener() {} },
     EventSource: function (u) {
       url = u;
       this.addEventListener = (name, fn) => { listeners[name] = fn; };
@@ -777,4 +791,172 @@ test('should_refuse_accept_when_path_or_handler_invalid', () => {
   assert.throws(() => api.accept('https://other.example/a.js', () => {}), { name: 'TypeError' });
   assert.throws(() => api.accept(42, () => {}), { name: 'TypeError' });
   assert.equal(Object.isFrozen(api), true);
+});
+
+// The stream refused with a non-200 (503 at the limit, 403, 421): the browser's EventSource
+// fires `error` with readyState CLOSED and never retries on its own.
+function refuse(page) {
+  const source = page.sources.at(-1);
+  source.readyState = 2;
+  source.fire('error');
+}
+
+function pendingRetries(page) {
+  return page.timers.filter((timer) => !timer.cleared && !timer.ran);
+}
+
+function runRetry(page) {
+  const [timer] = pendingRetries(page);
+  timer.ran = true;
+  timer.fn();
+  return timer.ms;
+}
+
+test('should_recreate_event_source_with_backoff_when_stream_refused', () => {
+  // given
+  const page = fakePage();
+  page.start();
+
+  // when
+  const delays = [];
+  for (let i = 0; i < 7; i++) {
+    refuse(page);
+    assert.equal(pendingRetries(page).length, 1);
+    delays.push(runRetry(page));
+  }
+
+  // then
+  assert.deepEqual(delays, [1000, 2000, 4000, 8000, 16000, 30000, 30000]);
+  assert.equal(page.sources.length, 8);
+  assert.equal(page.url, '/__site_preview/events');
+  assert.equal(page.reloads, 0);
+});
+
+test('should_not_recreate_event_source_when_browser_retries_itself', () => {
+  // given
+  const page = fakePage();
+  page.start();
+
+  // when: a dropped connection the browser reconnects on its own (CONNECTING)
+  page.sources[0].readyState = 0;
+  page.sources[0].fire('error');
+
+  // then
+  assert.equal(pendingRetries(page).length, 0);
+  assert.equal(page.sources.length, 1);
+});
+
+test('should_reset_backoff_when_reconnected_stream_opens', () => {
+  // given
+  const page = fakePage();
+  page.start();
+  refuse(page);
+  runRetry(page);
+  refuse(page);
+  runRetry(page);
+
+  // when
+  page.sources.at(-1).readyState = 1;
+  page.sources.at(-1).fire('open');
+  refuse(page);
+
+  // then
+  assert.equal(runRetry(page), 1000);
+});
+
+test('should_not_reload_when_reconnected_state_matches_baseline', () => {
+  // given
+  const page = fakePage();
+  page.start();
+  refuse(page);
+  runRetry(page);
+
+  // when
+  page.send('state', same);
+
+  // then
+  assert.equal(page.reloads, 0);
+});
+
+test('should_reload_once_when_reconnected_state_differs', () => {
+  // given
+  const page = fakePage();
+  page.start();
+  refuse(page);
+  runRetry(page);
+
+  // when
+  page.send('state', { instance_id: 'a', revision: 5 });
+  page.send('state', { instance_id: 'a', revision: 6 });
+  refuse(page);
+
+  // then
+  assert.equal(page.reloads, 1);
+  assert.equal(pendingRetries(page).length, 0);
+});
+
+test('should_ignore_events_from_replaced_event_source_when_reconnected', () => {
+  // given
+  const page = fakePage();
+  page.start();
+  const old = page.sources[0];
+  refuse(page);
+  runRetry(page);
+
+  // when
+  old.fire('reload', { data: JSON.stringify({ instance_id: 'a', revision: 9, full: true }) });
+  old.fire('error');
+
+  // then
+  assert.equal(page.reloads, 0);
+  assert.equal(pendingRetries(page).length, 0);
+});
+
+test('should_stop_retrying_when_page_is_hidden_for_unload', () => {
+  // given
+  const page = fakePage();
+  page.start();
+  refuse(page);
+
+  // when
+  page.windowListeners.pagehide({ persisted: false });
+  refuse(page);
+
+  // then
+  assert.equal(pendingRetries(page).length, 0);
+  assert.equal(page.sources.length, 1);
+});
+
+test('should_reconnect_when_page_restored_from_back_forward_cache', () => {
+  // given
+  const page = fakePage();
+  page.start();
+  page.windowListeners.pagehide({ persisted: true });
+  refuse(page);
+
+  // when
+  page.windowListeners.pageshow({ persisted: true });
+
+  // then
+  assert.equal(page.sources.length, 2);
+  assert.equal(page.reloads, 0);
+});
+
+test('should_keep_proto_key_as_data_when_scroll_marked_and_taken', () => {
+  // given
+  const state = JSON.parse('{"__proto__":{"polluted":true},"b":2}');
+
+  // when
+  const marked = markScroll(state, 0, 10, 4);
+  const taken = takeScroll(marked);
+
+  // then
+  for (const copy of [marked, taken.state]) {
+    const own = Object.getOwnPropertyDescriptor(copy, '__proto__');
+    assert.ok(own, 'own __proto__ kept');
+    assert.equal(own.value.polluted, true);
+    assert.equal(copy.polluted, undefined);
+    assert.equal(copy.b, 2);
+  }
+  assert.equal(Object.prototype.hasOwnProperty.call(taken.state, '__sitePreview'), false);
 });
