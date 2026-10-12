@@ -300,7 +300,7 @@ mod tests {
             .iter()
             .filter_map(|stage| {
                 let shown = match &stage.action {
-                    Action::Command { program, args } => std::iter::once(program.as_str())
+                    Action::Command { program, args, .. } => std::iter::once(program.as_str())
                         .chain(args.iter().map(String::as_str))
                         .collect::<Vec<_>>()
                         .join(" "),

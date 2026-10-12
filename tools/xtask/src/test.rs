@@ -5,6 +5,9 @@
 use crate::process::{Stage, finish, run_report};
 use crate::tools;
 
+/// Generated cases per property under the `ci` profile (foundation.md section 5).
+const PROPTEST_CASES_CI: &str = "1024";
+
 /// The stages `test` runs, in order. Their names are catalog ids.
 pub fn stages() -> Vec<Stage> {
     vec![
@@ -20,7 +23,11 @@ pub fn stages() -> Vec<Stage> {
                 "ci",
             ],
         )
-        .needs("cargo-nextest"),
+        .needs("cargo-nextest")
+        // nextest 0.9.148 has no profile-level env table, so the case count is set here.
+        .env("PROPTEST_CASES", PROPTEST_CASES_CI)
+        // A config key nextest ignores is a silent no-op; fail closed on it.
+        .deny_stderr("ignoring unknown configuration key"),
         Stage::new(
             "doctests",
             "cargo",
@@ -57,6 +64,22 @@ mod tests {
         assert_eq!(names, ["unit-tests", "doctests", "client-js"]);
         assert!(format!("{:?}", stages[0].action).contains("\"ci\""));
         assert_eq!(stages[0].tool, Some("cargo-nextest"));
+    }
+
+    #[test]
+    fn should_set_proptest_cases_and_deny_config_warnings_when_unit_stage_is_built() {
+        // given
+        let stages = stages();
+
+        // when
+        let debug = format!("{:?}", stages[0].action);
+
+        // then
+        assert!(debug.contains("(\"PROPTEST_CASES\", \"1024\")"), "{debug}");
+        assert!(
+            debug.contains("ignoring unknown configuration key"),
+            "{debug}"
+        );
     }
 
     #[test]

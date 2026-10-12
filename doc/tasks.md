@@ -434,7 +434,7 @@ Each decision is an ADR. Tasks cite the D-id, and D*n* is ADR *n*+1. ADR 0001 is
 ### TEST-02: Property-test conventions and seed persistence
 - **Depends on:** DOM-02, DOM-04. **Model:** sonnet. **Size:** S. Parallel with APP-01.
 - **Read:** fnd §5 (Property row), fnd §5.2 (4th bullet).
-- **Create/Change:** a `proptest` dev-dependency in the workspace. `crates/preview-domain/proptest-regressions/` is committed. The `proptest` config uses `failure_persistence` pointing at source-adjacent files, and the `PROPTEST_CASES` default is set in `.config/nextest.toml` env for `ci`. Add properties in `crates/preview-domain/tests/properties.rs`: decoding never yields a `.`/`..` component or a `/` within a component; any eligible `SitePath` has no hidden component; the debounce property moves here from DOM-04 if it was inline.
+- **Create/Change:** a `proptest` dev-dependency in the workspace. `crates/preview-domain/proptest-regressions/` is committed. The `proptest` config uses `failure_persistence` pointing at source-adjacent files, and the `PROPTEST_CASES` default is set by the xtask unit-tests stage for `ci`. Add properties in `crates/preview-domain/tests/properties.rs`: decoding never yields a `.`/`..` component or a `/` within a component; any eligible `SitePath` has no hidden component; the debounce property moves here from DOM-04 if it was inline.
 - **Accept:** the properties pass. A deliberately inserted failing property (in a test of the convention, then reverted, as described in the commit body) produces a regression file under `proptest-regressions/`. `.gitignore` does not ignore that directory.
 - **Impact:** none.
 

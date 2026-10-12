@@ -15,10 +15,9 @@ retries = 0
 fail-fast = false
 slow-timeout = { period = "30s", terminate-after = 4 }
 
-# Property tests (foundation.md section 5): more generated cases in CI than the local default
-# of 256. Failing seeds persist in each crate's committed `proptest-regressions/` directory.
-[profile.ci.env]
-PROPTEST_CASES = "1024"
+# PROPTEST_CASES for this profile is set by `cargo xtask test` (tools/xtask/src/test.rs):
+# nextest has no profile-level env table. Failing seeds persist in each crate's committed
+# `proptest-regressions/` directory.
 
 [profile.ci.junit]
 path = "junit.xml"

@@ -127,8 +127,8 @@ Property tests use `proptest`. Rules, from foundation.md 5.2 and the header of
 
 - Generate values that reach the boundaries (dots, escapes, separators), not only arbitrary bytes.
   Keep the exhaustive deterministic tests as the floor.
-- Do not set `cases` in code. The `ci` nextest profile sets `PROPTEST_CASES = "1024"`; a developer
-  may set it the same way. The default is proptest's own.
+- Do not set `cases` in code. `cargo xtask test` sets `PROPTEST_CASES=1024` for its `ci`-profile
+  stage (nextest has no profile-level env table); a developer may set it the same way. The default is proptest's own.
 - A black-box property in `crates/<crate>/tests/` persists failures to
   `proptest-regressions/<file>.txt` with `FileFailurePersistence::Direct`. Inline properties use
   proptest's default persistence. Both write under `crates/<crate>/proptest-regressions/`.
@@ -145,8 +145,9 @@ has been found yet.
 
 - `default` (used by `cargo nextest run`): `retries = 0`, a 30-second slow-test period that
   terminates after four periods.
-- `ci` (used by `cargo xtask test`): the same, with `fail-fast = false`, `PROPTEST_CASES = "1024"`
-  and a JUnit report at `junit.xml`.
+- `ci` (used by `cargo xtask test`): the same, with `fail-fast = false` and a JUnit report at `junit.xml`.
+  The xtask stage also sets `PROPTEST_CASES=1024` and fails if nextest prints "ignoring unknown
+  configuration key".
 - `os-watcher` test group: `max-threads = 4`. Tests whose name starts with `os_watcher::` join it
   automatically through a profile override. Nothing uses it yet; the watcher adds the first tests.
   Use the group only for tests that share a real OS resource, and prefer dynamic ports and

@@ -1,7 +1,8 @@
 //! Running external commands as gate stages.
 
 use std::fmt::Write as _;
-use std::process::Command;
+use std::io::{BufRead, BufReader};
+use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 /// One gate stage: an external command, or a function of this binary.
@@ -24,6 +25,10 @@ pub enum Action {
         program: String,
         /// Arguments passed to the program.
         args: Vec<String>,
+        /// Environment variables set for the child only.
+        env: Vec<(String, String)>,
+        /// Stderr substrings that fail the stage even when the program exits 0.
+        deny_stderr: Vec<String>,
     },
     /// An xtask function returning an exit code, shown as `display` in the progress line.
     InProcess {
@@ -42,9 +47,30 @@ impl Stage {
             action: Action::Command {
                 program: program.to_owned(),
                 args: args.iter().map(|a| (*a).to_owned()).collect(),
+                env: Vec::new(),
+                deny_stderr: Vec::new(),
             },
             tool: None,
         }
+    }
+
+    /// Sets an environment variable for this stage's child process.
+    #[must_use]
+    pub fn env(mut self, key: &str, value: &str) -> Self {
+        if let Action::Command { env, .. } = &mut self.action {
+            env.push((key.to_owned(), value.to_owned()));
+        }
+        self
+    }
+
+    /// Fails the stage when its stderr contains `needle`, even if the program exits 0. Used for
+    /// tool warnings that must not pass silently (a warning is a failure at the gate).
+    #[must_use]
+    pub fn deny_stderr(mut self, needle: &str) -> Self {
+        if let Action::Command { deny_stderr, .. } = &mut self.action {
+            deny_stderr.push(needle.to_owned());
+        }
+        self
     }
 
     /// Declares the pinned tool this stage needs; without it the stage reports `UNAVAILABLE`.
@@ -65,14 +91,57 @@ impl Stage {
 
     fn execute(&self) -> i32 {
         match &self.action {
-            Action::Command { program, args } => {
+            Action::Command {
+                program,
+                args,
+                env,
+                deny_stderr,
+            } => {
                 eprintln!("xtask: stage {}: {program} {}", self.name, args.join(" "));
-                match Command::new(program).args(args).status() {
-                    Ok(status) => status.code().unwrap_or(1),
+                let mut command = Command::new(program);
+                command.args(args).envs(env.iter().map(|(k, v)| (k, v)));
+                if deny_stderr.is_empty() {
+                    return match command.status() {
+                        Ok(status) => status.code().unwrap_or(1),
+                        Err(err) => {
+                            eprintln!("xtask: cannot run {program}: {err}");
+                            1
+                        }
+                    };
+                }
+                command.stderr(Stdio::piped());
+                let mut child = match command.spawn() {
+                    Ok(child) => child,
                     Err(err) => {
                         eprintln!("xtask: cannot run {program}: {err}");
+                        return 1;
+                    }
+                };
+                let mut denied = None;
+                if let Some(stderr) = child.stderr.take() {
+                    for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+                        eprintln!("{line}");
+                        if denied.is_none() {
+                            denied = deny_stderr
+                                .iter()
+                                .find(|n| line.contains(n.as_str()))
+                                .cloned();
+                        }
+                    }
+                }
+                let code = match child.wait() {
+                    Ok(status) => status.code().unwrap_or(1),
+                    Err(_) => 1,
+                };
+                match denied {
+                    Some(needle) if code == 0 => {
+                        eprintln!(
+                            "xtask: stage {} FAILED: stderr contains {needle:?}",
+                            self.name
+                        );
                         1
                     }
+                    _ => code,
                 }
             }
             Action::InProcess { display, run } => {
@@ -318,5 +387,44 @@ mod tests {
 
         // then
         assert_eq!(code, 1);
+    }
+
+    #[test]
+    fn should_pass_env_to_child_when_stage_sets_env() {
+        // given
+        let stages = [sh("env", "test \"$XTASK_PROBE\" = 1024").env("XTASK_PROBE", "1024")];
+
+        // when
+        let code = run_stages(&stages);
+
+        // then
+        assert_eq!(code, 0);
+    }
+
+    #[test]
+    fn should_fail_when_denied_text_is_on_stderr_despite_exit_zero() {
+        // given
+        let stages = [
+            sh("warn", "echo 'ignoring unknown configuration key: x' >&2")
+                .deny_stderr("ignoring unknown configuration key"),
+        ];
+
+        // when
+        let code = run_stages(&stages);
+
+        // then
+        assert_eq!(code, 1);
+    }
+
+    #[test]
+    fn should_keep_exit_code_when_no_denied_text_is_on_stderr() {
+        // given
+        let stages = [sh("quiet", "echo fine >&2; exit 3").deny_stderr("ignoring unknown")];
+
+        // when
+        let code = run_stages(&stages);
+
+        // then
+        assert_eq!(code, 3);
     }
 }
