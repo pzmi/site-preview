@@ -192,7 +192,27 @@ impl PreviewProcess {
         I: IntoIterator<Item = S>,
         S: AsRef<OsStr>,
     {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_site-preview"))
+        Self::start_with(Command::new(env!("CARGO_BIN_EXE_site-preview")), args)
+    }
+
+    /// [`Self::start`] with a `PATH` that holds no program, so a browser launcher the binary
+    /// looks up (`xdg-open`, `open`) is never found and no test starts a real browser.
+    pub fn start_without_launcher<I, S>(args: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_site-preview"));
+        command.env("PATH", "/nonexistent-site-preview-path");
+        Self::start_with(command, args)
+    }
+
+    fn start_with<I, S>(mut command: Command, args: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
+        let mut child = command
             .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())

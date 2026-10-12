@@ -86,16 +86,9 @@ fn serve(config: &ServeConfig) -> Outcome {
     }
 }
 
-/// `--json` (CLI-06) and `--open` (CLI-07) are parsed but not wired yet. Accepting them would
-/// promise what the run does not do: an agent asking for JSON would read human text, and
-/// `--open` would silently open nothing. Pinned by
+/// `--json` (CLI-06) is parsed but not wired yet. Accepting it would promise what the run does
+/// not do: an agent asking for JSON would read human text. Pinned by
 /// `should_exit_2_when_unimplemented_flag_given`.
 const fn unimplemented_flag(config: &ServeConfig) -> Option<&'static str> {
-    if config.json {
-        Some("--json")
-    } else if config.open {
-        Some("--open")
-    } else {
-        None
-    }
+    if config.json { Some("--json") } else { None }
 }

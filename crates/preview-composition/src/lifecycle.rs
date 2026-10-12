@@ -7,7 +7,9 @@
 //! `BindListener` installs the stop-signal forwarder (when asked) and binds; with the listener
 //! held, the reload state, the event-stream switch and the router are built; `StartWatcher`
 //! starts the watcher and its pipeline task; `Degraded` warns that live reload is off;
-//! `AnnounceReady` spawns the serve task and reports [`Ready`]. The outcome of each step is the
+//! `AnnounceReady` spawns the serve task and reports [`Ready`]; with `--open`, the browser is
+//! started right after that, once the server accepts (CLI-07,
+//! `should_invoke_opener_with_url_when_open_flag_set`). The outcome of each step is the
 //! machine's next input (`Bound` or `BindFailed`, `WatcherReady` or `WatcherFailed`).
 //!
 //! A failed step releases what was acquired so far by dropping it: every resource is an owned
@@ -45,6 +47,7 @@ use tokio::time::{Instant, timeout_at};
 use crate::bootstrap::{OpenedRoot, WatchStart, open_root};
 use crate::config::{ServeConfig, ServerLimits};
 use crate::connections::{StopSignal, Stopped, serve_connections};
+use crate::launcher::{SystemOpener, UrlOpener, launch};
 use crate::server::{
     Ready, StartupError, StartupReporter, WatchStatus, instance_id, reachable,
     report_watch_problems, unavailable_warning,
@@ -106,6 +109,7 @@ impl Server {
             warnings,
             crate::bootstrap::start_watcher,
             Signals::Ignore,
+            &SystemOpener,
         )
     }
 
@@ -116,6 +120,7 @@ impl Server {
         warnings: Arc<dyn WarningSink>,
         watcher: impl FnOnce(&OpenedRoot) -> (W, WatchStart),
         signals: Signals,
+        opener: &dyn UrlOpener,
     ) -> Result<Self, StartupError> {
         config.bind_scope().map_err(StartupError::RemoteBind)?;
         let root = open_root(&config.root).map_err(StartupError::from)?;
@@ -128,7 +133,7 @@ impl Server {
             config,
             runtime,
             root,
-            warnings,
+            warnings: Arc::clone(&warnings),
             reporter,
             signals,
             watcher: Some(watcher),
@@ -155,7 +160,11 @@ impl Server {
                 }
             }
         }
-        startup.into_server(lifecycle)
+        let server = startup.into_server(lifecycle)?;
+        if config.open {
+            launch(opener, server.url(), warnings.as_ref());
+        }
+        Ok(server)
     }
 
     /// The lifecycle state, for conformance and tests.
@@ -680,8 +689,101 @@ mod tests {
             Arc::clone(&warnings) as Arc<dyn WarningSink>,
             factory,
             Signals::Ignore,
+            &SystemOpener,
         );
         (server, reports, warnings)
+    }
+
+    /// Records every URL it is asked to open; fails when `fail` is set.
+    #[derive(Default)]
+    struct Recording {
+        urls: Mutex<Vec<String>>,
+        fail: bool,
+    }
+
+    impl UrlOpener for Recording {
+        fn open(&self, url: &str) -> io::Result<()> {
+            self.urls.lock().expect("unpoisoned").push(url.to_owned());
+            if self.fail {
+                Err(io::Error::other("an injected launcher failure"))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    /// Starts a server with the quiet fake watcher and `opener`, `--open` per `open`.
+    fn start_opening(root: &TempDir, open: bool, opener: &Recording) -> (Server, Arc<Warnings>) {
+        let warnings = Arc::new(Warnings::default());
+        let mut config = ServeConfig::new(root.path().to_path_buf());
+        config.open = open;
+        let closed = Arc::new(AtomicBool::new(false));
+        let server = Server::start_with(
+            &config,
+            Box::new(Reports::default()),
+            Arc::clone(&warnings) as Arc<dyn WarningSink>,
+            watcher(None, &closed),
+            Signals::Ignore,
+            opener,
+        )
+        .expect("the server starts");
+        (server, warnings)
+    }
+
+    #[test]
+    fn should_invoke_opener_with_url_when_open_flag_set() {
+        // given
+        let root = site();
+        let opener = Recording::default();
+
+        // when
+        let (server, warnings) = start_opening(&root, true, &opener);
+
+        // then
+        let expected = format!("http://127.0.0.1:{}/", server.local_addr().port());
+        assert_eq!(*opener.urls.lock().expect("unpoisoned"), [expected]);
+        assert_eq!(
+            server.url(),
+            format!("http://127.0.0.1:{}/", server.local_addr().port())
+        );
+        assert!(warnings.recorded().is_empty());
+    }
+
+    #[test]
+    fn should_not_invoke_opener_when_flag_absent() {
+        // given
+        let root = site();
+        let opener = Recording::default();
+
+        // when
+        let (_server, _warnings) = start_opening(&root, false, &opener);
+
+        // then
+        assert!(opener.urls.lock().expect("unpoisoned").is_empty());
+    }
+
+    #[test]
+    fn should_warn_and_keep_serving_when_opener_fails() {
+        // given
+        let root = site();
+        let opener = Recording {
+            fail: true,
+            ..Recording::default()
+        };
+
+        // when
+        let (mut server, warnings) = start_opening(&root, true, &opener);
+
+        // then
+        let recorded = warnings.recorded();
+        assert_eq!(recorded.len(), 1, "{recorded:?}");
+        assert_eq!(recorded[0].0, "open-failed");
+        assert!(
+            recorded[0].1.contains("an injected launcher failure"),
+            "{recorded:?}"
+        );
+        assert_eq!(get_status(server.local_addr()), 200);
+        assert_eq!(server.stop(), Stopped::Drained);
     }
 
     /// The status code of `GET /` on `addr`.
@@ -869,6 +971,7 @@ mod tests {
             Arc::new(Warnings::default()),
             factory,
             Signals::Ignore,
+            &SystemOpener,
         );
 
         // then
@@ -900,6 +1003,7 @@ mod tests {
                 Arc::new(Warnings::default()),
                 factory(),
                 Signals::Ignore,
+                &SystemOpener,
             )
         };
 

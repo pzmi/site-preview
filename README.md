@@ -34,6 +34,7 @@ server keeps serving after each one. Page warnings are printed once per request 
 | Code | Meaning |
 |:--|:--|
 | `remote-binding` | Listening outside loopback with no authentication (`--allow-remote`). |
+| `open-failed` | `--open` could not start the platform launcher (`xdg-open`, `open`); the URL is in the message and the server keeps serving. |
 | `html-too-large` | An HTML page over 8 MiB is served unchanged, without live reload. |
 | `html-not-utf8` | An HTML page that is not UTF-8, or whose `<meta>` charset names another encoding, is served unchanged without live reload. |
 | `html-rewrite-failed` | The reload script could not be inserted safely; the page is served unchanged. |

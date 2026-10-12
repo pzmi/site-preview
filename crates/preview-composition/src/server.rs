@@ -14,6 +14,7 @@ use preview_domain::InstanceId;
 use crate::bootstrap::{RootRefusal, WatchStart, start_watcher};
 use crate::config::{BindRefusal, ServeConfig};
 use crate::connections::Stopped;
+use crate::launcher::SystemOpener;
 use crate::lifecycle::{Server, Signals};
 
 /// What the server reports once it accepts connections.
@@ -168,8 +169,14 @@ pub fn run(
     reporter: Box<dyn StartupReporter>,
     warnings: Arc<dyn WarningSink>,
 ) -> Result<Stopped, StartupError> {
-    let mut server =
-        Server::start_with(config, reporter, warnings, start_watcher, Signals::Forward)?;
+    let mut server = Server::start_with(
+        config,
+        reporter,
+        warnings,
+        start_watcher,
+        Signals::Forward,
+        &SystemOpener,
+    )?;
     Ok(server.serve_until_stopped())
 }
 
