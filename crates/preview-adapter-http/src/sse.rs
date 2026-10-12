@@ -6,6 +6,11 @@
 //! `should_observe_publish_after_subscribe_when_published_between_subscribe_and_read`). The
 //! subscription only ever holds the newest value, so a slow or stalled browser costs one value,
 //! never a queue (plan.md section 7.4).
+//!
+//! A `reload` event carries what changed (ADR 0030, ADR 0031) through [`ReloadPayload`], the
+//! adapter's own wire shape: the domain types carry no serde (foundation.md §2.2). Because
+//! coalescing drops the change sets of skipped revisions, each connection remembers the last
+//! state it sent and never offers a hot update across a gap.
 
 use std::convert::Infallible;
 use std::future::{Future, poll_fn};
@@ -20,8 +25,8 @@ use axum::http::header::CONTENT_TYPE;
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Method};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
-use preview_application::StateSubscription;
-use preview_domain::{Authority, SiteState};
+use preview_application::{Published, StateSubscription};
+use preview_domain::{AssetKind, Authority, SiteState};
 use tokio::sync::OwnedSemaphorePermit;
 use tokio_stream::Stream;
 
@@ -45,14 +50,15 @@ pub const DEFAULT_KEEP_ALIVE: Duration = Duration::from_secs(15);
 /// - `HEAD` passes the Origin check, then answers the stream's headers with no body,
 ///   without subscribing or taking a permit: no stream ever follows a `HEAD`
 ///   (`should_answer_head_without_taking_permit_when_limit_reached`).
-/// - First a `state` event with the value current at subscribe time, `id:` its revision
-///   (`should_send_state_baseline_when_connected`); `Last-Event-ID` is not read: every
+/// - First a `state` event with the value current at subscribe time, `id:` its revision and
+///   data `{"instance_id":…,"revision":…}` only: it is a baseline, so the changes that
+///   produced that value are not sent (`should_keep_state_event_shape_when_connected`); `Last-Event-ID` is not read: every
 ///   connection starts from the authoritative current state
 ///   (`should_ignore_last_event_id_when_reconnecting`).
-/// - Then one `reload` event per value the subscription yields; publishes that happen
-///   between two polls collapse into the newest
+/// - Then one `reload` event per value the subscription yields, its data a
+///   [`ReloadPayload`]; publishes that happen between two polls collapse into the newest
 ///   (`should_send_reload_with_new_revision_when_published`,
-///   `should_send_only_latest_when_several_published_before_poll`).
+///   `should_send_full_when_revisions_coalesced`).
 /// - A keepalive comment after [`AppState::keep_alive`] of silence
 ///   (`should_send_keepalive_when_interval_elapses`).
 /// - The stream ends when the [`ShutdownSignal`] fires or the reload state is dropped
@@ -82,9 +88,11 @@ pub(crate) async fn events(
         return busy();
     };
     let subscription = state.reload.subscribe();
-    let first = state_event("state", &subscription.initial().state);
+    let baseline = subscription.initial().state.clone();
+    let first = state_event(&baseline);
     let feed = Feed {
         subscription,
+        last_sent: baseline,
         shutdown: state.shutdown,
         _permit: permit,
     };
@@ -107,26 +115,130 @@ fn unbuffered(mut response: Response) -> Response {
     response
 }
 
-/// `event: <name>`, `id: <revision>`, `data: {"instance_id":…,"revision":…}`.
+/// `event: state`, `id: <revision>`, `data: {"instance_id":…,"revision":…}` (plan.md
+/// section 7.2).
 ///
 /// The data is built by `serde_json`, so the instance id is escaped as a JSON string even
 /// though its alphabet (`[A-Za-z0-9-]`) needs no escaping today.
-fn state_event(name: &'static str, state: &SiteState) -> Event {
+fn state_event(state: &SiteState) -> Event {
     let revision = state.revision().get();
     let data = serde_json::json!({
         "instance_id": state.instance_id().as_str(),
         "revision": revision,
     });
     Event::default()
-        .event(name)
+        .event("state")
         .id(revision.to_string())
         .data(data.to_string())
+}
+
+/// The data of a `reload` event (ADR 0030, ADR 0031):
+/// `{"instance_id":…,"revision":…,"changes":[{"path":…,"kind":…}],"full":…}`.
+///
+/// - `path` is [`preview_domain::ChangedPath::url_path`] as the domain gives it, already percent-encoded per
+///   component (`should_send_encoded_path_when_name_has_space`); `kind` is `css`, `js`,
+///   `html`, `asset` or `other` (`should_name_each_kind_when_published`).
+/// - `full` is the change set's own verdict; a full set still lists the paths it kept, for
+///   information only (`should_send_full_when_change_set_full`).
+/// - Across a gap, when the revision is not the one after the last this connection sent or
+///   the instance differs (`should_send_full_when_instance_differs`), the skipped revisions' changes are gone: `full` is `true` and
+///   `changes` is empty (`should_send_full_when_revisions_coalesced`), and the next
+///   contiguous revision is hot again (`should_send_changes_again_when_gap_followed_by_next_revision`).
+#[derive(Debug)]
+struct ReloadPayload<'a> {
+    instance_id: &'a str,
+    revision: u64,
+    changes: Vec<ChangeEntry<'a>>,
+    full: bool,
+}
+
+/// One entry of [`ReloadPayload::changes`].
+#[derive(Debug)]
+struct ChangeEntry<'a> {
+    path: &'a str,
+    kind: &'static str,
+}
+
+impl<'a> ReloadPayload<'a> {
+    /// The payload for `published`, sent on a connection whose previous event announced
+    /// `last_sent`.
+    fn after(last_sent: &SiteState, published: &'a Published) -> Self {
+        let state = &published.state;
+        let contiguous = last_sent.instance_id() == state.instance_id()
+            && last_sent.revision().get().checked_add(1) == Some(state.revision().get());
+        let changes = if contiguous {
+            published
+                .changes
+                .changes()
+                .iter()
+                .map(|change| ChangeEntry {
+                    path: change.url_path(),
+                    kind: kind_code(change.kind()),
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        Self {
+            instance_id: state.instance_id().as_str(),
+            revision: state.revision().get(),
+            changes,
+            full: !contiguous || published.changes.is_full(),
+        }
+    }
+
+    /// The event, its data's keys in the documented order (`instance_id`, `revision`,
+    /// `changes`, `full`; `path`, `kind`). `serde_json` without `preserve_order` sorts object
+    /// keys, so the object is assembled here and only the strings go through `serde_json`,
+    /// which escapes them (`should_send_changes_when_single_css_revision_published`).
+    fn event(&self) -> Event {
+        let changes: Vec<String> = self
+            .changes
+            .iter()
+            .map(|change| {
+                format!(
+                    r#"{{"path":{},"kind":{}}}"#,
+                    json_string(change.path),
+                    json_string(change.kind)
+                )
+            })
+            .collect();
+        let data = format!(
+            r#"{{"instance_id":{},"revision":{},"changes":[{}],"full":{}}}"#,
+            json_string(self.instance_id),
+            self.revision,
+            changes.join(","),
+            self.full
+        );
+        Event::default()
+            .event("reload")
+            .id(self.revision.to_string())
+            .data(data)
+    }
+}
+
+/// `value` as a JSON string literal, quoted and escaped.
+fn json_string(value: &str) -> String {
+    serde_json::Value::from(value).to_string()
+}
+
+/// The wire name of a kind; part of the protocol, so spelled out rather than derived.
+const fn kind_code(kind: AssetKind) -> &'static str {
+    match kind {
+        AssetKind::Css => "css",
+        AssetKind::Js => "js",
+        AssetKind::Html => "html",
+        AssetKind::Asset => "asset",
+        AssetKind::Other => "other",
+    }
 }
 
 /// What a connection waits on between events, and its permit: dropped with the feed, so
 /// with the body or at the end of the stream.
 struct Feed {
     subscription: StateSubscription,
+    /// The state the last event on this connection announced: the gap rule compares with it.
+    last_sent: SiteState,
     shutdown: ShutdownSignal,
     _permit: OwnedSemaphorePermit,
 }
@@ -147,7 +259,9 @@ impl Feed {
             })
             .await?
         };
-        Some((state_event("reload", &published.state), self))
+        let event = ReloadPayload::after(&self.last_sent, &published).event();
+        self.last_sent = published.state;
+        Some((event, self))
     }
 }
 
@@ -181,5 +295,40 @@ impl Stream for EventStream {
                 Poll::Ready(Some(Ok(event)))
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use preview_domain::{ChangeEvent, ChangeKind, ChangeSet, Component, InstanceId, RelPath};
+
+    fn state(instance: &str, revision: u64) -> SiteState {
+        let mut state = SiteState::initial(InstanceId::parse(instance).expect("valid id"));
+        while state.revision().get() != revision {
+            state = state.advanced().expect("not exhausted");
+        }
+        state
+    }
+
+    #[test]
+    fn should_send_full_when_instance_differs() {
+        // given: the next revision number, but announced by another instance
+        let mut changes = ChangeSet::new();
+        changes.accumulate(&ChangeEvent {
+            kind: ChangeKind::Modify,
+            path: RelPath::new(vec![Component::new("site.css").expect("valid")]),
+        });
+        let published = Published {
+            state: state("other-2", 1),
+            changes,
+        };
+
+        // when
+        let payload = ReloadPayload::after(&state("first-1", 0), &published);
+
+        // then
+        assert!(payload.full);
+        assert!(payload.changes.is_empty());
     }
 }

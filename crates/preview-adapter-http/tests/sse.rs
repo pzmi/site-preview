@@ -13,7 +13,9 @@ use axum::http::{HeaderValue, Method, Request, StatusCode};
 use http_body_util::BodyExt;
 use preview_adapter_http::{AppState, DEFAULT_MAX_STREAMS, Shutdown, StreamLimit, build_router};
 use preview_application::ReloadState;
-use preview_domain::{BoundAddr, ChangeSet, HostPolicy};
+use preview_domain::{
+    BoundAddr, ChangeEvent, ChangeKind, ChangeSet, Component, HostPolicy, RelPath,
+};
 use preview_testkit::{FixedInstanceIds, InMemorySite};
 use tokio::time::Instant;
 use tower::ServiceExt;
@@ -60,6 +62,27 @@ impl Server {
         self.reload
             .publish_next(ChangeSet::new())
             .expect("not exhausted");
+    }
+
+    /// A `reload` frame with `changes` as `(path, kind)` pairs.
+    fn reload(&self, revision: u64, changes: &[(&str, &str)], full: bool) -> String {
+        let changes: Vec<String> = changes
+            .iter()
+            .map(|(path, kind)| format!("{{\"path\":\"{path}\",\"kind\":\"{kind}\"}}"))
+            .collect();
+        format!(
+            "event: reload\nid: {revision}\ndata: {{\"instance_id\":\"{}\",\"revision\":{revision},\"changes\":[{}],\"full\":{full}}}\n\n",
+            self.instance,
+            changes.join(",")
+        )
+    }
+
+    fn publish_events(&self, events: &[ChangeEvent]) {
+        let mut changes = ChangeSet::new();
+        for event in events {
+            changes.accumulate(event);
+        }
+        self.reload.publish_next(changes).expect("not exhausted");
     }
 
     fn event(&self, name: &str, revision: u64) -> String {
@@ -142,7 +165,10 @@ async fn should_send_reload_with_new_revision_when_published() {
     server.publish();
 
     // then: exactly one reload for one publish, then only keepalives
-    assert_eq!(next_frame(&mut body).await, Some(server.event("reload", 1)));
+    assert_eq!(
+        next_frame(&mut body).await,
+        Some(server.reload(1, &[], false))
+    );
     assert_eq!(
         next_frame(&mut body).await.as_deref(),
         Some(KEEP_ALIVE_FRAME)
@@ -162,7 +188,10 @@ async fn should_send_only_latest_when_several_published_before_poll() {
     server.publish();
 
     // then
-    assert_eq!(next_frame(&mut body).await, Some(server.event("reload", 3)));
+    assert_eq!(
+        next_frame(&mut body).await,
+        Some(server.reload(3, &[], true))
+    );
     assert_eq!(
         next_frame(&mut body).await.as_deref(),
         Some(KEEP_ALIVE_FRAME)
@@ -180,7 +209,10 @@ async fn should_deliver_publish_once_when_published_between_connect_and_first_po
 
     // then
     assert_eq!(next_frame(&mut body).await, Some(server.event("state", 0)));
-    assert_eq!(next_frame(&mut body).await, Some(server.event("reload", 1)));
+    assert_eq!(
+        next_frame(&mut body).await,
+        Some(server.reload(1, &[], false))
+    );
     assert_eq!(
         next_frame(&mut body).await.as_deref(),
         Some(KEEP_ALIVE_FRAME)
@@ -211,7 +243,10 @@ async fn should_restart_keepalive_timer_when_event_sent() {
     assert_eq!(next_frame(&mut body).await, Some(server.event("state", 0)));
     tokio::time::advance(Duration::from_secs(2)).await;
     server.publish();
-    assert_eq!(next_frame(&mut body).await, Some(server.event("reload", 1)));
+    assert_eq!(
+        next_frame(&mut body).await,
+        Some(server.reload(1, &[], false))
+    );
     let sent = Instant::now();
 
     // when
@@ -558,4 +593,178 @@ async fn should_reject_with_403_when_head_is_cross_site() {
 
     // then
     assert_eq!(parts.status, StatusCode::FORBIDDEN);
+}
+
+fn change(kind: ChangeKind, path: &str) -> ChangeEvent {
+    ChangeEvent {
+        kind,
+        path: RelPath::new(
+            path.split('/')
+                .map(|part| Component::new(part).expect("valid test component"))
+                .collect(),
+        ),
+    }
+}
+
+async fn connected(server: &Server) -> Body {
+    let (_, mut body) = server.connect(&[]).await;
+    assert_eq!(next_frame(&mut body).await, Some(server.event("state", 0)));
+    body
+}
+
+#[tokio::test(start_paused = true)]
+async fn should_send_changes_when_single_css_revision_published() {
+    // given
+    let server = Server::new();
+    let mut body = connected(&server).await;
+
+    // when
+    server.publish_events(&[change(ChangeKind::Modify, "css/site.css")]);
+
+    // then
+    assert_eq!(
+        next_frame(&mut body).await,
+        Some(server.reload(1, &[("/css/site.css", "css")], false))
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn should_send_full_when_revisions_coalesced() {
+    // given
+    let server = Server::new();
+    let mut body = connected(&server).await;
+
+    // when: two hot revisions before the stream is polled
+    server.publish_events(&[change(ChangeKind::Modify, "a.css")]);
+    server.publish_events(&[change(ChangeKind::Modify, "b.css")]);
+
+    // then: one event, full, with no changes: those of revision 1 are gone
+    assert_eq!(
+        next_frame(&mut body).await,
+        Some(server.reload(2, &[], true))
+    );
+    assert_eq!(
+        next_frame(&mut body).await.as_deref(),
+        Some(KEEP_ALIVE_FRAME)
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn should_send_changes_again_when_gap_followed_by_next_revision() {
+    // given
+    let server = Server::new();
+    let mut body = connected(&server).await;
+    server.publish_events(&[change(ChangeKind::Modify, "a.css")]);
+    server.publish_events(&[change(ChangeKind::Modify, "b.css")]);
+    assert_eq!(
+        next_frame(&mut body).await,
+        Some(server.reload(2, &[], true))
+    );
+
+    // when
+    server.publish_events(&[change(ChangeKind::Modify, "c.css")]);
+
+    // then
+    assert_eq!(
+        next_frame(&mut body).await,
+        Some(server.reload(3, &[("/c.css", "css")], false))
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn should_send_full_when_change_set_full() {
+    // given
+    let server = Server::new();
+    let mut body = connected(&server).await;
+
+    // when: an html change makes the set full; its paths stay, for information
+    server.publish_events(&[
+        change(ChangeKind::Modify, "index.html"),
+        change(ChangeKind::Modify, "site.css"),
+    ]);
+
+    // then
+    assert_eq!(
+        next_frame(&mut body).await,
+        Some(server.reload(1, &[("/index.html", "html"), ("/site.css", "css")], true))
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn should_send_full_without_changes_when_directory_changed() {
+    // given
+    let server = Server::new();
+    let mut body = connected(&server).await;
+
+    // when
+    server.publish_events(&[change(ChangeKind::DirectoryChanged, "img")]);
+
+    // then
+    assert_eq!(
+        next_frame(&mut body).await,
+        Some(server.reload(1, &[], true))
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn should_name_each_kind_when_published() {
+    // given
+    let server = Server::new();
+    let mut body = connected(&server).await;
+
+    // when
+    server.publish_events(&[
+        change(ChangeKind::Modify, "app.js"),
+        change(ChangeKind::Modify, "data.json"),
+        change(ChangeKind::Modify, "logo.png"),
+        change(ChangeKind::Modify, "mod.mjs"),
+        change(ChangeKind::Modify, "page.htm"),
+        change(ChangeKind::Modify, "site.css"),
+    ]);
+
+    // then
+    assert_eq!(
+        next_frame(&mut body).await,
+        Some(server.reload(
+            1,
+            &[
+                ("/app.js", "js"),
+                ("/data.json", "other"),
+                ("/logo.png", "asset"),
+                ("/mod.mjs", "js"),
+                ("/page.htm", "html"),
+                ("/site.css", "css"),
+            ],
+            true
+        ))
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn should_send_encoded_path_when_name_has_space() {
+    // given
+    let server = Server::new();
+    let mut body = connected(&server).await;
+
+    // when
+    server.publish_events(&[change(ChangeKind::Modify, "css/my site\"q.css")]);
+
+    // then: percent-encoded by the domain, sent as given
+    assert_eq!(
+        next_frame(&mut body).await,
+        Some(server.reload(1, &[("/css/my%20site%22q.css", "css")], false))
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn should_keep_state_event_shape_when_connected() {
+    // given: the current value was produced by a hot change set
+    let server = Server::new();
+    server.publish_events(&[change(ChangeKind::Modify, "site.css")]);
+
+    // when
+    let (_, mut body) = server.connect(&[]).await;
+
+    // then: the baseline names the state only, never the changes behind it
+    assert_eq!(next_frame(&mut body).await, Some(server.event("state", 1)));
 }
