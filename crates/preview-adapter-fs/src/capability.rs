@@ -42,7 +42,7 @@ use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::path::Path;
 
 use preview_application::{ContentRefusal, ForbiddenReason};
-use preview_domain::{Component, SitePath};
+use preview_domain::{Component, RelPath, SitePath};
 use rustix::fs::{AtFlags, FileType, Mode, OFlags};
 use rustix::io::Errno;
 
@@ -134,6 +134,27 @@ impl RootDir {
         open_final(parent, last)
     }
 
+    /// Opens the directory `path` beneath the root, one `openat` per component, each with
+    /// `O_DIRECTORY | O_NOFOLLOW`. Unlike [`RootDir::open`] the last component is held to the
+    /// same rule as the others, so a link or file there is a refusal and never a descriptor.
+    /// Used by the traversal, which has `RelPath`s and must not re-decode anything.
+    pub(crate) fn open_dir(&self, path: &RelPath) -> Result<OpenedDir, OpenError> {
+        let mut held: Option<OwnedFd> = None;
+        for name in path.components() {
+            let parent = held.as_ref().map_or(self.fd.as_fd(), AsFd::as_fd);
+            let next = open_name(parent, name, DIR_FLAGS)
+                .map_err(|errno| intermediate_refusal(parent, name, errno))?;
+            held = Some(next);
+        }
+        match held {
+            Some(fd) => Ok(OpenedDir { fd }),
+            None => match self.reopen_root()? {
+                Opened::Directory(dir) => Ok(dir),
+                Opened::File(_) => Err(ContentRefusal::Forbidden(ForbiddenReason::NotRegular)),
+            },
+        }
+    }
+
     /// A fresh descriptor of the root, with its own directory offset (a duplicate would share
     /// one, so two traversals of the root could disturb each other). `.` is a constant here,
     /// never request text.
@@ -197,6 +218,11 @@ impl OpenedDir {
     /// `should_refuse_when_child_of_opened_directory_is_symlink`.
     pub fn open_child(&self, name: &Component) -> Result<Opened, OpenError> {
         open_final(self.fd.as_fd(), name)
+    }
+
+    /// The descriptor, for listing this directory inside the crate.
+    pub(crate) fn as_fd(&self) -> BorrowedFd<'_> {
+        self.fd.as_fd()
     }
 
     /// The opened directory descriptor.

@@ -8,6 +8,8 @@
 mod capability;
 mod root;
 mod site_content;
+mod traversal;
 
 pub use capability::{OpenError, Opened, OpenedDir, OpenedFile, RootDir};
 pub use root::{RootError, SiteRoot, open_site_root};
+pub use traversal::{MAX_DEPTH, Traversal, TraversalError, TraversalFault, eligible_dirs};
