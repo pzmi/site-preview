@@ -3,11 +3,14 @@
 //! [`NotifyWatcher`] registers one non-recursive `notify` watch per eligible directory, the set
 //! [`crate::eligible_dirs`] computes with the predicate serving uses, so an ignored subtree
 //! (`.git`, `node_modules`, a hidden directory) is never registered with the operating system
-//! (plan.md section 2.1). `notify` types stay inside this module.
+//! (plan.md section 2.1). [`translate`] turns each `notify` event into the domain's root-relative
+//! change events. `notify` types stay inside this crate.
 
 mod registration;
+mod translate;
 
 pub use registration::{NotifyWatcher, RegistrationError, WatchFault};
+pub use translate::translate;
 
 use preview_domain::{Component, RelPath};
 

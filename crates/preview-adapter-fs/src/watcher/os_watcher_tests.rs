@@ -9,11 +9,11 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, channel};
 use std::time::Duration;
 
-use preview_domain::{Component, RelPath};
+use preview_domain::{ChangeEvent, ChangeKind, Component, RelPath};
 use preview_testkit::poll::wait_until;
 use tempfile::TempDir;
 
-use crate::{NotifyWatcher, SiteRoot, WatchFault, eligible_dirs, open_site_root};
+use crate::{NotifyWatcher, SiteRoot, WatchFault, eligible_dirs, open_site_root, translate};
 
 const DEADLINE: Duration = Duration::from_secs(10);
 
@@ -249,4 +249,42 @@ fn should_not_register_again_when_directory_already_watched() {
         "a watched directory was registered again: {errors:?}"
     );
     assert_eq!(names(watcher.watched().iter().cloned()), ["", "docs"]);
+}
+
+#[test]
+fn should_translate_native_rename_to_both_relative_names_when_file_is_renamed() {
+    // given
+    let (_base, root) = site();
+    fs::create_dir(root.join("docs")).expect("create docs");
+    fs::write(root.join("docs/draft.tmp"), b"x").expect("write draft");
+    let site = open_site_root(&root).expect("open root");
+    let (_watcher, _errors, notifications) = start(&site);
+
+    // when
+    fs::rename(
+        site.display_path.join("docs/draft.tmp"),
+        site.display_path.join("docs/page.html"),
+    )
+    .expect("rename");
+
+    // then
+    let mut changes = Vec::new();
+    let expected = [
+        ChangeEvent {
+            kind: ChangeKind::Rename,
+            path: rel("docs/draft.tmp"),
+        },
+        ChangeEvent {
+            kind: ChangeKind::Rename,
+            path: rel("docs/page.html"),
+        },
+    ];
+    wait_until(DEADLINE, "both sides of the rename translated", || {
+        while let Ok(result) = notifications.try_recv() {
+            let event = result.expect("no watcher error");
+            changes.extend(translate(event, &site.display_path));
+        }
+        expected.iter().all(|wanted| changes.contains(wanted))
+    })
+    .expect("rename translated");
 }

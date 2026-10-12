@@ -19,4 +19,4 @@ mod os_watcher;
 pub use capability::{OpenError, Opened, OpenedDir, OpenedFile, RootDir};
 pub use root::{RootError, SiteRoot, open_site_root};
 pub use traversal::{MAX_DEPTH, Traversal, TraversalError, TraversalFault, eligible_dirs};
-pub use watcher::{NotifyWatcher, RegistrationError, WatchFault};
+pub use watcher::{NotifyWatcher, RegistrationError, WatchFault, translate};
