@@ -7,12 +7,33 @@
 // can be: stylesheets are swapped (the new link loads before the old one goes), and images,
 // icons and stylesheets that reference a changed asset are cache-busted. A script change
 // reloads the page and restores the scroll position, carried in `history.state.__sitePreview`
-// (never storage or cookies, never the URL). Anything else, including a failed load, reloads.
+// (never storage or cookies, never the URL), unless the page accepted it (below). Anything
+// else, including a failed load, reloads.
+//
+// Hot-accept API (opt-in, ES modules):
+//
+//   window.__sitePreview.accept(path, handler)
+//   window.__sitePreview.version   // 1
+//
+// `path` is the URL path of a script, root-relative ('/js/chart.js') or any same-origin URL
+// (`import.meta.url` works); a later call for the same path replaces its handler. When a change
+// set holds only scripts and every one has a handler, no reload happens: each handler is called
+// with `{ path, url, revision }`, where `url` is the script's URL with a cache-busting query, so
+// `await import(url)` loads the new code. A handler may return a promise. If any changed script
+// has no handler, a handler throws, its promise rejects or does not settle within 5 s, the page
+// reloads (with scroll restore) instead; only when every handler succeeds does the client move
+// on to the new revision. The handler decides what re-running a module means (re-render,
+// dispose old listeners); module state from the old copy is not carried over.
+//
+// The client is a deferred script at the end of the body, so a page's own module or deferred
+// scripts in <head> run before it exists: register from a DOMContentLoaded listener, which runs
+// after it. Each same-origin iframe document has its own client and its own API.
 (function () {
   'use strict';
 
   var MARK = '__sp';
   var LOAD_TIMEOUT_MS = 5000;
+  var ACCEPT_TIMEOUT_MS = 5000;
   var IMPORT_DEPTH = 8;
   var SCROLL_KEY = '__sitePreview';
 
@@ -480,27 +501,80 @@
       .then(function (results) { return results.indexOf(false) < 0; });
   }
 
+  var accepted = [];
+
+  function acceptedPath(path) {
+    var url = typeof path === 'string' ? resolve(path, document.baseURI) : null;
+    if (url === null || url.origin !== location.origin) {
+      throw new TypeError('__sitePreview.accept: path must be a same-origin URL path');
+    }
+    return url.pathname;
+  }
+
+  function handlerFor(path) {
+    for (var i = 0; i < accepted.length; i++) {
+      if (samePath(accepted[i].path, path)) return accepted[i].handler;
+    }
+    return null;
+  }
+
+  function accept(path, handler) {
+    if (typeof handler !== 'function') {
+      throw new TypeError('__sitePreview.accept: handler must be a function');
+    }
+    var key = acceptedPath(path);
+    for (var i = 0; i < accepted.length; i++) {
+      if (samePath(accepted[i].path, key)) {
+        accepted[i].handler = handler;
+        return;
+      }
+    }
+    accepted.push({ path: key, handler: handler });
+  }
+
+  // A promise of whether every changed script's handler succeeded in time, or null when the
+  // set is not scripts only or a script has no handler. Handlers start together.
+  function runAccepted(state, revision) {
+    var calls = [];
+    for (var i = 0; i < state.changes.length; i++) {
+      var change = state.changes[i];
+      var handler = change.kind === 'js' ? handlerFor(change.path) : null;
+      if (handler === null) return null;
+      calls.push({ handler: handler, path: change.path });
+    }
+    var work = Promise.all(calls.map(function (call) {
+      var update = {
+        path: call.path,
+        url: cacheBustUrl(call.path, revision, location.origin + '/'),
+        revision: state.revision,
+      };
+      return new Promise(function (done) { done(call.handler(update)); });
+    })).then(function () { return true; }, function () { return false; });
+    var expiry = new Promise(function (done) {
+      setTimeout(function () { done(false); }, ACCEPT_TIMEOUT_MS);
+    });
+    return Promise.race([work, expiry]);
+  }
+
   function hot(state) {
     var revision = String(state.revision);
-    if (strategy(state.changes) === 'js') {
-      scriptReload(revision);
-      return;
-    }
+    var script = strategy(state.changes) === 'js';
+    var fallback = script ? function () { scriptReload(revision); } : fullReload;
     var applying;
     try {
-      applying = apply(state, revision);
+      applying = script ? runAccepted(state, revision) : apply(state, revision);
     } catch (_) {
       applying = null;
     }
     if (applying === null) {
-      fullReload();
+      fallback();
       return;
     }
     busy = true;
     applying.then(null, function () { return false; }).then(function (ok) {
       busy = false;
       if (!ok) {
-        fullReload();
+        fallback();
         return;
       }
       baseline = { instance: baseline.instance, revision: revision };
@@ -534,6 +608,7 @@
     else if (action === 'hot') hot(state);
   }
 
+  window.__sitePreview = Object.freeze({ accept: accept, version: 1 });
   restoreScroll();
   var connection = new EventSource('/__site_preview/events');
   connection.addEventListener('state', function (event) { handle('state', event); });

@@ -656,3 +656,125 @@ test('should_find_css_url_references_when_rules_are_serialized', () => {
   assert.equal(strategy([{ path: '/a.css', kind: 'css' }, { path: '/b.png', kind: 'asset' }]), 'asset');
   assert.equal(strategy([{ path: '/a.js', kind: 'js' }, { path: '/b.png', kind: 'asset' }]), 'js');
 });
+
+test('should_call_handler_with_cache_busted_url_when_path_accepted', async () => {
+  // given
+  const page = fakePage();
+  page.start();
+  const api = page.context.window.__sitePreview;
+  const calls = [];
+  api.accept('/js/old.js', () => { throw new Error('replaced handler must not run'); });
+  api.accept(`${ORIGIN}/js/app.js?__sp=1`, (update) => { calls.push(update); });
+  api.accept('/js/app.js', async (update) => { calls.push(update); });
+
+  // when
+  page.send('reload', js(4, '/js/app.js'));
+  await flush();
+  page.send('reload', js(5, '/js/app.js'));
+  await flush();
+
+  // then
+  assert.equal(api.version, 1);
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].path, '/js/app.js');
+  assert.equal(calls[0].url, `${ORIGIN}/js/app.js?__sp=4`);
+  assert.equal(calls[0].revision, 4);
+  assert.equal(calls[1].url, `${ORIGIN}/js/app.js?__sp=5`);
+  assert.equal(page.reloads, 0);
+  assert.equal(page.replaced.length, 0);
+});
+
+test('should_reload_when_any_changed_js_path_unaccepted', () => {
+  // given
+  const page = fakePage();
+  const css = page.addLink(`${ORIGIN}/css/site.css`);
+  page.start();
+  let calls = 0;
+  page.context.window.__sitePreview.accept('/js/a.js', () => { calls += 1; });
+
+  // when
+  page.send('reload', js(4, '/js/a.js', '/js/b.mjs'));
+
+  // then
+  assert.equal(calls, 0);
+  assert.equal(page.reloads, 1);
+  assert.equal(page.replaced[0][0].__sitePreview.scrollY, 1500);
+  assert.equal(css.parentNode !== null, true);
+});
+
+test('should_reload_when_script_set_is_mixed_with_css', () => {
+  // given
+  const page = fakePage();
+  page.addLink(`${ORIGIN}/css/site.css`);
+  page.start();
+  let calls = 0;
+  page.context.window.__sitePreview.accept('/js/a.js', () => { calls += 1; });
+
+  // when
+  page.send('reload', changeSet(4, [
+    { path: '/js/a.js', kind: 'js' },
+    { path: '/css/site.css', kind: 'css' },
+  ]));
+
+  // then
+  assert.equal(calls, 0);
+  assert.equal(page.reloads, 1);
+});
+
+test('should_reload_when_handler_rejects', async () => {
+  // given
+  const rejecting = fakePage();
+  const throwing = fakePage();
+  rejecting.start();
+  throwing.start();
+  rejecting.context.window.__sitePreview.accept('/js/a.js', () => Promise.reject(new Error('x')));
+  throwing.context.window.__sitePreview.accept('/js/a.js', () => { throw new Error('x'); });
+
+  // when
+  rejecting.send('reload', js(4, '/js/a.js'));
+  throwing.send('reload', js(4, '/js/a.js'));
+  await flush();
+
+  // then
+  assert.equal(rejecting.reloads, 1);
+  assert.equal(throwing.reloads, 1);
+  assert.equal(rejecting.replaced[0][0].__sitePreview.revision, '4');
+});
+
+test('should_not_advance_baseline_when_handler_fails', async () => {
+  // given
+  const page = fakePage();
+  page.start();
+  let calls = 0;
+  page.context.window.__sitePreview.accept('/js/a.js', () => {
+    calls += 1;
+    return new Promise(() => {});
+  });
+  page.send('reload', js(4, '/js/a.js'));
+
+  // when
+  page.send('state', js(4));
+  page.send('reload', js(5, '/js/a.js'));
+  const pending = page.reloads;
+  page.timers.forEach((timer) => timer.fn());
+  await flush();
+
+  // then
+  assert.equal(pending, 0);
+  assert.equal(page.timers[0].ms, 5000);
+  assert.equal(calls, 1);
+  assert.equal(page.reloads, 1);
+});
+
+test('should_refuse_accept_when_path_or_handler_invalid', () => {
+  // given
+  const page = fakePage();
+  page.start();
+  const api = page.context.window.__sitePreview;
+
+  // when / then
+  assert.throws(() => api.accept('/js/a.js', 'not a function'), { name: 'TypeError' });
+  assert.throws(() => api.accept('https://other.example/a.js', () => {}), { name: 'TypeError' });
+  assert.throws(() => api.accept(42, () => {}), { name: 'TypeError' });
+  assert.equal(Object.isFrozen(api), true);
+});
