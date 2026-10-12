@@ -47,8 +47,9 @@ use crate::config::{ServeConfig, ServerLimits};
 use crate::connections::{StopSignal, Stopped, serve_connections};
 use crate::server::{
     Ready, StartupError, StartupReporter, WatchStatus, instance_id, reachable,
-    report_watch_problems, stop_signals, unavailable_warning,
+    report_watch_problems, unavailable_warning,
 };
+use crate::shutdown::stop_signals;
 use crate::watch_pipeline::{TokioClock, WatchControl, WatchPipeline};
 
 /// Whether the server forwards SIGINT and SIGTERM to its own stop.
@@ -194,12 +195,6 @@ impl Server {
         self.outcome.unwrap_or(Stopped::Drained)
     }
 
-    /// Serves until the first stop signal closes the listener, then stops (the binary's run).
-    pub(crate) fn serve_until_stopped(&mut self) -> Stopped {
-        self.await_listener_closed();
-        self.stop()
-    }
-
     fn perform(&mut self, effect: LifecycleEffect) {
         match effect {
             LifecycleEffect::CloseListener => self.close_listener(),
@@ -230,7 +225,9 @@ impl Server {
         }
     }
 
-    fn await_listener_closed(&mut self) {
+    /// Waits until the serve task has closed the listener (at the first stop signal or a
+    /// caller's stop) and starts the drain bound from then.
+    pub(crate) fn await_listener_closed(&mut self) {
         let (Some(closed), Some(runtime)) = (self.listener_closed.take(), self.runtime.as_ref())
         else {
             return;
@@ -794,6 +791,57 @@ mod tests {
         );
         assert_eq!(reports.recorded(), ["ready Watching { dirs: 1 }"]);
         drop(server);
+    }
+
+    /// An open `GET /__site_preview/events` on `addr`, read up to the end of the response
+    /// head: the stream is live and holds its connection.
+    fn open_event_stream(addr: SocketAddr) -> TcpStream {
+        let mut stream = TcpStream::connect(addr).expect("the server accepts");
+        stream
+            .set_read_timeout(Some(DEADLINE))
+            .expect("a read timeout");
+        let head = format!("GET /__site_preview/events HTTP/1.1\r\nHost: {addr}\r\n\r\n");
+        stream
+            .write_all(head.as_bytes())
+            .expect("the request is sent");
+        let mut seen = Vec::new();
+        let mut byte = [0_u8; 1];
+        while !seen.ends_with(b"\r\n\r\n") {
+            stream.read_exact(&mut byte).expect("a response head");
+            seen.push(byte[0]);
+        }
+        assert!(seen.starts_with(b"HTTP/1.1 200"), "{seen:?}");
+        stream
+    }
+
+    #[test]
+    fn should_drain_without_timeout_when_stopped_with_open_event_stream() {
+        // given: a browser tab's event stream, which never ends on its own
+        let root = site();
+        let closed = Arc::new(AtomicBool::new(false));
+        let (server, reports, _warnings) = start(&root, watcher(None, &closed));
+        let mut server = server.expect("a server");
+        let mut events = open_event_stream(server.local_addr());
+
+        // when
+        let stopped = server.stop();
+
+        // then: the stream was ended, not dropped when the drain bound passed
+        assert_eq!(stopped, Stopped::Drained);
+        let mut rest = Vec::new();
+        events
+            .read_to_end(&mut rest)
+            .expect("the stream ends cleanly");
+        assert!(
+            rest.ends_with(b"0\r\n\r\n"),
+            "the chunked body is terminated: {}",
+            String::from_utf8_lossy(&rest)
+        );
+        assert!(closed.load(Ordering::SeqCst), "the watcher is closed");
+        assert_eq!(
+            reports.recorded(),
+            ["ready Watching { dirs: 1 }", "draining 3s"]
+        );
     }
 
     #[test]

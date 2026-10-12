@@ -2,8 +2,6 @@
 //! [`Server`] (plan.md section 9, ADR 0028, ADR 0049, ADR 0051).
 
 use core::fmt;
-use core::future::poll_fn;
-use core::task::Poll;
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::Path;
@@ -12,12 +10,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use preview_adapter_http::WarningSink;
 use preview_domain::InstanceId;
-use tokio::signal::unix::{SignalKind, signal};
-use tokio::sync::mpsc;
 
 use crate::bootstrap::{RootRefusal, WatchStart, start_watcher};
 use crate::config::{BindRefusal, ServeConfig};
-use crate::connections::{StopSignal, Stopped};
+use crate::connections::Stopped;
 use crate::lifecycle::{Server, Signals};
 
 /// What the server reports once it accepts connections.
@@ -148,14 +144,18 @@ impl core::error::Error for StartupError {
 }
 
 /// Serves `config.root` until SIGINT or SIGTERM: [`Server`] started with the signal handlers
-/// installed, then stopped by the first signal (plan.md section 9, ADR 0051).
+/// installed, then stopped by the first signal (plan.md section 9, ADR 0051; the signals and
+/// the shutdown order are in `shutdown.rs`).
 ///
 /// The first signal closes the listener, ends every open event stream (a browser tab never
 /// holds the process), stops the watcher pipeline (joined within the drain bound) and drains
 /// the other connections for at most the drain bound; a second signal stops at once
 /// ([`Stopped::Forced`]). Pinned end to end by `should_serve_index_when_started_on_fixture`,
 /// `should_exit_1_when_root_missing` and the lifecycle tests
-/// (`should_exit_0_within_drain_bound_when_clients_stall`,
+/// (`should_exit_0_when_sigterm_received`,
+/// `should_exit_0_when_sigint_received_with_open_sse_connection`,
+/// `should_close_listener_when_shut_down`,
+/// `should_exit_0_within_drain_bound_when_clients_stall`,
 /// `should_exit_130_when_second_sigint_arrives_during_drain`). Warnings about served pages
 /// (ADR 0020, ADR 0046) and about the watcher (ADR 0049) go to `warnings`. A watcher that
 /// cannot watch anything is degraded mode, never a start-up failure.
@@ -187,34 +187,6 @@ pub(crate) fn unavailable_warning(reason: &str) -> String {
     format!(
         "file watching is unavailable: {reason}; live reload is disabled, pages are still served"
     )
-}
-
-/// Installs the SIGINT and SIGTERM handlers and forwards every delivery, in order, to `tx`.
-/// Installed before [`Ready`] is reported, so a signal sent as soon as the URL is known is
-/// never the default action (which would end the process uncleanly). Must run inside the
-/// runtime.
-pub(crate) fn stop_signals(tx: mpsc::UnboundedSender<StopSignal>) -> io::Result<()> {
-    let mut interrupt = signal(SignalKind::interrupt())?;
-    let mut terminate = signal(SignalKind::terminate())?;
-    tokio::spawn(async move {
-        loop {
-            let next = poll_fn(|cx| {
-                if let Poll::Ready(delivered) = interrupt.poll_recv(cx) {
-                    return Poll::Ready(delivered.map(|()| StopSignal::Interrupt));
-                }
-                terminate
-                    .poll_recv(cx)
-                    .map(|delivered| delivered.map(|()| StopSignal::Terminate))
-            })
-            .await;
-            // `None`: the signal driver is gone with the runtime; nothing more can arrive.
-            let Some(stop) = next else { return };
-            if tx.send(stop).is_err() {
-                return;
-            }
-        }
-    });
-    Ok(())
 }
 
 /// The address a browser on this machine uses for the listener at `local`. A wildcard is

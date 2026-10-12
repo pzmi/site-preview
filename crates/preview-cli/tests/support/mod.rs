@@ -642,6 +642,26 @@ impl EventStream {
         }
     }
 
+    /// Reads the rest of the stream until the server ends it, within [`DEADLINE`], and returns
+    /// whether it ended with the chunked body's terminator: `true` when the server finished
+    /// the response, `false` when the connection was closed or reset mid-body (a dropped
+    /// connection, not an ended stream).
+    pub fn ended_cleanly(mut self) -> bool {
+        let mut rest = Vec::new();
+        match self.reader.read_to_end(&mut rest) {
+            Ok(_) => self.reader.get_ref().terminated,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) =>
+            {
+                panic!("the stream did not end within {DEADLINE:?}")
+            }
+            Err(_) => false,
+        }
+    }
+
     /// Reads the next frame, which must be the `state` baseline, and returns it.
     pub fn baseline(&mut self) -> Frame {
         let frame = self.next_frame();
@@ -710,6 +730,9 @@ struct Dechunk<R> {
     inner: R,
     left: usize,
     done: bool,
+    /// Whether the body ended with its terminating zero-size chunk, as opposed to the
+    /// connection closing mid-body.
+    terminated: bool,
 }
 
 impl<R: BufRead> Dechunk<R> {
@@ -718,6 +741,7 @@ impl<R: BufRead> Dechunk<R> {
             inner,
             left: 0,
             done: false,
+            terminated: false,
         }
     }
 }
@@ -738,6 +762,7 @@ impl<R: BufRead> Read for Dechunk<R> {
                 .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "a chunk size"))?;
             if size == 0 {
                 self.done = true;
+                self.terminated = true;
                 return Ok(0);
             }
             self.left = size;

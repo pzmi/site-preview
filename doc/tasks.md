@@ -677,7 +677,7 @@ Each decision is an ADR. Tasks cite the D-id, and D*n* is ADR *n*+1. ADR 0001 is
 ### CLI-05: Signals and graceful shutdown
 - **Depends on:** CLI-04. **Model:** opus. **Size:** M.
 - **Read:** plan §3 (exit codes), plan §7.4 bullet 5, plan §9 (shutdown line, last paragraph); D27.
-- **Create/Change:** `crates/preview-composition/src/shutdown.rs` handles SIGINT and SIGTERM via `tokio::signal::unix`. The shutdown order is: stop accepting (axum graceful shutdown), trigger the SSE `Shutdown` (open streams end; HTTP-10 already triggers it on SIGINT), stop the watcher (drop it and join the pipeline task), then join the remaining tasks with a bounded timeout. The process exits 0. Tests are black-box in `crates/preview-cli/tests/lifecycle.rs`.
+- **Create/Change:** `crates/preview-composition/src/shutdown.rs` handles SIGINT and SIGTERM via `tokio::signal::unix`. The shutdown order is: stop accepting (the ADR 0045 accept loop closes the listener; it replaced `axum::serve`), trigger the SSE `Shutdown` (open streams end; HTTP-10 already triggers it on SIGINT), stop the watcher (drop it and join the pipeline task), then join the remaining tasks with a bounded timeout. The process exits 0. Tests are black-box in `crates/preview-cli/tests/lifecycle.rs`.
 - **Accept:** `should_exit_0_when_sigterm_received`, `should_exit_0_when_sigint_received_with_open_sse_connection` (exit within a bounded wait; no hang), and `should_close_listener_when_shut_down` (connect refused afterwards).
 - **Impact:** model.
 

@@ -1,12 +1,13 @@
 //! Black-box tests of how `serve` starts and stops (plan.md section 9, ADR 0045, ADR 0051): a
-//! refused start exits 1 with what to do next, SIGINT and SIGTERM exit 0, a client that
-//! stalls never holds the process past the drain bound, and a second SIGINT during the drain
-//! exits 130 at once.
+//! refused start exits 1 with what to do next, SIGINT and SIGTERM exit 0, an open event
+//! stream is ended rather than waited for, the listener refuses connections once shutdown
+//! starts, a client that stalls never holds the process past the drain bound, and a second
+//! SIGINT during the drain exits 130 at once.
 
 pub mod support;
 
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::net::TcpStream;
 use std::time::Duration;
 
@@ -118,6 +119,55 @@ fn should_exit_0_when_sigterm_received() {
     // then
     let status = server.wait_exit(DEADLINE);
     assert_eq!(status.code(), Some(0), "{status}");
+}
+
+#[test]
+fn should_exit_0_when_sigint_received_with_open_sse_connection() {
+    // given: a browser tab's event stream, past its `state` baseline
+    let site = Site::copy();
+    let server = PreviewProcess::serve(&site);
+    let mut events = server.events(&[]).expect("the stream opens");
+    events.baseline();
+
+    // when
+    server.signal("INT");
+
+    // then: the server ended the stream itself, and the process exited cleanly
+    assert!(
+        events.ended_cleanly(),
+        "the stream was dropped, not ended by the shutdown"
+    );
+    let status = server.wait_exit(DEADLINE);
+    assert_eq!(status.code(), Some(0), "{status}");
+}
+
+#[test]
+fn should_close_listener_when_shut_down() {
+    // given: a client stuck in its request head keeps the drain going for its whole bound
+    let site = Site::copy();
+    let server = PreviewProcess::serve(&site);
+    let authority = server.authority().to_owned();
+    let _head = half_sent_head(&server);
+
+    // when
+    server.signal("TERM");
+
+    // then: refused while the process still drains, and after it has exited
+    await_drain_notice(&server);
+    let during = TcpStream::connect(&authority).map_err(|error| error.kind());
+    let status = server.wait_exit(DRAIN + MARGIN);
+    let after = TcpStream::connect(&authority).map_err(|error| error.kind());
+    assert_eq!(
+        during.err(),
+        Some(ErrorKind::ConnectionRefused),
+        "while draining"
+    );
+    assert_eq!(status.code(), Some(0), "{status}");
+    assert_eq!(
+        after.err(),
+        Some(ErrorKind::ConnectionRefused),
+        "after exit"
+    );
 }
 
 #[test]

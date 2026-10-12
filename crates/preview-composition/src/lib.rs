@@ -5,7 +5,8 @@
 //! authority), builds the Tokio runtime, binds the listener, wires the HTTP router to the root
 //! capability and the reload state, starts the file watcher and its debounce pipeline task,
 //! reports readiness through a [`StartupReporter`], reports warnings through a [`WarningSink`]
-//! and serves within [`ServerLimits`]; [`run`] does so until SIGINT or SIGTERM (ADR 0028,
+//! and serves within [`ServerLimits`]; [`run`] does so until SIGINT or SIGTERM, then shuts down
+//! in plan.md's order: listener, event streams, watcher, tasks (`shutdown.rs`; ADR 0028,
 //! ADR 0045, ADR 0049, ADR 0051). The CLI only parses, renders and maps a [`StartupError`] to
 //! an exit code.
 
@@ -14,6 +15,7 @@ mod config;
 mod connections;
 mod lifecycle;
 mod server;
+mod shutdown;
 mod watch_pipeline;
 
 pub use bootstrap::RootRefusal;
