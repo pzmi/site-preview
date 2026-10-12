@@ -17,7 +17,7 @@ use std::hash::{Hash, Hasher};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::Duration;
@@ -171,8 +171,8 @@ fn collect(root: &Path, dir: &Path, out: &mut Vec<(PathBuf, u8, Vec<u8>)>) {
 /// A running `site-preview`, started with the given arguments.
 ///
 /// Dropping it fails the test if the process had already exited (it must stay up until the
-/// test ends), then kills and reaps it, so no process outlives the test, also when an
-/// assertion failed.
+/// test ends, unless the test waited for its exit with [`Self::wait_exit`]), then kills and
+/// reaps it, so no process outlives the test, also when an assertion failed.
 pub struct PreviewProcess {
     child: Child,
     url: String,
@@ -299,6 +299,36 @@ impl PreviewProcess {
         let mut reply = Vec::new();
         stream.read_to_end(&mut reply).expect("a complete reply");
         Reply::parse(&reply)
+    }
+}
+
+impl PreviewProcess {
+    /// Sends the signal `name` (`INT`, `TERM`) to the process with the system `kill`, whose
+    /// arguments are passed as they are, never through a shell.
+    pub fn signal(&self, name: &str) {
+        let status = Command::new("kill")
+            .args(["-s", name, &self.child.id().to_string()])
+            .status()
+            .expect("kill runs");
+        assert!(status.success(), "kill -s {name} failed: {status}");
+    }
+
+    /// Waits up to `within` for the process to exit on its own and returns its status; fails
+    /// the test if it is still running then.
+    pub fn wait_exit(mut self, within: Duration) -> ExitStatus {
+        let mut status = None;
+        // Polled: only the OS scheduler decides when the process has finished its shutdown.
+        let waited = wait_until(within, "site-preview to exit", || {
+            status = self.child.try_wait().expect("the child can be polled");
+            status.is_some()
+        });
+        if let Err(timeout) = waited {
+            let errors: Vec<_> = self.stderr.try_iter().collect();
+            panic!("{timeout}; stderr: {errors:?}");
+        }
+        // Reaped: nothing is left for `Drop` to kill, and this exit was expected.
+        self.stopped = true;
+        status.expect("an exit status")
     }
 }
 

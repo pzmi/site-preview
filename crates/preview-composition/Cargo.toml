@@ -16,5 +16,10 @@ preview-domain = { path = "../preview-domain" }
 preview-application = { path = "../preview-application" }
 preview-adapter-fs = { path = "../preview-adapter-fs" }
 preview-adapter-http = { path = "../preview-adapter-http" }
-tokio = { version = "1.53.2", default-features = false, features = ["rt-multi-thread", "net", "signal"] }
-axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio"] }
+tokio = { version = "1.53.2", default-features = false, features = ["rt-multi-thread", "net", "signal", "sync", "time"] }
+axum = { version = "0.8.9", default-features = false, features = ["http1"] }
+hyper = { version = "1.12.0", default-features = false, features = ["server", "http1"] }
+hyper-util = { version = "0.1.21", default-features = false, features = ["tokio", "service"] }
+
+[dev-dependencies]
+preview-testkit = { path = "../preview-testkit" }

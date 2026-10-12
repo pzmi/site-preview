@@ -3,6 +3,7 @@
 use core::fmt;
 use std::net::{IpAddr, Ipv4Addr};
 use std::path::PathBuf;
+use std::time::Duration;
 
 use preview_domain::{BoundAddr, DebounceWindow};
 
@@ -23,6 +24,40 @@ pub struct ServeConfig {
     pub json: bool,
     /// Whether a browser is opened once the server is ready (`--open`).
     pub open: bool,
+    /// Connection timeouts, the connection cap and the shutdown drain bound. Not on the
+    /// command line: the CLI always uses [`ServerLimits::DEFAULT`]; tests shrink them.
+    pub limits: ServerLimits,
+}
+
+/// How long a connection may hold the server, and how many may at once (ADR 0045).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ServerLimits {
+    /// How long a connection may take to send a complete request head, counted from the
+    /// moment the server waits for one. It covers a half-sent request and an idle keep-alive
+    /// connection alike: hyper starts the timer whenever it is ready for the next head.
+    pub header_read_timeout: Duration,
+    /// How many connections are served at once. A connection accepted beyond it is closed
+    /// at once, so a flood never costs more than this many descriptors.
+    pub max_connections: usize,
+    /// How long a shutdown waits for open responses to finish before it drops them.
+    pub drain_timeout: Duration,
+}
+
+impl ServerLimits {
+    /// The limits of every CLI run (ADR 0045): a 10 s head and idle timeout, 128 connections
+    /// (the 64 event streams of plan.md section 7.4 plus room for page loads, and well under
+    /// the 256 descriptors macOS allows a process by default) and a 3 s shutdown drain.
+    pub const DEFAULT: Self = Self {
+        header_read_timeout: Duration::from_secs(10),
+        max_connections: 128,
+        drain_timeout: Duration::from_secs(3),
+    };
+}
+
+impl Default for ServerLimits {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
 }
 
 /// How far a listener on [`ServeConfig::host`] can be reached, once it is allowed.
@@ -64,6 +99,7 @@ impl ServeConfig {
             debounce: DebounceWindow::DEFAULT,
             json: false,
             open: false,
+            limits: ServerLimits::DEFAULT,
         }
     }
 
@@ -111,6 +147,7 @@ mod tests {
         assert_eq!(config.debounce, DebounceWindow::DEFAULT);
         assert!(!config.json);
         assert!(!config.open);
+        assert_eq!(config.limits, ServerLimits::DEFAULT);
         assert_eq!(config.bind_scope(), Ok(BindScope::Loopback));
     }
 

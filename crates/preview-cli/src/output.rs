@@ -1,53 +1,92 @@
 //! Human start-up output (plan.md section 3, "Human startup output").
 
 use std::io::Write;
+use std::net::IpAddr;
+use std::time::Duration;
 
 use preview_composition::{Ready, StartupReporter};
 
-/// Writes the human start-up block to a stream and flushes it, so a reader of a pipe sees the
-/// URL as soon as the server is ready.
-pub struct HumanReport<W: Write> {
-    out: W,
+/// Writes the human start-up block to `out` and warnings and shutdown notices to `err`,
+/// flushing each, so a reader of a pipe sees the URL as soon as the server is ready.
+pub struct HumanReport<O: Write, E: Write> {
+    out: O,
+    err: E,
+    remote: Option<IpAddr>,
 }
 
-impl<W: Write> HumanReport<W> {
-    /// Reports to `out`.
-    pub const fn new(out: W) -> Self {
-        Self { out }
+impl<O: Write, E: Write> HumanReport<O, E> {
+    /// Reports to `out` and `err`.
+    pub const fn new(out: O, err: E) -> Self {
+        Self {
+            out,
+            err,
+            remote: None,
+        }
+    }
+
+    /// Warns that `host` is reachable from other machines, once the listener is bound: a
+    /// bind that fails never claims to be listening (`should_not_warn_when_remote_bind_fails`).
+    pub fn warn_remote(mut self, host: IpAddr) -> Self {
+        self.remote = Some(host);
+        self
     }
 }
 
-impl<W: Write> StartupReporter for HumanReport<W> {
-    /// Pinned by `should_render_startup_block_when_ready`.
+impl<O: Write, E: Write> StartupReporter for HumanReport<O, E> {
+    /// Pinned by `should_render_startup_block_when_ready` and
+    /// `should_warn_before_block_when_remote_and_ready`.
     fn ready(&mut self, ready: &Ready<'_>) {
+        // A closed stdout or stderr has nowhere left to report to; the server keeps serving.
+        if let Some(host) = self.remote {
+            let warning = format!(
+                "site-preview: warning[remote-binding]: listening on {host} with no \
+                 authentication: anyone who can reach this address can read the site; do not \
+                 use it on an untrusted network\n"
+            );
+            let _ = self.err.write_all(warning.as_bytes());
+            let _ = self.err.flush();
+        }
         let block = format!(
             "Site Preview\nServing:  {}\nLocal:    {}\nWatching: not yet available\nReady.\n",
             ready.root.display(),
             ready.url
         );
-        // A closed stdout has nowhere left to report to; the server keeps serving.
         let _ = self.out.write_all(block.as_bytes());
         let _ = self.out.flush();
+    }
+
+    /// Pinned by `should_tell_how_to_stop_now_when_draining`.
+    fn draining(&mut self, bound: Duration) {
+        let notice = format!(
+            "site-preview: shutting down: waiting up to {bound:?} for open connections; \
+             press Ctrl-C again to stop now\n"
+        );
+        let _ = self.err.write_all(notice.as_bytes());
+        let _ = self.err.flush();
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::net::Ipv4Addr;
     use std::path::Path;
 
     use super::*;
 
+    fn ready() -> Ready<'static> {
+        Ready {
+            root: Path::new("/srv/site"),
+            url: "http://127.0.0.1:49152/",
+        }
+    }
+
     #[test]
     fn should_render_startup_block_when_ready() {
         // given
-        let mut report = HumanReport::new(Vec::new());
-        let ready = Ready {
-            root: Path::new("/srv/site"),
-            url: "http://127.0.0.1:49152/",
-        };
+        let mut report = HumanReport::new(Vec::new(), Vec::new());
 
         // when
-        report.ready(&ready);
+        report.ready(&ready());
 
         // then
         assert_eq!(
@@ -58,5 +97,42 @@ mod tests {
              Watching: not yet available\n\
              Ready.\n"
         );
+        assert!(report.err.is_empty());
+    }
+
+    #[test]
+    fn should_warn_before_block_when_remote_and_ready() {
+        // given
+        let report = HumanReport::new(Vec::new(), Vec::new());
+        let mut report = report.warn_remote(IpAddr::V4(Ipv4Addr::UNSPECIFIED));
+
+        // when
+        report.ready(&ready());
+
+        // then
+        let warning = String::from_utf8(report.err).expect("utf-8");
+        assert!(
+            warning.starts_with("site-preview: warning[remote-binding]: listening on 0.0.0.0 "),
+            "{warning}"
+        );
+        assert!(warning.contains("no authentication"), "{warning}");
+        assert!(!report.out.is_empty());
+    }
+
+    #[test]
+    fn should_tell_how_to_stop_now_when_draining() {
+        // given
+        let mut report = HumanReport::new(Vec::new(), Vec::new());
+
+        // when
+        report.draining(Duration::from_secs(3));
+
+        // then
+        assert_eq!(
+            String::from_utf8(report.err).expect("utf-8"),
+            "site-preview: shutting down: waiting up to 3s for open connections; press Ctrl-C \
+             again to stop now\n"
+        );
+        assert!(report.out.is_empty());
     }
 }

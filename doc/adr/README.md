@@ -48,3 +48,4 @@ This directory holds the decisions behind site-preview, one file per decision, i
 | [0042](0042-command-query-and-observability-rules.md) | Command, query and observability rules: selectors and syntax-level flow | Proposed |
 | [0043](0043-lol-html-rewriter-and-mpl-exceptions.md) | The `lol_html` rewriter: strict parsing, verified output, scoped MPL-2.0 exceptions | Proposed |
 | [0044](0044-sse-admission-and-absolute-form-scheme.md) | SSE admission order, `HEAD` on the event stream, and the absolute-form scheme | Proposed |
+| [0045](0045-connection-limits-and-bounded-shutdown.md) | Connection limits and a bounded shutdown drain | Proposed |

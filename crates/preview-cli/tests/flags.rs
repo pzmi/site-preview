@@ -137,13 +137,70 @@ fn should_exit_1_when_explicit_port_in_use() {
         .assert();
 
     // then
+    assert.code(1).stdout("").stderr(
+        predicate::str::starts_with(format!(
+            "site-preview: error: cannot listen on 127.0.0.1:{port}: "
+        ))
+        // The operating system's own words, not just the error kind ("address in use").
+        .and(predicate::str::contains("Address already in use")),
+    );
+    drop(occupied);
+}
+
+#[test]
+fn should_not_warn_when_remote_bind_fails() {
+    // given: a test listener holds a wildcard port
+    let site = Site::copy();
+    let occupied = TcpListener::bind("0.0.0.0:0").expect("a test listener");
+    let port = occupied
+        .local_addr()
+        .expect("a bound port")
+        .port()
+        .to_string();
+    let mut command = site_preview();
+
+    // when
+    let assert = command
+        .args([
+            "serve",
+            "--host",
+            "0.0.0.0",
+            "--allow-remote",
+            "--port",
+            &port,
+            site.arg(),
+        ])
+        .assert();
+
+    // then: the error alone; nothing claims a listener that never existed
     assert
         .code(1)
         .stdout("")
         .stderr(predicate::str::starts_with(format!(
-            "site-preview: error: cannot listen on 127.0.0.1:{port}: "
-        )));
+            "site-preview: error: cannot listen on 0.0.0.0:{port}: "
+        )))
+        .stderr(predicate::str::contains("warning").not());
     drop(occupied);
+}
+
+#[test]
+fn should_exit_2_when_unimplemented_flag_given() {
+    for flag in ["--json", "--open"] {
+        // given
+        let site = Site::copy();
+        let mut command = site_preview();
+
+        // when
+        let assert = command.args(["serve", flag, site.arg()]).assert();
+
+        // then
+        assert
+            .code(2)
+            .stdout("")
+            .stderr(predicate::str::starts_with(format!(
+                "site-preview: error: {flag} is not implemented yet"
+            )));
+    }
 }
 
 #[test]

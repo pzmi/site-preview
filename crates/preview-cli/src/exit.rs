@@ -11,15 +11,22 @@ pub enum Outcome {
     Failure,
     /// The command line was invalid.
     Usage,
+    /// A second SIGINT cut the shutdown drain short: 128 + 2, as a shell reports it.
+    Interrupted,
+    /// A second SIGTERM cut the shutdown drain short: 128 + 15.
+    Terminated,
 }
 
 impl Outcome {
-    /// The numeric exit code: 0 for success, 1 for a failure, 2 for a usage error.
+    /// The numeric exit code: 0 for success, 1 for a failure, 2 for a usage error, 128 plus
+    /// the signal number for a forced stop (ADR 0045).
     pub const fn code(self) -> u8 {
         match self {
             Self::Success => 0,
             Self::Failure => 1,
             Self::Usage => 2,
+            Self::Interrupted => 130,
+            Self::Terminated => 143,
         }
     }
 }
@@ -35,12 +42,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn should_map_success_failure_and_usage_to_0_1_2_when_asked_for_codes() {
+    fn should_map_outcomes_to_0_1_2_130_143_when_asked_for_codes() {
         // given
-        let outcomes = [Outcome::Success, Outcome::Failure, Outcome::Usage];
+        let outcomes = [
+            Outcome::Success,
+            Outcome::Failure,
+            Outcome::Usage,
+            Outcome::Interrupted,
+            Outcome::Terminated,
+        ];
         // when
         let codes = outcomes.map(Outcome::code);
         // then
-        assert_eq!(codes, [0, 1, 2]);
+        assert_eq!(codes, [0, 1, 2, 130, 143]);
     }
 }

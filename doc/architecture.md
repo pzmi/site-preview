@@ -82,7 +82,9 @@ Consequences the checker enforces:
   cancellation, and owns the async runtime and process resources
   ([ADR 0028](adr/0028-composition-owns-runtime-and-processes.md)): `bootstrap.rs` opens
   the root, `server.rs` builds the Tokio runtime, binds the listener, reports readiness
-  through the CLI's `StartupReporter` and serves until Ctrl-C. It is not a service
+  through the CLI's `StartupReporter` and serves until SIGINT or SIGTERM; `connections.rs`
+  is the accept loop with its timeouts, connection cap and bounded shutdown drain
+  ([ADR 0045](adr/0045-connection-limits-and-bounded-shutdown.md)). It is not a service
   locator for the domain.
 - **CLI** parses flags, maps outcomes to exit codes, picks loopback defaults and delegates
   through composition.

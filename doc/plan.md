@@ -544,6 +544,7 @@ For an ordinary local site of <= 1,000 files:
 - HTML rewrite allocation bounded by 8 MiB input plus output overhead.
 - Binary asset reads streamed instead of buffered in full.
 - Maximum 64 live SSE connections; no per-client accumulating queue.
+- Connection limits (D44, ADR 0045): a 10 s header-read and idle keep-alive timeout, at most 128 open connections (an excess one is closed at once), and a 3 s shutdown drain; a second SIGINT/SIGTERM exits at once with 130/143.
 
 Benchmark rather than over-engineer. Run at least one soak test (repeated saves + multiple tabs) and a test with nested directories and ignored large trees. If the native watcher hits OS limits, report them clearly.
 

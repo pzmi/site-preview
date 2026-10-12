@@ -8,7 +8,7 @@ use std::io;
 use std::process::ExitCode;
 
 use clap::Parser;
-use preview_composition::{BindScope, ServeConfig, StartupError};
+use preview_composition::{BindScope, ServeConfig, StartupError, StopSignal, Stopped};
 
 use crate::args::{Cli, Command, ServeArgs};
 use crate::exit::Outcome;
@@ -48,24 +48,30 @@ fn config_from(args: ServeArgs) -> ServeConfig {
     config
 }
 
-/// Refuses a remote bind without `--allow-remote` as a usage error (exit 2), warns on stderr
-/// when one is allowed, then runs the server.
+/// Refuses a flag that does nothing yet, and a remote bind without `--allow-remote`, as usage
+/// errors (exit 2), then runs the server; the remote-binding warning is printed once the
+/// listener is bound. A second stop signal during the drain exits 128 plus its number.
 fn serve(config: &ServeConfig) -> Outcome {
-    match config.bind_scope() {
+    if let Some(flag) = unimplemented_flag(config) {
+        eprintln!(
+            "site-preview: error: {flag} is not implemented yet; run without it (the human \
+             output on stdout carries the URL on its `Local:` line)"
+        );
+        return Outcome::Usage;
+    }
+    let report = HumanReport::new(io::stdout(), io::stderr());
+    let mut report = match config.bind_scope() {
         Err(refusal) => {
             eprintln!("site-preview: error: {refusal}");
             return Outcome::Usage;
         }
-        Ok(BindScope::Remote) => eprintln!(
-            "site-preview: warning[remote-binding]: listening on {} with no authentication: \
-             anyone who can reach this address can read the site; do not use it on an \
-             untrusted network",
-            config.host
-        ),
-        Ok(BindScope::Loopback) => {}
-    }
-    match preview_composition::run(config, &mut HumanReport::new(io::stdout())) {
-        Ok(()) => Outcome::Success,
+        Ok(BindScope::Remote) => report.warn_remote(config.host),
+        Ok(BindScope::Loopback) => report,
+    };
+    match preview_composition::run(config, &mut report) {
+        Ok(Stopped::Drained | Stopped::DrainTimedOut) => Outcome::Success,
+        Ok(Stopped::Forced(StopSignal::Interrupt)) => Outcome::Interrupted,
+        Ok(Stopped::Forced(StopSignal::Terminate)) => Outcome::Terminated,
         Err(error) => {
             eprintln!("site-preview: error: {error}");
             if matches!(error, StartupError::RemoteBind(_)) {
@@ -74,5 +80,19 @@ fn serve(config: &ServeConfig) -> Outcome {
                 Outcome::Failure
             }
         }
+    }
+}
+
+/// `--json` (CLI-06) and `--open` (CLI-07) are parsed but not wired yet. Accepting them would
+/// promise what the run does not do: an agent asking for JSON would read human text, and
+/// `--open` would silently open nothing. Pinned by
+/// `should_exit_2_when_unimplemented_flag_given`.
+const fn unimplemented_flag(config: &ServeConfig) -> Option<&'static str> {
+    if config.json {
+        Some("--json")
+    } else if config.open {
+        Some("--open")
+    } else {
+        None
     }
 }

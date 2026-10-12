@@ -892,10 +892,13 @@ name = "preview-composition"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "hyper",
+ "hyper-util",
  "preview-adapter-fs",
  "preview-adapter-http",
  "preview-application",
  "preview-domain",
+ "preview-testkit",
  "tokio",
 ]
 
