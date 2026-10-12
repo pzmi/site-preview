@@ -1,0 +1,249 @@
+# The committed regression traces and how each one is regenerated (FORMAL-09, ADR 0060).
+#
+# `cargo xtask conformance` (stage formal-freshness) regenerates every trace listed here with
+# the locked Quint, from the repository root:
+#
+#   npx --prefix formal --no -- quint run formal/<model> --backend typescript [--main <main>]
+#     [--init <init>] --step <step> --max-steps <max_steps> --mbt --seed <seed>
+#     [--invariant <invariant>] --out-itf formal/traces/generated/regression/<file>
+#
+# and compares it with the committed file byte for byte, `#meta.description` and
+# `#meta.timestamp` (the creation date Quint writes) excepted. A stale file fails with
+# `stale regression trace <file>`. Every `*.itf.json` in this directory has exactly one entry,
+# and every script of a `*_traces.qnt` module has one; `max_steps` and `init` must match the
+# comment above the script (unit-tested in tools/xtask/src/conformance.rs).
+
+# FORMAL-04's decoder fixture: five random `serverStep` steps of the model itself.
+[[trace]]
+file = "itf-decoder-sample.itf.json"
+model = "lifecycle.qnt"
+step = "serverStep"
+max_steps = 5
+seed = "11"
+
+[[trace]]
+file = "lifecycle-startServeStop.itf.json"
+model = "lifecycle_traces.qnt"
+main = "lifecycleTraces"
+step = "startServeStop"
+max_steps = 5
+seed = "0x5ce1"
+invariant = "allInvariants"
+
+[[trace]]
+file = "lifecycle-bindFailure.itf.json"
+model = "lifecycle_traces.qnt"
+main = "lifecycleTraces"
+step = "bindFailure"
+max_steps = 3
+seed = "0x5ce1"
+invariant = "allInvariants"
+
+[[trace]]
+file = "lifecycle-watcherFailsDuringStart.itf.json"
+model = "lifecycle_traces.qnt"
+main = "lifecycleTraces"
+step = "watcherFailsDuringStart"
+max_steps = 3
+seed = "0x5ce1"
+invariant = "allInvariants"
+
+[[trace]]
+file = "lifecycle-doubleStop.itf.json"
+model = "lifecycle_traces.qnt"
+main = "lifecycleTraces"
+step = "doubleStop"
+max_steps = 4
+seed = "0x5ce1"
+invariant = "allInvariants"
+
+[[trace]]
+file = "lifecycle-refusedBeforeStart.itf.json"
+model = "lifecycle_traces.qnt"
+main = "lifecycleTraces"
+step = "refusedBeforeStart"
+max_steps = 2
+seed = "0x5ce1"
+invariant = "allInvariants"
+
+[[trace]]
+file = "lifecycle-restartAfterStop.itf.json"
+model = "lifecycle_traces.qnt"
+main = "lifecycleTraces"
+step = "restartAfterStop"
+max_steps = 3
+seed = "0x5ce1"
+invariant = "allInvariants"
+
+[[trace]]
+file = "reload-editDuringFetch.itf.json"
+model = "reload_traces.qnt"
+main = "reloadTraces"
+step = "editDuringFetch"
+max_steps = 7
+seed = "0x5ce1"
+invariant = "allInvariants"
+
+[[trace]]
+file = "reload-disconnectEditReconnect.itf.json"
+model = "reload_traces.qnt"
+main = "reloadTraces"
+step = "disconnectEditReconnect"
+max_steps = 13
+seed = "0x5ce1"
+invariant = "allInvariants"
+
+[[trace]]
+file = "reload-restartSamePort.itf.json"
+model = "reload_traces.qnt"
+main = "reloadTraces"
+step = "restartSamePort"
+max_steps = 10
+seed = "0x5ce1"
+invariant = "allInvariants"
+
+[[trace]]
+file = "reload-cssOnlyHot.itf.json"
+model = "reload_traces.qnt"
+main = "reloadTraces"
+step = "cssOnlyHot"
+max_steps = 6
+seed = "0x5ce1"
+invariant = "allInvariants"
+
+[[trace]]
+file = "reload-coalescedCssThenJsFull.itf.json"
+model = "reload_traces.qnt"
+main = "reloadTraces"
+step = "coalescedCssThenJsFull"
+max_steps = 7
+seed = "0x5ce1"
+invariant = "allInvariants"
+
+[[trace]]
+file = "reload-htmlFull.itf.json"
+model = "reload_traces.qnt"
+main = "reloadTraces"
+step = "htmlFull"
+max_steps = 6
+seed = "0x5ce1"
+invariant = "allInvariants"
+
+[[trace]]
+file = "reload-scriptNotAcceptedReloads.itf.json"
+model = "reload_traces.qnt"
+main = "reloadTraces"
+step = "scriptNotAcceptedReloads"
+max_steps = 9
+seed = "0x5ce1"
+invariant = "allInvariants"
+
+[[trace]]
+file = "watcher-burstOneReload.itf.json"
+model = "watcher_traces.qnt"
+main = "watcherTraces"
+init = "init"
+step = "burstOneReload"
+max_steps = 12
+seed = "0x5ce1"
+invariant = "allInvariants"
+
+[[trace]]
+file = "watcher-gitOnlyNoReload.itf.json"
+model = "watcher_traces.qnt"
+main = "watcherTraces"
+init = "init"
+step = "gitOnlyNoReload"
+max_steps = 8
+seed = "0x5ce1"
+invariant = "allInvariants"
+
+[[trace]]
+file = "watcher-atomicSave.itf.json"
+model = "watcher_traces.qnt"
+main = "watcherTraces"
+init = "init"
+step = "atomicSave"
+max_steps = 10
+seed = "0x5ce1"
+invariant = "allInvariants"
+
+[[trace]]
+file = "watcher-overflowRescan.itf.json"
+model = "watcher_traces.qnt"
+main = "watcherTraces"
+init = "init"
+step = "overflowRescan"
+max_steps = 19
+seed = "0x5ce1"
+invariant = "allInvariants"
+
+[[trace]]
+file = "watcher-dirRecreate.itf.json"
+model = "watcher_traces.qnt"
+main = "watcherTraces"
+init = "init"
+step = "dirRecreate"
+max_steps = 16
+seed = "0x5ce1"
+invariant = "allInvariants"
+
+[[trace]]
+file = "watcher-recoveryAfterWatchLimit.itf.json"
+model = "watcher_traces.qnt"
+main = "watcherTraces"
+init = "init"
+step = "recoveryAfterWatchLimit"
+max_steps = 14
+seed = "0x5ce1"
+invariant = "allInvariants"
+
+[[trace]]
+file = "watcher-recoveryAloneReloads.itf.json"
+model = "watcher_traces.qnt"
+main = "watcherTraces"
+init = "initUnwatchable"
+step = "recoveryAloneReloads"
+max_steps = 10
+seed = "0x5ce1"
+invariant = "allInvariants"
+
+[[trace]]
+file = "watcher-runtimeFailureDegrades.itf.json"
+model = "watcher_traces.qnt"
+main = "watcherTraces"
+init = "init"
+step = "runtimeFailureDegrades"
+max_steps = 6
+seed = "0x5ce1"
+invariant = "allInvariants"
+
+[[trace]]
+file = "watcher-startupRegistrationFailure.itf.json"
+model = "watcher_traces.qnt"
+main = "watcherTraces"
+init = "initUnwatchable"
+step = "startupRegistrationFailure"
+max_steps = 5
+seed = "0x5ce1"
+invariant = "allInvariants"
+
+[[trace]]
+file = "watcher-rootDeleteRecreate.itf.json"
+model = "watcher_traces.qnt"
+main = "watcherTraces"
+init = "init"
+step = "rootDeleteRecreate"
+max_steps = 7
+seed = "0x5ce1"
+invariant = "allInvariants"
+
+[[trace]]
+file = "watcher-shutdownDropsPending.itf.json"
+model = "watcher_traces.qnt"
+main = "watcherTraces"
+init = "init"
+step = "shutdownDropsPending"
+max_steps = 5
+seed = "0x5ce1"
+invariant = "allInvariants"

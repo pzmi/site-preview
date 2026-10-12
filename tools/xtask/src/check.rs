@@ -1,11 +1,12 @@
 //! `cargo xtask check`: the full blocking gate (foundation.md section 9, ADR 0019).
 //!
 //! It composes the registered stages: the `quick` stages other than its fast tests (format
-//! check, architecture with fixtures, Clippy), everything `test` runs, then `security`. A stage that does
+//! check, architecture with fixtures, Clippy), everything `test` runs, everything
+//! `conformance` runs (FORMAL-09, ADR 0060), then `security`. A stage that does
 //! not exist yet is absent, never skipped; one that cannot run shows `UNAVAILABLE`.
 
 use crate::process::{Stage, finish, run_report};
-use crate::{quick, security, test, tools};
+use crate::{conformance, quick, security, test, tools};
 
 /// The stages `check` runs, in order. Their names are catalog ids with `in_check` set.
 pub fn stages() -> Vec<Stage> {
@@ -14,6 +15,7 @@ pub fn stages() -> Vec<Stage> {
         .filter(|s| !matches!(s.name, "unit-tests" | "doctests"))
         .collect();
     stages.extend(test::stages());
+    stages.extend(conformance::stages(false));
     stages.extend(security::stages());
     stages
 }
@@ -75,6 +77,13 @@ mod tests {
             "clippy",
             "unit-tests",
             "doctests",
+            "formal-typecheck",
+            "formal-scenarios",
+            "formal-simulate",
+            "formal-freshness",
+            "formal-generate",
+            "conformance-replay",
+            "conformance-controls",
             "deny",
             "secrets",
             "workflows",

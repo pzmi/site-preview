@@ -4,13 +4,15 @@
 //!
 //! - The named scenarios, exported from `formal/reload_traces.qnt` into
 //!   `formal/traces/regression/reload-*.itf.json` (the command is in that file's header).
-//! - Fresh seeded traces of `step`, generated into `formal/traces/generated/` with the locked
-//!   Quint; the seed is printed, and `QUINT_SEED=<seed>` repeats the run.
+//! - Seeded random traces of `step` in `formal/traces/generated/`: under `cargo xtask
+//!   conformance`, the ones its `formal-generate` stage recorded in `manifest.json`; run
+//!   directly, fresh ones from the locked Quint. The seed is printed, and `QUINT_SEED=<seed>`
+//!   repeats the run.
 
 use std::path::{Path, PathBuf};
 
 use preview_conformance::drivers::reload::{ReloadDriver, project};
-use preview_conformance::generate::{Family, formal_dir, seed};
+use preview_conformance::generate::{Family, formal_dir};
 use preview_conformance::{Cause, Divergence, Trace, replay};
 
 /// The named scenarios of `reloadScenarios`, each scripted in `reload_traces.qnt`.
@@ -99,11 +101,8 @@ fn should_replay_with_zero_divergence_when_trace_is_a_named_scenario() {
 #[test]
 fn should_replay_with_zero_divergence_when_traces_are_generated_with_a_seed() {
     // given
-    let seed = seed();
+    let (seed, traces) = GENERATED.traces().unwrap_or_else(|err| panic!("{err}"));
     println!("reload generated traces: {}", GENERATED.describe(&seed));
-    let traces = GENERATED
-        .generate(&seed)
-        .unwrap_or_else(|err| panic!("{err}"));
 
     // when
     let outcomes: Vec<_> = traces.iter().map(|path| replay_file(path, &seed)).collect();

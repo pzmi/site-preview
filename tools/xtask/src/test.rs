@@ -37,6 +37,9 @@ fn stages_with(developer_cases: Option<&str>) -> Vec<Stage> {
                 "--locked",
                 "--profile",
                 "ci",
+                // The conformance replay runs once, in `conformance` (ADR 0060).
+                "--exclude",
+                "preview-conformance",
             ],
         )
         .needs("cargo-nextest")

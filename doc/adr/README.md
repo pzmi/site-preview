@@ -62,3 +62,4 @@ This directory holds the decisions behind site-preview, one file per decision, i
 | [0057](0057-reload-conformance-driver.md) | Reload conformance driver: in-process SSE bodies, the client's choice read from the model | Proposed |
 | [0058](0058-watcher-conformance-driver.md) | Watcher conformance driver: the coordinator in process, the environment from the trace | Proposed |
 | [0059](0059-conformance-negative-controls.md) | Conformance negative controls: faults behind the drivers' seams, a publish seam in the reload driver | Proposed |
+| [0060](0060-conformance-stage-and-trace-corpus.md) | The `conformance` stage in `check`: regression manifest and freshness, a generated-trace manifest, replay once per gate, `formal.yml` | Proposed |

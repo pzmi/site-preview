@@ -1,0 +1,87 @@
+name: Formal
+
+# The Quint models and their replay against the real code (foundation.md sections 6.4 and 10,
+# ADR 0060). `cargo xtask check` in ci.yml runs the same stages; this workflow is the named
+# `Conformance (Quint)` lane, keeps the failing traces as artifacts, and runs nightly with a
+# fresh seed.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: formal-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  conformance:
+    name: Conformance (Quint)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install toolchain from rust-toolchain.toml
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - name: Cache cargo registry, build output and tools
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/bin
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: formal-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'tools/versions.toml') }}
+          restore-keys: |
+            formal-${{ runner.os }}-
+
+      - name: Install pinned dev tools
+        run: cargo xtask install-tools cargo-nextest
+
+      # Quint is locked by formal/package-lock.json; npx never fetches it (ADR 0052).
+      - name: Install Quint
+        run: npm ci --prefix formal
+
+      # The seed is printed; QUINT_SEED=<seed> cargo xtask conformance repeats the run.
+      - name: Conformance
+        run: cargo xtask conformance
+
+      # The generated traces and their manifest (seed, Quint version, families), the
+      # regenerated regression traces a stale one is compared with, and nextest's report.
+      - name: Keep the traces of a failed run
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: conformance-traces-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            formal/traces/generated/
+            target/nextest/ci/junit.xml
+          if-no-files-found: warn
+          retention-days: 30
+
+  # Placeholder for the scheduled deep lane: FORMAL-10 adds `cargo xtask formal-verify`
+  # (Apalache, counterexamples uploaded) and TEST-09 adds a Miri job. Until then the nightly
+  # run is the `conformance` job above with a fresh seed; this job checks nothing.
+  scheduled:
+    name: Scheduled formal lane (placeholder)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Report what is not scheduled yet
+        run: echo "::notice::formal-verify (FORMAL-10) and Miri (TEST-09) are not scheduled yet; this job checks nothing"

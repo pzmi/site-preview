@@ -15,6 +15,7 @@ reload script is injected into served responses only). It is a public, open-sour
 |:--|:--|
 | `doc/plan.md` | Product spec: CLI (§3), safe serving (§5), HTML injection (§6), reload protocol (§7), watcher (§8), lifecycle (§9) |
 | `doc/foundation.md` | Engineering rules: workspace and dependency law (§2), enforcement (§3), tests (§5), Quint conformance (§6), commands (§9), agent contract (§11) |
+| `doc/formal-models.md` | Quint models, stimuli, observations, invariants, scope, the conformance gate, promoting a counterexample; model first (D13) |
 | `doc/tasks.md` | Task order, dependencies, model per task, ⛳ checkpoints, the live gate, decisions |
 | `doc/adr/` | Decisions, Nygard style (`NNNN-kebab-title.md`: Status, Context, Decision, Consequences); index in `doc/adr/README.md` |
 

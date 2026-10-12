@@ -29,7 +29,16 @@ pub fn stages() -> Vec<Stage> {
         Stage::new(
             "unit-tests",
             "cargo",
-            &["nextest", "run", "--locked", "--workspace"],
+            // The conformance replay needs Quint and is not fast; `check` runs it in
+            // `conformance` (ADR 0060).
+            &[
+                "nextest",
+                "run",
+                "--locked",
+                "--workspace",
+                "--exclude",
+                "preview-conformance",
+            ],
         ),
         Stage::new(
             "doctests",

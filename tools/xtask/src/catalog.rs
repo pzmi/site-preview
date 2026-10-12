@@ -53,7 +53,7 @@ pub const CATALOG: &[Check] = &[
     row(
         "unit-tests",
         "unit",
-        "cargo nextest run --workspace --locked --profile ci",
+        "cargo nextest run --workspace --locked --profile ci --exclude preview-conformance",
         "TEST-01",
         true,
     ),
@@ -100,21 +100,49 @@ pub const CATALOG: &[Check] = &[
         "conformance",
         "npx --prefix formal --no -- quint typecheck formal/*.qnt",
         "FORMAL-01",
-        false,
+        true,
     ),
     row(
         "formal-scenarios",
         "conformance",
         "npx --prefix formal --no -- quint test --backend typescript --main <module> --match <its runs> formal/scenarios.qnt",
         "FORMAL-01",
-        false,
+        true,
     ),
     row(
         "formal-simulate",
         "conformance",
         "npx --prefix formal --no -- quint run --backend typescript --step <relation> --invariants <all> --max-samples 1000 --max-steps 25 formal/<model>.qnt",
         "FORMAL-01",
-        false,
+        true,
+    ),
+    row(
+        "formal-freshness",
+        "conformance",
+        "npx --prefix formal --no -- quint run --backend typescript --mbt <each trace of formal/traces/regression/manifest.toml>, compared with the committed file",
+        "FORMAL-09",
+        true,
+    ),
+    row(
+        "formal-generate",
+        "conformance",
+        "npx --prefix formal --no -- quint run --backend typescript --mbt --step <relation> --invariant allInvariants --n-traces 30 --max-steps 25 formal/<model>.qnt, recorded in formal/traces/generated/manifest.json",
+        "FORMAL-09",
+        true,
+    ),
+    row(
+        "conformance-replay",
+        "conformance",
+        "cargo nextest run --locked --profile ci -p preview-conformance -E not binary(negative_controls)",
+        "FORMAL-09",
+        true,
+    ),
+    row(
+        "conformance-controls",
+        "conformance",
+        "cargo nextest run --locked --profile ci -p preview-conformance -E binary(negative_controls)",
+        "FORMAL-09",
+        true,
     ),
     row(
         "coverage",
@@ -231,7 +259,7 @@ pub fn to_json(checks: &[Check]) -> String {
     format!("[\n{}\n]\n", rows.join(",\n"))
 }
 
-fn json_str(s: &str) -> String {
+pub(crate) fn json_str(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
     out.push('"');
     for ch in s.chars() {
