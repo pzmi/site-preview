@@ -6,13 +6,14 @@ mod output;
 
 use std::io;
 use std::process::ExitCode;
+use std::sync::Arc;
 
 use clap::Parser;
 use preview_composition::{BindScope, ServeConfig, StartupError, StopSignal, Stopped};
 
 use crate::args::{Cli, Command, ServeArgs};
 use crate::exit::Outcome;
-use crate::output::HumanReport;
+use crate::output::{HumanReport, StderrWarnings};
 
 fn main() -> ExitCode {
     run().into()
@@ -68,7 +69,7 @@ fn serve(config: &ServeConfig) -> Outcome {
         Ok(BindScope::Remote) => report.warn_remote(config.host),
         Ok(BindScope::Loopback) => report,
     };
-    match preview_composition::run(config, &mut report) {
+    match preview_composition::run(config, &mut report, Arc::new(StderrWarnings)) {
         Ok(Stopped::Drained | Stopped::DrainTimedOut) => Outcome::Success,
         Ok(Stopped::Forced(StopSignal::Interrupt)) => Outcome::Interrupted,
         Ok(Stopped::Forced(StopSignal::Terminate)) => Outcome::Terminated,

@@ -7,7 +7,7 @@ pub mod support;
 use std::fs;
 
 use predicates::prelude::*;
-use support::{PreviewProcess, Site, fixture_site, site_preview, tree_hash};
+use support::{DEADLINE, PreviewProcess, Site, fixture_site, site_preview, tree_hash};
 
 #[test]
 fn should_serve_index_when_started_on_fixture() {
@@ -122,4 +122,70 @@ fn should_exit_1_when_directory_does_not_exist() {
             "site-preview: error: cannot serve ",
         ))
         .stderr(predicate::str::contains("does not exist"));
+}
+
+#[test]
+fn should_leave_source_bytes_unchanged_when_served() {
+    // given
+    let site = Site::copy();
+    let index = fs::read(site.path().join("index.html")).expect("the fixture page");
+    let before = tree_hash(site.path());
+    let server = PreviewProcess::serve(&site);
+
+    // when
+    let page = server.request("GET", "/", &[("Sec-Fetch-Dest", "document")]);
+    let fetched = server.request("GET", "/", &[("Sec-Fetch-Dest", "empty")]);
+
+    // then: the navigation is injected once, before `</body>`, with an exact length; the
+    // script fetch and the file on disk are the original bytes
+    let text = page.text();
+    assert_eq!(
+        text.matches("/__site_preview/client.js").count(),
+        1,
+        "{text}"
+    );
+    assert!(
+        text.contains("data-revision=\"0\"></script></body>"),
+        "{text}"
+    );
+    assert_eq!(
+        page.header("content-length"),
+        Some(page.body.len().to_string().as_str())
+    );
+    assert_eq!(fetched.body, index);
+    assert_eq!(
+        fs::read(site.path().join("index.html")).expect("the page"),
+        index
+    );
+    assert_eq!(tree_hash(site.path()), before);
+}
+
+#[test]
+fn should_warn_on_stderr_once_when_html_is_not_utf8() {
+    // given
+    let site = Site::copy();
+    fs::write(site.path().join("old.html"), b"<body><p>caf\xe9</p></body>").expect("a page");
+    let server = PreviewProcess::serve(&site);
+
+    // when
+    let first = server.get("/old.html");
+    let second = server.get("/old.html");
+    let after = server.get("/");
+
+    // then
+    assert_eq!(first.content_type(), Some("text/html"));
+    assert_eq!(first.body, second.body);
+    assert_eq!(after.status, 200);
+    let warning = server
+        .stderr()
+        .recv_timeout(DEADLINE)
+        .expect("a warning line on stderr");
+    assert!(
+        warning.starts_with("site-preview: warning[html-not-utf8]: /old.html: "),
+        "{warning}"
+    );
+    assert!(
+        server.stderr().try_recv().is_err(),
+        "a second warning for the same page"
+    );
 }

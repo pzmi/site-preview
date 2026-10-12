@@ -173,7 +173,7 @@ Keep it a **single binary crate**. Split modules by concerns only where the code
 | `GET /guide/` | `guide/index.html`, if present. |
 | `GET /guide` when directory exists | Temporary redirect to `/guide/` to preserve relative asset URLs. |
 | `GET /image.webp`, `.svg`, `.gpx`, `.geojson`, `.kml`, `.wasm`, `.pdf` | Original bytes, correct MIME, `Cache-Control: no-store`. |
-| `HEAD /...` | Same status / relevant headers as GET, **no body**, no rewrite work needed. |
+| `HEAD /...` | Same status / relevant headers as GET, **no body**. For HTML this includes the injected `Content-Length`, so HEAD does the GET's rewrite work under the HTML memory budget (ADR 0046). |
 | Missing / forbidden paths | 404 or 403 without file contents; never a directory listing. |
 | POST/PUT/PATCH/DELETE | 405 Method Not Allowed. |
 | Internal reserved endpoints | Served solely by internal handlers, never from disk. |

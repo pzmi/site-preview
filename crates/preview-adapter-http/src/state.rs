@@ -6,6 +6,7 @@ use std::time::Duration;
 use preview_application::{ReloadState, SiteContent};
 use preview_domain::HostPolicy;
 
+use crate::inject::Injection;
 use crate::shutdown::ShutdownSignal;
 use crate::sse_guard::StreamLimit;
 
@@ -33,4 +34,7 @@ pub struct AppState {
     /// How many event streams may be open at once; a connection over it gets `503`.
     /// Composition passes [`crate::DEFAULT_MAX_STREAMS`] (plan.md section 7.4).
     pub streams: StreamLimit,
+    /// Where HTML warnings go and the memory budget for HTML held whole (ADR 0046);
+    /// composition passes the CLI's stderr sink.
+    pub injection: Injection,
 }

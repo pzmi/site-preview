@@ -6,10 +6,12 @@ use core::task::Poll;
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::Path;
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use preview_adapter_http::{
-    AppState, DEFAULT_KEEP_ALIVE, DEFAULT_MAX_STREAMS, Shutdown, StreamLimit, build_router,
+    AppState, DEFAULT_KEEP_ALIVE, DEFAULT_MAX_STREAMS, Injection, Shutdown, StreamLimit,
+    WarningSink, build_router,
 };
 use preview_application::ReloadState;
 use preview_domain::{BoundAddr, HostPolicy, InstanceId};
@@ -91,12 +93,17 @@ impl core::error::Error for StartupError {}
 /// [`StartupError::Bind`] (`should_exit_1_when_explicit_port_in_use`). Pinned end to end by
 /// `should_serve_index_when_started_on_fixture`, `should_exit_1_when_directory_does_not_exist`
 /// and the lifecycle tests (`should_exit_0_within_drain_bound_when_clients_stall`,
-/// `should_exit_130_when_second_sigint_arrives_during_drain`).
+/// `should_exit_130_when_second_sigint_arrives_during_drain`). Warnings about served pages
+/// (ADR 0020, ADR 0046) go to `warnings`.
 ///
 /// # Errors
 ///
 /// [`StartupError`] as documented on its variants.
-pub fn run(config: &ServeConfig, out: &mut dyn StartupReporter) -> Result<Stopped, StartupError> {
+pub fn run(
+    config: &ServeConfig,
+    out: &mut dyn StartupReporter,
+    warnings: Arc<dyn WarningSink>,
+) -> Result<Stopped, StartupError> {
     config.bind_scope().map_err(StartupError::RemoteBind)?;
     let root = open_root(&config.root).map_err(StartupError::Root)?;
     let runtime = Builder::new_multi_thread()
@@ -125,6 +132,7 @@ pub fn run(config: &ServeConfig, out: &mut dyn StartupReporter) -> Result<Stoppe
             shutdown: streams.signal(),
             keep_alive: DEFAULT_KEEP_ALIVE,
             streams: StreamLimit::new(DEFAULT_MAX_STREAMS),
+            injection: Injection::new(warnings),
         };
         let url = format!("http://{}/", reachable(local));
         out.ready(&Ready {

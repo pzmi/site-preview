@@ -1,14 +1,21 @@
 //! HTML injection of the live-reload client (plan.md §6).
 //!
 //! Whether a response is rewritten at all is the domain's [`preview_domain::injection`]
-//! decision; this module only rewrites. [`rewrite`] parses the page with `lol_html`, inserts a
+//! decision. [`rewrite`] parses the page with `lol_html`, inserts a
 //! [`ScriptTag`] before the real `</body>` end tag (or at document end), refuses to add a second
 //! client script, and returns [`Rewrite::Failed`] rather than ever handing back corrupted HTML.
+//! The HTML response ties the decision, the encoding check (ADR 0022), the rewrite and the
+//! [`HtmlBudget`] for pages held in memory together (ADR 0046).
 
+mod budget;
+mod charset;
+pub(crate) mod response;
 mod rewrite;
 
 use preview_domain::{InstanceId, Revision, SiteState};
 
+pub use budget::{DEFAULT_HTML_BUDGET_BYTES, HtmlBudget};
+pub use response::Injection;
 pub use rewrite::{Rewrite, RewriteFailure, rewrite};
 
 /// URL path of the embedded live-reload client script (plan.md §6).

@@ -11,7 +11,9 @@ use std::time::Duration;
 use axum::body::Body;
 use axum::http::{HeaderValue, Method, Request, StatusCode};
 use http_body_util::BodyExt;
-use preview_adapter_http::{AppState, DEFAULT_MAX_STREAMS, Shutdown, StreamLimit, build_router};
+use preview_adapter_http::{
+    AppState, DEFAULT_MAX_STREAMS, Injection, Shutdown, StreamLimit, build_router,
+};
 use preview_application::ReloadState;
 use preview_domain::{
     BoundAddr, ChangeEvent, ChangeKind, ChangeSet, Component, HostPolicy, RelPath,
@@ -113,6 +115,7 @@ fn state_of(server: &Server) -> AppState {
         shutdown: server.shutdown.signal(),
         keep_alive: KEEP_ALIVE,
         streams: server.streams.clone(),
+        injection: Injection::default(),
     }
 }
 

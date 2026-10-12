@@ -7,7 +7,8 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use preview_adapter_http::{
-    AppState, DEFAULT_KEEP_ALIVE, DEFAULT_MAX_STREAMS, Shutdown, StreamLimit, build_router,
+    AppState, DEFAULT_KEEP_ALIVE, DEFAULT_MAX_STREAMS, Injection, Shutdown, StreamLimit,
+    build_router,
 };
 use preview_application::ReloadState;
 use preview_domain::{BoundAddr, HostPolicy};
@@ -24,6 +25,7 @@ async fn request(method: &str, host: &str) -> (axum::http::response::Parts, Stri
         shutdown: Shutdown::new().signal(),
         keep_alive: DEFAULT_KEEP_ALIVE,
         streams: StreamLimit::new(DEFAULT_MAX_STREAMS),
+        injection: Injection::default(),
     });
     let request = Request::builder()
         .header("host", host)

@@ -136,6 +136,34 @@ Pinned by `should_complete_other_request_when_client_stalls_body` and
 `should_stop_reading_when_body_dropped` (`tests/stream.rs`), `should_not_exceed_length_when_file_grew`
 and `should_abort_body_when_file_shorter_than_length` (`tests/files.rs`).
 
+These bounds cover files streamed from disk. HTML that is checked and rewritten (at most
+8 MiB) is held in memory instead, under a shared 128 MiB budget: each page reserves twice its
+size plus 64 KiB before it is read and keeps it until its body is sent or dropped, sent in
+64 KiB copies; a request that does not fit waits (ADR 0046). Clients that stop reading can
+therefore delay other HTML responses until they disconnect, but cannot grow memory past the
+budget. Pinned by `should_hold_budget_until_body_is_consumed_when_html_served`
+(`tests/inject.rs`), `should_wait_for_release_when_budget_exhausted`,
+`should_release_reservation_when_body_sent_or_dropped` and
+`should_cap_reservation_when_charge_exceeds_budget` (`src/inject/budget.rs`).
+
+### HTML injection
+
+`crates/preview-adapter-http/src/inject/` (plan.md §6; ADR 0022, ADR 0043, ADR 0046). The
+reload script is added to the response only; the file on disk never changes.
+
+| Rule | Pinned by |
+|:--|:--|
+| Only a `GET` navigation is injected: `Sec-Fetch-Dest` missing, `document` or `iframe`; any other destination gets the file's bytes unchanged | `should_inject_snapshot_revision_when_document_get`, `should_inject_when_fetch_dest_missing_or_iframe`, `should_not_modify_when_sec_fetch_dest_empty` (`tests/inject.rs`) |
+| `HEAD` sends the `GET`'s headers, including the rewritten `Content-Length`, and no body | `should_not_inject_when_head` (`tests/inject.rs`) |
+| Error responses and non-HTML files are never injected | `should_not_inject_when_response_is_error` (`tests/inject.rs`), `should_serve_stylesheet_bytes_unchanged_when_requested` (`crates/preview-cli/tests/serve_slice.rs`) |
+| The tag carries the site state read before the file was opened, attribute values escaped | `should_inject_snapshot_revision_when_document_get` (`tests/inject.rs`), `should_escape_attribute_value_when_value_holds_markup` (`src/inject/mod.rs`) |
+| `Content-Length` is the rewritten length; `ETag` and `Last-Modified` are not sent | `should_set_content_length_of_rewritten_body_when_injected` (`tests/inject.rs`) |
+| One insertion, before the real `</body>` (not one in a comment, script, attribute or `<template>`), else at the end; never a second copy; a rewriter failure serves the original bytes | `should_insert_before_real_body_end_when_script_contains_fake_body_tag`, `should_insert_before_body_end_when_comment_contains_fake_body_tag`, `should_skip_template_body_end_when_template_holds_body_tags`, `should_insert_once_before_first_body_end_when_body_end_repeats`, `should_not_duplicate_when_client_already_present`, `should_accept_only_single_insertion_when_output_compared` (`src/inject/rewrite.rs`), `should_serve_original_and_warn_once_when_rewrite_fails` (`tests/inject.rs`) |
+| A page is labelled `charset=utf-8` and injected only when its bytes are UTF-8 and its first `<meta>` charset declaration agrees; otherwise it is served unchanged as `text/html` | `should_not_label_utf8_when_meta_names_shift_jis`, `should_serve_unchanged_and_warn_when_html_is_latin1` (`tests/inject.rs`), `should_classify_encoding_when_meta_varies` (`src/inject/charset.rs`) |
+| A page over 8 MiB is streamed unchanged, never read whole | `should_serve_unchanged_and_warn_once_when_html_over_limit` (`tests/inject.rs`) |
+| A page not injected is warned on stderr once per code and request path (`html-too-large`, `html-not-utf8`, `html-rewrite-failed`), the path re-encoded from validated parts so no query string, absolute path or control character is printed; never in an HTTP response | `should_report_once_per_code_and_path_when_repeated`, `should_stop_reporting_when_memo_is_full` (`src/warnings.rs`), `should_show_encoded_path_when_warning_names_page` (`src/inject/response.rs`), `should_warn_on_stderr_once_when_html_is_not_utf8` (`crates/preview-cli/tests/serve_slice.rs`) |
+| Source files are never modified by injection | `should_leave_source_bytes_unchanged_when_injected` (`tests/inject.rs`), `should_leave_source_bytes_unchanged_when_served` (`crates/preview-cli/tests/serve_slice.rs`) |
+
 ## Host and Origin rules
 
 Policy lives in the pure domain (`crates/preview-domain/src/request_policy.rs`, ADR 0012,
@@ -215,7 +243,7 @@ control for a LAN.
 
 Site Preview makes no outbound request, collects no analytics and has no remote logging
 (plan.md §2, "Logging"). It writes concise diagnostics to stderr (the startup banner,
-warnings such as `warning[remote-binding]`, errors) and keeps no per-request log: no request
+warnings such as `warning[remote-binding]` and the HTML injection warnings, errors) and keeps no per-request log: no request
 bodies, query strings or cookies are recorded. Error responses carry fixed text (see HTTP
 surface), and refusals from the filesystem adapter carry a category, never a path or an OS
 error text. The per-instance id used by the reload protocol identifies a server process, not a
@@ -280,7 +308,6 @@ Not yet enforced; do not rely on them until the task lands.
 
 | Item | Task |
 |:--|:--|
-| HTML injection rules: injection only for document navigations, an 8 MiB limit with a one-time warning, verified single insertion before the real `</body>`, no injection into non-HTML or error responses (rewriter design in ADR 0043) | HTTP-07 |
 | Warning when a page's CSP blocks the reload client | HTTP-08 |
 | Graceful shutdown drain and connection timeouts (a stalled or slow client holding the server open) | being fixed after the M1 review |
 

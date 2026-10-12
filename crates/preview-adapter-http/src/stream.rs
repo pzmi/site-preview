@@ -19,9 +19,12 @@ const CHUNK: usize = 64 * 1024;
 /// Each chunk is one short `spawn_blocking` read, started only when the connection polls the
 /// body for more, so a blocking thread is busy for one read at a time and never waits on a
 /// client: a slow or stalled reader holds one buffered chunk and no thread, and cannot starve
-/// the blocking pool that request resolution also uses. No task outlives the body: dropping it
-/// (a client gone, or the server shutting down) stops the reading, and a read already in
-/// flight finishes on its own and drops the handle (plan.md §9). Pinned by
+/// the blocking pool that request resolution also uses. This holds for every body built here:
+/// every non-HTML file and HTML over 8 MiB. HTML of at most 8 MiB is instead held whole in
+/// memory so it can be checked and rewritten, and is bounded by the HTML budget (ADR 0046).
+/// No task outlives the body: dropping it (a client gone, or the server shutting down) stops
+/// the reading, and a read already in flight finishes on its own and drops the handle
+/// (plan.md §9). Pinned by
 /// `should_complete_other_request_when_client_stalls_body` and
 /// `should_stop_reading_when_body_dropped` in `tests/stream.rs`.
 ///

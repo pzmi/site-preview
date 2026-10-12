@@ -14,7 +14,8 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use preview_adapter_http::{
-    AppState, DEFAULT_KEEP_ALIVE, DEFAULT_MAX_STREAMS, Shutdown, StreamLimit, build_router,
+    AppState, DEFAULT_KEEP_ALIVE, DEFAULT_MAX_STREAMS, Injection, Shutdown, StreamLimit,
+    build_router,
 };
 use preview_application::{ContentFile, ContentRefusal, Opened, ReloadState, SiteContent};
 use preview_domain::{BoundAddr, HostPolicy, SitePath};
@@ -34,6 +35,7 @@ fn app(content: Arc<dyn SiteContent>) -> Router {
         shutdown: Shutdown::new().signal(),
         keep_alive: DEFAULT_KEEP_ALIVE,
         streams: StreamLimit::new(DEFAULT_MAX_STREAMS),
+        injection: Injection::default(),
     })
 }
 

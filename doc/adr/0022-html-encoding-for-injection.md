@@ -17,3 +17,14 @@ Label HTML `text/html; charset=utf-8` and make it eligible for injection only wh
 ## Consequences
 
 - Legacy-encoded pages preview without live reload.
+
+## Amendments
+
+- **2026-10-12 (HTTP-07).** "Any `<meta charset>`" means the first charset declaration the
+  HTML tokenizer sees anywhere in the page (not in a comment or script text): a
+  `<meta charset>` element or a `<meta http-equiv="content-type">` whose `content` names a
+  charset (the WHATWG extraction algorithm). The whole page is scanned, because a browser
+  that finds a declaration after its 1024-byte prescan still switches to it. A declaration
+  that names no UTF-8 label, or that cannot be read, disagrees. Pages over 8 MiB are not
+  read ahead, so they are labeled plain `text/html` and warned `html-too-large` instead
+  (ADR 0046).

@@ -9,7 +9,8 @@ use axum::body::Body;
 use axum::http::{Request, Response, StatusCode};
 use http_body_util::BodyExt;
 use preview_adapter_http::{
-    AppState, DEFAULT_KEEP_ALIVE, DEFAULT_MAX_STREAMS, Shutdown, StreamLimit, build_router,
+    AppState, DEFAULT_KEEP_ALIVE, DEFAULT_MAX_STREAMS, Injection, Shutdown, StreamLimit,
+    build_router,
 };
 use preview_application::ReloadState;
 use preview_domain::{BoundAddr, HostPolicy};
@@ -25,6 +26,7 @@ fn app(site: &InMemorySite) -> Router {
         shutdown: Shutdown::new().signal(),
         keep_alive: DEFAULT_KEEP_ALIVE,
         streams: StreamLimit::new(DEFAULT_MAX_STREAMS),
+        injection: Injection::default(),
     })
 }
 
@@ -137,7 +139,8 @@ async fn should_serve_nested_index_when_trailing_slash() {
         header(&response, "content-type"),
         Some("text/html; charset=utf-8")
     );
-    assert_eq!(body(response).await, b"<h1>API</h1>");
+    // The page is injected (no Sec-Fetch-Dest), so only its start is the file's bytes.
+    assert!(body(response).await.starts_with(b"<h1>API</h1><script "));
 }
 
 #[tokio::test]

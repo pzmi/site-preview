@@ -1,10 +1,28 @@
-//! Human start-up output (plan.md section 3, "Human startup output").
+//! Human start-up output (plan.md section 3, "Human startup output") and warnings on stderr
+//! (ADR 0020).
 
-use std::io::Write;
+use std::io::{self, Write};
 use std::net::IpAddr;
 use std::time::Duration;
 
-use preview_composition::{Ready, StartupReporter};
+use preview_composition::{Ready, StartupReporter, WarningSink};
+
+/// One warning line in the ADR 0020 format: `site-preview: warning[<code>]: <message>`.
+/// Pinned by `should_format_warning_line_when_rendered`.
+pub fn warning_line(code: &str, message: &str) -> String {
+    format!("site-preview: warning[{code}]: {message}")
+}
+
+/// Writes each warning as one [`warning_line`] on stderr.
+pub struct StderrWarnings;
+
+impl WarningSink for StderrWarnings {
+    fn warn(&self, code: &str, message: &str) {
+        // One `writeln!` on the locked handle, so concurrent warnings never interleave; a
+        // closed stderr has nowhere left to report to.
+        let _ = writeln!(io::stderr().lock(), "{}", warning_line(code, message));
+    }
+}
 
 /// Writes the human start-up block to `out` and warnings and shutdown notices to `err`,
 /// flushing each, so a reader of a pipe sees the URL as soon as the server is ready.
@@ -38,11 +56,11 @@ impl<O: Write, E: Write> StartupReporter for HumanReport<O, E> {
     fn ready(&mut self, ready: &Ready<'_>) {
         // A closed stdout or stderr has nowhere left to report to; the server keeps serving.
         if let Some(host) = self.remote {
-            let warning = format!(
-                "site-preview: warning[remote-binding]: listening on {host} with no \
-                 authentication: anyone who can reach this address can read the site; do not \
-                 use it on an untrusted network\n"
+            let message = format!(
+                "listening on {host} with no authentication: anyone who can reach this \
+                 address can read the site; do not use it on an untrusted network"
             );
+            let warning = format!("{}\n", warning_line("remote-binding", &message));
             let _ = self.err.write_all(warning.as_bytes());
             let _ = self.err.flush();
         }
@@ -78,6 +96,21 @@ mod tests {
             root: Path::new("/srv/site"),
             url: "http://127.0.0.1:49152/",
         }
+    }
+
+    #[test]
+    fn should_format_warning_line_when_rendered() {
+        // given
+        let (code, message) = ("html-too-large", "/big.html: HTML is larger than 8 MiB");
+
+        // when
+        let line = warning_line(code, message);
+
+        // then
+        assert_eq!(
+            line,
+            "site-preview: warning[html-too-large]: /big.html: HTML is larger than 8 MiB"
+        );
     }
 
     #[test]

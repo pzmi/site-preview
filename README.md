@@ -26,6 +26,18 @@ site-preview serve --open                # open a browser (opt-in)
 site-preview serve --allow-remote        # bind outside loopback (insecure, no auth)
 ```
 
+## Warnings
+
+Warnings go to stderr, one per line, as `site-preview: warning[<code>]: <message>`. The
+server keeps serving after each one. Page warnings are printed once per request path (`/` and `/index.html` count separately).
+
+| Code | Meaning |
+|:--|:--|
+| `remote-binding` | Listening outside loopback with no authentication (`--allow-remote`). |
+| `html-too-large` | An HTML page over 8 MiB is served unchanged, without live reload. |
+| `html-not-utf8` | An HTML page that is not UTF-8, or whose `<meta>` charset names another encoding, is served unchanged without live reload. |
+| `html-rewrite-failed` | The reload script could not be inserted safely; the page is served unchanged. |
+
 ## Security posture (planned)
 
 - Binds to loopback (`127.0.0.1`) by default; non-loopback binds require `--allow-remote` and print a warning.
