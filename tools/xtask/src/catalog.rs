@@ -96,6 +96,27 @@ pub const CATALOG: &[Check] = &[
         false,
     ),
     row(
+        "formal-typecheck",
+        "conformance",
+        "npx --prefix formal --no -- quint typecheck formal/*.qnt",
+        "FORMAL-01",
+        false,
+    ),
+    row(
+        "formal-scenarios",
+        "conformance",
+        "npx --prefix formal --no -- quint test --backend typescript --main <module> --match <its runs> formal/scenarios.qnt",
+        "FORMAL-01",
+        false,
+    ),
+    row(
+        "formal-simulate",
+        "conformance",
+        "npx --prefix formal --no -- quint run --backend typescript --step <relation> --invariants <all> --max-samples 1000 --max-steps 25 formal/<model>.qnt",
+        "FORMAL-01",
+        false,
+    ),
+    row(
         "coverage",
         "coverage",
         "cargo xtask coverage",

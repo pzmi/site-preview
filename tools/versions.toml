@@ -77,6 +77,8 @@ probe = ["node", "--version"]
 contains = true
 
 # Node tools. Their versions are owned by the lockfiles; they are noted here, not checked.
+# `cargo xtask conformance` runs Quint with `--backend typescript`, so its evaluator is the
+# locked package and nothing is downloaded at run time (ADR 0052).
 [tools.quint]
 version = "0.33.0"
 method = "lockfile"

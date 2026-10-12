@@ -55,3 +55,4 @@ This directory holds the decisions behind site-preview, one file per decision, i
 | [0049](0049-watcher-pipeline-task.md) | The watcher pipeline task: deadline-only timer, reconcile hook, cancellation and watcher warnings | Proposed |
 | [0050](0050-watch-set-reconciliation.md) | Watch-set reconciliation: source-held hints, voided entries, in-place refresh, bounded retries | Proposed |
 | [0051](0051-lifecycle-driven-server-handle.md) | The server handle: start-up and shutdown driven by the domain lifecycle machine | Proposed |
+| [0052](0052-quint-toolchain-and-lifecycle-model.md) | Quint toolchain: lockfile-only evaluator; the lifecycle model's two step relations | Proposed |

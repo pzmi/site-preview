@@ -6,6 +6,7 @@ mod browser;
 mod catalog;
 mod check;
 mod cli;
+mod conformance;
 mod process;
 mod quick;
 mod repo;
@@ -27,6 +28,7 @@ fn main() -> ExitCode {
         Command::Quick => quick::run(),
         Command::Test { only } => test::run(only.as_deref()),
         Command::Check => check::run(),
+        Command::Conformance { typecheck } => conformance::run(*typecheck),
         Command::Security => security::run(),
         Command::Fmt => run_fmt(),
         Command::Architecture { manifest_path } => architecture::run(manifest_path.as_deref()),

@@ -35,7 +35,11 @@ pub enum Command {
         only: Option<String>,
     },
     /// Quint model, scenarios and traces plus Rust replay.
-    Conformance,
+    Conformance {
+        /// Only typecheck the Quint models.
+        #[arg(long)]
+        typecheck: bool,
+    },
     /// LLVM coverage, threshold and changed-code gate.
     Coverage,
     /// Dependency policy, secrets and workflow checks.
@@ -69,7 +73,7 @@ impl Command {
             Self::Quick => "quick",
             Self::Architecture { .. } => "architecture",
             Self::Test { .. } => "test",
-            Self::Conformance => "conformance",
+            Self::Conformance { .. } => "conformance",
             Self::Coverage => "coverage",
             Self::Security => "security",
             Self::Check => "check",
