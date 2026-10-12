@@ -105,7 +105,7 @@ fn should_redirect_to_slash_with_query_when_directory_requested() {
 }
 
 #[test]
-fn should_exit_1_when_directory_does_not_exist() {
+fn should_exit_1_when_root_missing() {
     // given
     let parent = tempfile::tempdir().expect("a temporary directory");
     let missing = parent.path().join("missing");

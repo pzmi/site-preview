@@ -51,7 +51,9 @@ fn config_from(args: ServeArgs) -> ServeConfig {
 
 /// Refuses a flag that does nothing yet, and a remote bind without `--allow-remote`, as usage
 /// errors (exit 2), then runs the server; the remote-binding warning is printed once the
-/// listener is bound. A second stop signal during the drain exits 128 plus its number.
+/// listener is bound. Every other start-up refusal (an invalid or reserved root, the runtime,
+/// the signal handlers, the bind) exits 1 with its message, which says what to do next. A
+/// second stop signal during the drain exits 128 plus its number.
 fn serve(config: &ServeConfig) -> Outcome {
     if let Some(flag) = unimplemented_flag(config) {
         eprintln!(
@@ -61,7 +63,7 @@ fn serve(config: &ServeConfig) -> Outcome {
         return Outcome::Usage;
     }
     let report = HumanReport::new(io::stdout(), io::stderr());
-    let mut report = match config.bind_scope() {
+    let report = match config.bind_scope() {
         Err(refusal) => {
             eprintln!("site-preview: error: {refusal}");
             return Outcome::Usage;
@@ -69,7 +71,7 @@ fn serve(config: &ServeConfig) -> Outcome {
         Ok(BindScope::Remote) => report.warn_remote(config.host),
         Ok(BindScope::Loopback) => report,
     };
-    match preview_composition::run(config, &mut report, Arc::new(StderrWarnings)) {
+    match preview_composition::run(config, Box::new(report), Arc::new(StderrWarnings)) {
         Ok(Stopped::Drained | Stopped::DrainTimedOut) => Outcome::Success,
         Ok(Stopped::Forced(StopSignal::Interrupt)) => Outcome::Interrupted,
         Ok(Stopped::Forced(StopSignal::Terminate)) => Outcome::Terminated,

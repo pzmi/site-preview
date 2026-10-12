@@ -978,6 +978,7 @@ dependencies = [
  "preview-application",
  "preview-domain",
  "preview-testkit",
+ "tempfile",
  "tokio",
 ]
 

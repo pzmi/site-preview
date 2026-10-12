@@ -19,7 +19,9 @@ use preview_application::{
     ChangeBatch, ChangeCoordinator, ChangeSource, Clock, Received, SourceFailure,
 };
 use preview_domain::{ChangeEvent, DegradeReason, DomainEvent, Tick};
+use tokio::runtime::{Handle, RuntimeFlavor};
 use tokio::sync::oneshot;
+use tokio::task::block_in_place;
 use tokio::time::{Instant, sleep};
 
 /// How much of the watch set a reconcile covers.
@@ -235,9 +237,22 @@ impl<S: WatchControl, C: Clock> WatchPipeline<S, C> {
     /// degraded watcher recovers. Pinned by
     /// `should_warn_and_degrade_when_reconcile_cannot_watch_a_directory` and
     /// `should_recover_when_reconcile_completes_the_watch_set`.
+    ///
+    /// The walk and the watch registrations block (a directory walk, and calls that wait on
+    /// the native watcher's own thread), so on the multi-thread runtime they run inside
+    /// `block_in_place`: the worker hands its other tasks to the rest of the pool first, so no
+    /// async work waits behind them (plan.md section 9). The pipeline still waits for the
+    /// result before it takes the next batch or deadline, so a new directory is watched before
+    /// the revision announcing it is published (ADR 0050). A current-thread runtime (the
+    /// paused-clock tests) has no pool to hand over to and runs it in line. Pinned by
+    /// `should_run_other_tasks_when_reconcile_blocks`.
     fn reconcile(&mut self, scope: ReconcileScope) {
         self.reconciled_fully |= scope == ReconcileScope::Full;
-        let reconciled = self.source.reconcile(scope);
+        let source = &mut self.source;
+        let reconciled = match Handle::try_current().map(|runtime| runtime.runtime_flavor()) {
+            Ok(RuntimeFlavor::MultiThread) => block_in_place(|| source.reconcile(scope)),
+            _ => source.reconcile(scope),
+        };
         for problem in &reconciled.problems {
             self.warnings.warn("watch-registration-failed", problem);
         }
@@ -268,7 +283,7 @@ impl<S: WatchControl, C: Clock> WatchPipeline<S, C> {
 mod tests {
     use std::collections::VecDeque;
     use std::sync::Mutex;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::time::Duration;
 
     use preview_application::ReloadState;
@@ -619,6 +634,94 @@ mod tests {
             // then: start-up already named each directory
             assert!(h.warnings().is_empty());
             h.stop().await;
+        });
+    }
+
+    /// A [`WatchControl`] whose reconcile blocks its thread until another task opens a gate,
+    /// as a walk waiting on the native watcher's thread does.
+    struct Gated {
+        inner: ScriptedChangeSource,
+        entered: Option<oneshot::Sender<()>>,
+        gate: std::sync::mpsc::Receiver<()>,
+        opened: Arc<AtomicBool>,
+    }
+
+    impl ChangeSource for Gated {
+        type Event = ChangeEvent;
+
+        fn next(&mut self) -> impl Future<Output = ChangeBatch<ChangeEvent>> + Send {
+            self.inner.next()
+        }
+    }
+
+    impl WatchControl for Gated {
+        fn reconcile(&mut self, _scope: ReconcileScope) -> Reconciled {
+            if let Some(entered) = self.entered.take() {
+                let _ = entered.send(());
+            }
+            // Bounded: a reconcile that blocked its worker would wait here for ever.
+            let opened = self.gate.recv_timeout(Duration::from_secs(20)).is_ok();
+            self.opened.store(opened, Ordering::SeqCst);
+            Reconciled::default()
+        }
+
+        fn failure_detail(&self) -> Option<String> {
+            None
+        }
+
+        fn close(&mut self) {}
+    }
+
+    #[test]
+    fn should_run_other_tasks_when_reconcile_blocks() {
+        // given: one async worker, and a pipeline whose reconcile blocks until a task on that
+        // worker opens the gate
+        let runtime = Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_time()
+            .build()
+            .expect("a runtime");
+        runtime.block_on(async {
+            let (inner, handle) = ScriptedChangeSource::new();
+            let (entered, reconciling) = oneshot::channel();
+            let (open_gate, gate) = std::sync::mpsc::channel();
+            let opened = Arc::new(AtomicBool::new(false));
+            let source = Gated {
+                inner,
+                entered: Some(entered),
+                gate,
+                opened: Arc::clone(&opened),
+            };
+            let reload = ReloadState::new(InstanceId::parse("test-1").expect("valid id"));
+            let coordinator = ChangeCoordinator::new(
+                DebounceWindow::from_millis(WINDOW_MS).expect("in range"),
+                reload.clone(),
+            );
+            let sink: Arc<dyn WarningSink> = Arc::new(Recorder::default());
+            let pipeline = WatchPipeline::new(source, coordinator, TokioClock::start(), sink);
+            let (cancel, cancelled) = oneshot::channel();
+            let task = tokio::spawn(pipeline.run(cancelled));
+            let mut published = reload.subscribe();
+            let opener = tokio::spawn(async move {
+                if reconciling.await.is_ok() {
+                    let _ = open_gate.send(());
+                }
+            });
+
+            // when: a directory change makes the pipeline reconcile
+            handle.push(vec![event(ChangeKind::DirectoryChanged, "blog")]);
+
+            // then: the other task ran while the reconcile blocked, and the change publishes
+            // Bounded by the reconcile's own wait: the revision follows it either way.
+            let seen = published.changed().await.expect("open");
+            assert!(
+                opened.load(Ordering::SeqCst),
+                "the reconcile blocked the worker"
+            );
+            assert_eq!(seen.state.revision().get(), 1);
+            opener.await.expect("the opener ends");
+            cancel.send(()).expect("the pipeline is running");
+            task.await.expect("the task does not panic");
         });
     }
 

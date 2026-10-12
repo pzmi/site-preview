@@ -1,6 +1,7 @@
-//! Black-box tests of how `serve` stops (plan.md section 9, ADR 0045): SIGINT and SIGTERM
-//! exit 0, a client that stalls never holds the process past the drain bound, and a second
-//! SIGINT during the drain exits 130 at once.
+//! Black-box tests of how `serve` starts and stops (plan.md section 9, ADR 0045, ADR 0051): a
+//! refused start exits 1 with what to do next, SIGINT and SIGTERM exit 0, a client that
+//! stalls never holds the process past the drain bound, and a second SIGINT during the drain
+//! exits 130 at once.
 
 pub mod support;
 
@@ -9,8 +10,9 @@ use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::time::Duration;
 
+use predicates::prelude::*;
 use preview_testkit::poll::wait_until;
-use support::{DEADLINE, PreviewProcess, Site};
+use support::{DEADLINE, PreviewProcess, Site, site_preview};
 
 /// The CLI's drain bound (`ServerLimits::DEFAULT`, ADR 0045).
 const DRAIN: Duration = Duration::from_secs(3);
@@ -116,4 +118,25 @@ fn should_exit_0_when_sigterm_received() {
     // then
     let status = server.wait_exit(DEADLINE);
     assert_eq!(status.code(), Some(0), "{status}");
+}
+
+#[test]
+fn should_exit_1_with_message_when_reserved_path_exists() {
+    // given: the root holds the reserved name in another letter case
+    let site = Site::copy();
+    fs::create_dir(site.path().join("__SITE_PREVIEW")).expect("a reserved directory");
+    let mut command = site_preview();
+
+    // when
+    let assert = command.args(["serve", site.arg()]).assert();
+
+    // then
+    assert
+        .code(1)
+        .stdout("")
+        .stderr(predicate::str::starts_with(
+            "site-preview: error: cannot serve ",
+        ))
+        .stderr(predicate::str::contains("`__site_preview`"))
+        .stderr(predicate::str::contains("rename or remove it"));
 }

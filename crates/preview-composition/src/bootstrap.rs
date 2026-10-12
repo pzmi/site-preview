@@ -59,7 +59,7 @@ pub struct RootRefusal {
 
 impl fmt::Display for RootRefusal {
     /// `cannot serve <path>: <reason>`; the adapter's reason carries no path, so the path
-    /// appears once. Pinned by `should_exit_1_when_directory_does_not_exist`.
+    /// appears once. Pinned by `should_exit_1_when_root_missing`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
@@ -67,6 +67,13 @@ impl fmt::Display for RootRefusal {
             self.requested.display(),
             self.reason
         )
+    }
+}
+
+impl RootRefusal {
+    /// Whether the root was refused for holding the reserved `__site_preview` name.
+    pub(crate) fn is_reserved_path(&self) -> bool {
+        self.reason == RootError::ReservedPathConflict
     }
 }
 

@@ -47,7 +47,7 @@ xtask = { cargo_metadata = ["default"], clap = ["default", "derive"], proc-macro
 [external.dev]
 preview-adapter-fs = { tempfile = ["default"], trybuild = ["default"] }
 preview-adapter-http = { http-body-util = ["default"], tokio = ["rt", "macros", "test-util"], tower = ["util"] }
-preview-composition = { tokio = ["rt", "time", "test-util"] }
+preview-composition = { tempfile = ["default"], tokio = ["rt", "time", "test-util"] }
 preview-cli = { assert_cmd = ["default"], predicates = ["default"], tempfile = ["default"] }
 preview-application = { proptest = ["default"], tokio = ["rt", "macros"] }
 preview-domain = { proptest = ["default"], trybuild = ["default"] }
