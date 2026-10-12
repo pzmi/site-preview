@@ -799,6 +799,94 @@ fn should_watch_directory_created_between_listing_and_watch_when_registering() {
     assert_eq!(names(now.dirs), ["", "a", "a/late", "a/late/deeper"]);
 }
 
+#[test]
+fn should_hand_the_rest_to_a_full_reconcile_when_relisting_passes_the_cap() {
+    // given: `a` is listed, then five children appear in it before it is watched, and the
+    // second listings of one call may queue two of them
+    let (_base, root) = site();
+    fs::create_dir(root.join("a")).expect("create a");
+    let site = open_site_root(&root).expect("open root");
+    let traversal = eligible_dirs(&site.dir, &RelPath::root()).expect("traverse");
+    let (sender, _notifications) = channel();
+    let mut watcher = NotifyWatcher::new(&site.display_path, sender).expect("create watcher");
+    watcher.relist_cap = 2;
+    let a = site.display_path.join("a");
+    watcher.before_watch = Some(Box::new(move |dir: &RelPath| {
+        if *dir == rel("a") {
+            for n in 0..5 {
+                fs::create_dir_all(a.join(format!("n{n}"))).expect("create in the window");
+            }
+        }
+    }));
+
+    // when
+    let errors = watcher.register(&site.dir, traversal);
+    let capped = names(watcher.watched().iter().cloned());
+    let needed = core::mem::take(&mut watcher.rescan_needed);
+    let full = watcher.reconcile(
+        &site.dir,
+        &std::collections::BTreeSet::from([ReconcileHint::Full]),
+    );
+
+    // then: the call stopped at the cap and said so; the full reconcile found the rest
+    assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+    assert_eq!(capped, ["", "a", "a/n0", "a/n1"]);
+    assert!(needed, "a rescan is requested past the cap");
+    assert!(full.complete, "{full:?}");
+    assert!(
+        !watcher.rescan_needed,
+        "an already watched tree never reaches the cap"
+    );
+    let now = eligible_dirs(&site.dir, &RelPath::root()).expect("traverse again");
+    assert_eq!(names(watcher.watched().iter().cloned()), names(now.dirs));
+}
+
+#[test]
+fn should_report_overflow_when_a_reconcile_passes_the_relisting_cap() {
+    // given: a running source whose second listings may queue one directory per call, and a
+    // new directory that gains four children between its listing and its watch
+    let (_base, root) = site();
+    let site = open_site_root(&root).expect("open root");
+    let (mut source, report) = NotifyChangeSource::start(&site.dir, &site.display_path);
+    assert!(report.is_complete(), "{report:?}");
+    let new = site.display_path.join("new");
+    let watcher = source.watcher_mut().expect("a watcher");
+    watcher.relist_cap = 1;
+    let children = new.clone();
+    watcher.before_watch = Some(Box::new(move |dir: &RelPath| {
+        if *dir == rel("new") {
+            for n in 0..4 {
+                fs::create_dir_all(children.join(format!("c{n}"))).expect("create in the window");
+            }
+        }
+    }));
+
+    // when
+    fs::create_dir(&new).expect("create new");
+
+    // then: the capped reconcile is followed by a loss, whose full reconcile watches the rest
+    let mut overflowed = false;
+    let mut last = Vec::new();
+    wait_until(DEADLINE, "every new directory watched", || {
+        while let Some(batch) = poll_next(&mut source) {
+            match batch {
+                ChangeBatch::Events(_) => {
+                    let _ = source.reconcile_changed(&site.dir);
+                }
+                ChangeBatch::Overflow => {
+                    overflowed = true;
+                    let _ = source.reconcile_full(&site.dir);
+                }
+                other => panic!("unexpected batch: {other:?}"),
+            }
+        }
+        last = names(source.watched());
+        last == ["", "new", "new/c0", "new/c1", "new/c2", "new/c3"]
+    })
+    .unwrap_or_else(|_| panic!("watched: {last:?}"));
+    assert!(overflowed, "the rest was handed to a full reconcile");
+}
+
 /// Drains every batch available now, reconciling as the pipeline does: a loss walks
 /// everything, a batch of changes what it touched.
 fn pump_reconciling(source: &mut NotifyChangeSource, site: &SiteRoot) {

@@ -5,11 +5,27 @@
 use crate::process::{Stage, finish, run_report};
 use crate::{browser, tools};
 
-/// Generated cases per property under the `ci` profile (foundation.md section 5).
-const PROPTEST_CASES_CI: &str = "1024";
+/// Generated cases per property under the `ci` profile (foundation.md section 5): the floor.
+const PROPTEST_CASES_CI: u32 = 1024;
+
+/// The case count the unit-tests stage passes on: the developer's `PROPTEST_CASES` when it
+/// raises the floor, otherwise the floor. A lower or unparsable value never weakens the gate.
+/// Pinned by `should_keep_developer_proptest_cases_when_set_at_or_above_the_floor`.
+fn proptest_cases(developer: Option<&str>) -> String {
+    developer
+        .and_then(|value| value.trim().parse::<u32>().ok())
+        .filter(|cases| *cases >= PROPTEST_CASES_CI)
+        .unwrap_or(PROPTEST_CASES_CI)
+        .to_string()
+}
 
 /// The stages `test` runs, in order. Their names are catalog ids.
 pub fn stages() -> Vec<Stage> {
+    stages_with(std::env::var("PROPTEST_CASES").ok().as_deref())
+}
+
+/// [`stages`] with the developer's `PROPTEST_CASES`, if any, given.
+fn stages_with(developer_cases: Option<&str>) -> Vec<Stage> {
     vec![
         Stage::new(
             "unit-tests",
@@ -25,7 +41,7 @@ pub fn stages() -> Vec<Stage> {
         )
         .needs("cargo-nextest")
         // nextest 0.9.148 has no profile-level env table, so the case count is set here.
-        .env("PROPTEST_CASES", PROPTEST_CASES_CI)
+        .env("PROPTEST_CASES", &proptest_cases(developer_cases))
         // A config key nextest ignores is a silent no-op; fail closed on it.
         .deny_stderr("ignoring unknown configuration key"),
         Stage::new(
@@ -90,7 +106,7 @@ mod tests {
     #[test]
     fn should_set_proptest_cases_and_deny_config_warnings_when_unit_stage_is_built() {
         // given
-        let stages = stages();
+        let stages = stages_with(None);
 
         // when
         let debug = format!("{:?}", stages[0].action);
@@ -101,6 +117,20 @@ mod tests {
             debug.contains("ignoring unknown configuration key"),
             "{debug}"
         );
+    }
+
+    #[test]
+    fn should_keep_developer_proptest_cases_when_set_at_or_above_the_floor() {
+        // given
+        let values = [None, Some("1024"), Some("4096"), Some("16"), Some("many")];
+
+        // when
+        let cases = values.map(proptest_cases);
+        let stage = format!("{:?}", stages_with(Some("4096"))[0].action);
+
+        // then
+        assert_eq!(cases, ["1024", "1024", "4096", "1024", "1024"]);
+        assert!(stage.contains("(\"PROPTEST_CASES\", \"4096\")"), "{stage}");
     }
 
     #[test]

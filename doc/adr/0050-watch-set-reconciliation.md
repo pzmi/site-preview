@@ -54,6 +54,14 @@ inode and birth time cannot tell a replaced directory from the original.
   a failing `inotify_add_watch` per outstanding directory on every save. A failure is reported once, when it appears or its reason
   changes; a directory that vanished before it could be watched is not a failure, since its
   removal is a change of its own. A reconcile is complete only when nothing is outstanding.
+- **Bounded relisting.** Each directory newly watched (or refreshed) is listed again and an
+  eligible child the walk did not see is registered the same way (ADR 0047). One call queues
+  at most 4096 such children (`MAX_RELISTED`); a child already watched does not count, so
+  relisting a large site that is already watched never reaches the cap. Past it the watcher
+  marks a rescan as needed, the call reports itself incomplete, and the source delivers
+  `Overflow` next: its full reconcile registers the rest, and its full reload covers changes
+  in directories that were not yet watched. A tree that grows as fast as it is listed costs
+  one bounded call per batch instead of holding the pipeline.
 - **Composition reports it.** `WatchControl::reconcile` returns `Reconciled { ready, problems }`.
   Each problem (relative path and reason, at most ten named, the rest counted) is warned as
   `watch-registration-failed`; problems without readiness degrade the watcher
@@ -71,6 +79,8 @@ reconcile (a gap in which edits are missed); retrying failed directories on a ti
   directory and, where watches follow inodes (inotify; kqueue), watches and lists each again;
   it runs only after a loss or an unattributed change. A changes-only one costs at most 16
   retry walks beyond its hints.
+- A registration's relisting is bounded per call; what is left is never dropped, only
+  handed to the full reconcile that the `Overflow` it raises triggers.
 - A watch limit freed by another process on the system is noticed at the next removal of one
   of this watcher's watches or the next full reconcile, not before. FSEvents (macOS) watches paths and restarts
   its stream on every `watch` call, so the in-place refresh is skipped there.

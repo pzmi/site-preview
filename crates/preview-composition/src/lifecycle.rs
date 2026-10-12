@@ -24,7 +24,19 @@
 //! (listener, event streams, watcher, tasks); a second call gets no effects and returns the
 //! first call's outcome (`should_be_noop_when_stop_called_twice`). Dropping a running server
 //! stops it.
+//!
+//! The serve task itself ends the event streams right after it closes the listener, in the
+//! same step, and only then starts the drain's notice grace: a stream is never still open
+//! because the stopping thread was scheduled late, so a tab alone never draws the notice
+//! (`should_not_announce_drain_when_stopping_thread_runs_late_with_only_a_tab_open`). The
+//! `CloseStreams` effect then finds them ended (the switch is idempotent); the order is still
+//! listener, streams, watcher, tasks. A second stop signal while the tasks are joined stops at
+//! once, as one during the drain does
+//! (`should_stop_at_once_when_second_stop_arrives_while_joining`).
 
+use core::future::{Future, poll_fn};
+use core::pin::{Pin, pin};
+use core::task::Poll;
 use std::io;
 use std::net::SocketAddr;
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
@@ -43,7 +55,7 @@ use tokio::net::TcpListener;
 use tokio::runtime::{Builder, Runtime};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
-use tokio::time::{Instant, timeout_at};
+use tokio::time::{Instant, sleep_until};
 
 use crate::bootstrap::{OpenedRoot, WatchStart, open_root};
 use crate::config::{ServeConfig, ServerLimits};
@@ -67,12 +79,17 @@ pub(crate) enum Signals {
 
 /// How long a drain may run before the shutdown says it is waiting for connections: longer
 /// than ending event streams and closing idle connections ever takes, far shorter than the
-/// drain bound. Measured by the drain itself from the listener's close, never from when the
-/// caller's thread gets round to joining it.
+/// drain bound. Measured by the drain itself from the moment the serve task has closed the
+/// listener and ended the event streams, never from when the caller's thread gets round to
+/// the rest of the shutdown.
 const DRAIN_NOTICE_GRACE: Duration = Duration::from_millis(500);
 
 /// Why nothing could be watched when the watcher panicked while starting.
 const WATCHER_PANICKED: &str = "the file watcher failed while starting";
+
+/// What the serve task hands back: how the drain ended, and the stop channel, so a second
+/// signal while the other tasks are joined still stops at once.
+type ServeOutcome = (Stopped, mpsc::UnboundedReceiver<StopSignal>);
 
 /// A running server, its lifecycle and the tasks it owns.
 pub struct Server {
@@ -93,10 +110,15 @@ pub struct Server {
     /// Answers once the drain has run [`DRAIN_NOTICE_GRACE`] with a connection still open; its
     /// sender is dropped unanswered when the drain ends sooner (or the serve task fails).
     waiting: Option<oneshot::Receiver<()>>,
-    streams: Shutdown,
+    /// The event-stream switch; the serve task holds the other handle and fires it as it
+    /// closes the listener.
+    streams: Arc<Shutdown>,
     stop_watching: Option<oneshot::Sender<()>>,
-    serve: Option<JoinHandle<Stopped>>,
+    serve: Option<JoinHandle<ServeOutcome>>,
     pipeline: Option<JoinHandle<()>>,
+    /// The task forwarding SIGINT and SIGTERM (the binary only): aborted once the tasks are
+    /// joined, so nothing the server spawned outlives its stop.
+    forwarder: Option<JoinHandle<()>>,
     outcome: Option<Stopped>,
 }
 
@@ -154,6 +176,7 @@ impl Server {
             watch: None,
             pipeline: None,
             serve: None,
+            forwarder: None,
             listener_closed: None,
             waiting: None,
             local_url: None,
@@ -217,6 +240,8 @@ impl Server {
     fn perform(&mut self, effect: LifecycleEffect) {
         match effect {
             LifecycleEffect::CloseListener => self.close_listener(),
+            // Normally already fired by the serve task as it closed the listener; idempotent,
+            // and still needed when the serve task ended without closing it (a panic).
             LifecycleEffect::CloseStreams => self.streams.trigger(),
             LifecycleEffect::StopWatcher => {
                 // The pipeline may already have ended (a panic); nothing is left to stop.
@@ -261,15 +286,16 @@ impl Server {
 
     /// Waits for the drain (the serve task), then for the pipeline within what is left of the
     /// drain bound, and shuts the runtime down without waiting for anything else: the drain
-    /// bound is the promise (ADR 0045).
+    /// bound is the promise (ADR 0045). A second stop signal while the pipeline is joined stops
+    /// at once ([`Stopped::Forced`]), as one during the drain does.
     fn join_tasks(&mut self) {
         let Some(runtime) = self.runtime.take() else {
             return;
         };
         // A serve task that panicked is re-raised, so a crash never exits 0, unless this
         // stop runs while the thread already unwinds (from `Drop`), where it would abort.
-        let stopped = match self.serve.take() {
-            None => Stopped::Drained,
+        let (mut stopped, mut stops) = match self.serve.take() {
+            None => (Stopped::Drained, None),
             Some(mut serve) => {
                 // The notice is for a drain that is really waiting: a browser tab's event
                 // stream and idle connections end within the grace, and a notice about
@@ -283,11 +309,11 @@ impl Server {
                     self.reporter.draining(self.limits.drain_timeout);
                 }
                 match runtime.block_on(&mut serve) {
-                    Ok(stopped) => stopped,
+                    Ok((stopped, stops)) => (stopped, Some(stops)),
                     Err(failed) if failed.is_panic() && !std::thread::panicking() => {
                         resume_unwind(failed.into_panic())
                     }
-                    Err(_) => Stopped::DrainTimedOut,
+                    Err(_) => (Stopped::DrainTimedOut, None),
                 }
             }
         };
@@ -298,15 +324,42 @@ impl Server {
             (_, Some(ends)) => ends,
         };
         if let Some(mut pipeline) = self.pipeline.take() {
-            runtime.block_on(async {
-                if timeout_at(ends, &mut pipeline).await.is_err() {
-                    pipeline.abort();
-                }
-            });
+            let second = runtime.block_on(join_pipeline(&mut pipeline, stops.as_mut(), ends));
+            // Ended, past the bound, or cut short: an abort of an ended task does nothing.
+            pipeline.abort();
+            if let (Some(signal), false) = (second, matches!(stopped, Stopped::Forced(_))) {
+                stopped = Stopped::Forced(signal);
+            }
+        }
+        if let Some(forwarder) = self.forwarder.take() {
+            forwarder.abort();
         }
         runtime.shutdown_background();
         self.outcome = Some(stopped);
     }
+}
+
+/// Waits for `pipeline` until `ends`; returns the stop signal that arrived meanwhile, if one
+/// did first (README "Stopping": pressing Ctrl-C again stops at once).
+async fn join_pipeline(
+    pipeline: &mut JoinHandle<()>,
+    mut stops: Option<&mut mpsc::UnboundedReceiver<StopSignal>>,
+    ends: Instant,
+) -> Option<StopSignal> {
+    let mut deadline = pin!(sleep_until(ends));
+    poll_fn(|cx| {
+        // A closed channel cannot deliver a second stop; it is not one.
+        if let Some(stops) = stops.as_deref_mut()
+            && let Poll::Ready(Some(signal)) = stops.poll_recv(cx)
+        {
+            return Poll::Ready(Some(signal));
+        }
+        if Pin::new(&mut *pipeline).poll(cx).is_ready() {
+            return Poll::Ready(None);
+        }
+        deadline.as_mut().poll(cx).map(|()| None)
+    })
+    .await
 }
 
 impl Drop for Server {
@@ -329,7 +382,7 @@ impl core::fmt::Debug for Server {
 /// What the router and the pipeline share, built once the listener is held.
 struct Wiring {
     reload: ReloadState,
-    streams: Shutdown,
+    streams: Arc<Shutdown>,
     router: axum::Router,
 }
 
@@ -349,7 +402,8 @@ struct Startup<'c, F> {
     wiring: Option<Wiring>,
     watch: Option<WatchStart>,
     pipeline: Option<(JoinHandle<()>, oneshot::Sender<()>)>,
-    serve: Option<JoinHandle<Stopped>>,
+    serve: Option<JoinHandle<ServeOutcome>>,
+    forwarder: Option<JoinHandle<()>>,
     listener_closed: Option<oneshot::Receiver<usize>>,
     waiting: Option<oneshot::Receiver<()>>,
     /// The bound address and the URL reported as ready.
@@ -394,19 +448,22 @@ impl<W: WatchControl, F: FnOnce(&OpenedRoot) -> (W, WatchStart)> Startup<'_, F> 
         let stops = self.stops.clone();
         let signals = self.signals;
         let bound = self.runtime.block_on(async move {
-            if signals == Signals::Forward {
-                stop_signals(stops).map_err(StartupError::Signal)?;
-            }
+            let forwarder = if signals == Signals::Forward {
+                Some(stop_signals(stops).map_err(StartupError::Signal)?)
+            } else {
+                None
+            };
             let listener = TcpListener::bind(addr)
                 .await
                 .map_err(|source| StartupError::Bind { addr, source })?;
             let local = listener
                 .local_addr()
                 .map_err(|source| StartupError::Bind { addr, source })?;
-            Ok((listener, local))
+            Ok((listener, local, forwarder))
         });
         match bound {
-            Ok((listener, local)) => {
+            Ok((listener, local, forwarder)) => {
+                self.forwarder = forwarder;
                 self.wiring = Some(self.wire(local));
                 self.listener = Some((listener, local));
                 LifecycleInput::Bound
@@ -420,7 +477,7 @@ impl<W: WatchControl, F: FnOnce(&OpenedRoot) -> (W, WatchStart)> Startup<'_, F> 
 
     fn wire(&self, local: SocketAddr) -> Wiring {
         let reload = ReloadState::new(instance_id());
-        let streams = Shutdown::new();
+        let streams = Arc::new(Shutdown::new());
         let state = AppState {
             content: Arc::clone(&self.root.content),
             reload: reload.clone(),
@@ -513,14 +570,18 @@ impl<W: WatchControl, F: FnOnce(&OpenedRoot) -> (W, WatchStart)> Startup<'_, F> 
         let (closed, listener_closed) = oneshot::channel();
         let (still_open, waiting) = oneshot::channel();
         let router = wiring.router.clone();
+        let streams = Arc::clone(&wiring.streams);
         let limits = self.config.limits;
         self.serve = Some(self.runtime.spawn(async move {
-            serve_connections(
+            let stopped = serve_connections(
                 listener,
                 router,
                 limits,
                 &mut stop_requests,
                 move |open| {
+                    // The streams end here, with the listener closed, before the grace starts:
+                    // never later, on whichever thread gets round to `CloseStreams`.
+                    streams.trigger();
                     let _ = closed.send(open);
                 },
                 DRAIN_NOTICE_GRACE,
@@ -528,7 +589,8 @@ impl<W: WatchControl, F: FnOnce(&OpenedRoot) -> (W, WatchStart)> Startup<'_, F> 
                     let _ = still_open.send(());
                 },
             )
-            .await
+            .await;
+            (stopped, stop_requests)
         }));
         self.listener_closed = Some(listener_closed);
         self.waiting = Some(waiting);
@@ -575,6 +637,7 @@ impl<W: WatchControl, F: FnOnce(&OpenedRoot) -> (W, WatchStart)> Startup<'_, F> 
             stop_watching,
             serve: Some(serve),
             pipeline,
+            forwarder: self.forwarder,
             outcome: None,
         })
     }
@@ -1057,6 +1120,88 @@ mod tests {
             ["ready Watching { dirs: 1 }"],
             "the shutdown waited for nothing, so it says nothing"
         );
+    }
+
+    /// A server with the quiet fake watcher and a drain bound of twice the notice grace, so a
+    /// drain that waits for its bound has passed the grace when it ends.
+    fn start_bounded(root: &TempDir) -> (Server, Reports) {
+        let reports = Reports::default();
+        let mut config = ServeConfig::new(root.path().to_path_buf());
+        config.limits.drain_timeout = DRAIN_NOTICE_GRACE * 2;
+        let closed = Arc::new(AtomicBool::new(false));
+        let server = Server::start_with(
+            &config,
+            Box::new(reports.clone()),
+            Arc::new(Warnings::default()),
+            watcher(None, &closed),
+            Signals::Ignore,
+            &SystemOpener,
+        )
+        .expect("a server");
+        (server, reports)
+    }
+
+    /// Sends the first stop as a signal does and waits until the serve task has ended: stands
+    /// in for the stopping thread being scheduled late on a loaded machine.
+    fn stop_serve_task_alone(server: &mut Server) {
+        server
+            .stops
+            .send(StopSignal::Terminate)
+            .expect("the serve task runs");
+        server.await_listener_closed();
+        // Polled: the drain runs on the runtime's threads; the deadline only bounds a hang.
+        wait_until(DEADLINE, "the serve task to end", || {
+            server.serve.as_ref().is_some_and(JoinHandle::is_finished)
+        })
+        .expect("the serve task ends");
+    }
+
+    #[test]
+    fn should_not_announce_drain_when_stopping_thread_runs_late_with_only_a_tab_open() {
+        // given: a browser tab's event stream, which never ends on its own
+        let root = site();
+        let (mut server, reports) = start_bounded(&root);
+        let mut events = open_event_stream(server.local_addr());
+
+        // when: the serve task stops and drains before the stopping thread performs the rest
+        // of the shutdown (`CloseStreams` included)
+        stop_serve_task_alone(&mut server);
+        let stopped = server.stop();
+
+        // then: the serve task ended the stream itself, so the drain waited for nothing
+        assert_eq!(stopped, Stopped::Drained);
+        let mut rest = Vec::new();
+        events
+            .read_to_end(&mut rest)
+            .expect("the stream ends cleanly");
+        assert!(
+            rest.ends_with(b"0\r\n\r\n"),
+            "the chunked body is terminated: {}",
+            String::from_utf8_lossy(&rest)
+        );
+        assert_eq!(reports.recorded(), ["ready Watching { dirs: 1 }"]);
+    }
+
+    #[test]
+    fn should_stop_at_once_when_second_stop_arrives_while_joining() {
+        // given: a drain that has ended, and a pipeline that would hold the join for the rest
+        // of the drain bound (a reconcile that blocks)
+        let root = site();
+        let (mut server, _reports) = start_bounded(&root);
+        let stuck = server
+            .runtime
+            .as_ref()
+            .expect("a running server")
+            .spawn(pending::<()>());
+        drop(server.pipeline.replace(stuck));
+        stop_serve_task_alone(&mut server);
+
+        // when: a second Ctrl-C, once the serve task has ended
+        let _sent = server.stops.send(StopSignal::Interrupt);
+        let stopped = server.stop();
+
+        // then: the join is cut short, as during the drain
+        assert_eq!(stopped, Stopped::Forced(StopSignal::Interrupt));
     }
 
     #[test]

@@ -117,18 +117,10 @@ impl Stage {
                         return 1;
                     }
                 };
-                let mut denied = None;
-                if let Some(stderr) = child.stderr.take() {
-                    for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-                        eprintln!("{line}");
-                        if denied.is_none() {
-                            denied = deny_stderr
-                                .iter()
-                                .find(|n| line.contains(n.as_str()))
-                                .cloned();
-                        }
-                    }
-                }
+                let denied = child
+                    .stderr
+                    .take()
+                    .and_then(|stderr| scan_stderr(BufReader::new(stderr), deny_stderr));
                 let code = match child.wait() {
                     Ok(status) => status.code().unwrap_or(1),
                     Err(_) => 1,
@@ -148,6 +140,31 @@ impl Stage {
                 eprintln!("xtask: stage {}: {display}", self.name);
                 run()
             }
+        }
+    }
+}
+
+/// Echoes `stderr` line by line and returns the first denied needle any line contains.
+///
+/// Reads to the end of the stream whatever it holds: a line that is not UTF-8 is decoded
+/// lossily rather than ending the scan, so a denied warning after it is still seen and the
+/// child never blocks on a full pipe nobody drains. A read error ends the scan (the child's
+/// exit code still decides). Pinned by
+/// `should_fail_when_denied_text_follows_invalid_utf8_on_stderr`.
+fn scan_stderr(mut stderr: impl BufRead, deny: &[String]) -> Option<String> {
+    let mut denied = None;
+    let mut raw = Vec::new();
+    loop {
+        raw.clear();
+        match stderr.read_until(b'\n', &mut raw) {
+            Ok(0) | Err(_) => return denied,
+            Ok(_) => {}
+        }
+        let line = String::from_utf8_lossy(&raw);
+        let line = line.trim_end_matches(['\n', '\r']);
+        eprintln!("{line}");
+        if denied.is_none() {
+            denied = deny.iter().find(|n| line.contains(n.as_str())).cloned();
         }
     }
 }
@@ -408,6 +425,22 @@ mod tests {
             sh("warn", "echo 'ignoring unknown configuration key: x' >&2")
                 .deny_stderr("ignoring unknown configuration key"),
         ];
+
+        // when
+        let code = run_stages(&stages);
+
+        // then
+        assert_eq!(code, 1);
+    }
+
+    #[test]
+    fn should_fail_when_denied_text_follows_invalid_utf8_on_stderr() {
+        // given: a line that is not UTF-8, then the denied warning
+        let stages = [sh(
+            "warn",
+            "printf 'bad \\377\\376 bytes\\n' >&2; echo 'ignoring unknown configuration key: x' >&2",
+        )
+        .deny_stderr("ignoring unknown configuration key")];
 
         // when
         let code = run_stages(&stages);

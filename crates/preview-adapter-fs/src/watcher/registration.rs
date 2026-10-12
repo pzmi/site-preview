@@ -9,7 +9,10 @@
 //!   created in between would be neither listed nor notified. Each directory newly watched is
 //!   therefore listed once more after its watch is in place, and every eligible child that the
 //!   walk did not see is registered the same way, until nothing new appears: a child created
-//!   before the second listing is in it, one created after it is notified.
+//!   before the second listing is in it, one created after it is notified. One call registers
+//!   at most [`MAX_RELISTED`] such children, so a tree that keeps growing as fast as it is
+//!   listed cannot hold the call: past the cap the watcher records that a rescan is needed,
+//!   and the source turns that into a full reconcile, which picks up the rest.
 //! - **Absolute paths only here.** The path handed to `notify` is `display_root` joined with
 //!   the directory's validated components; it is built in [`NotifyWatcher::absolute`] and goes
 //!   nowhere else. Errors name the relative directory.
@@ -47,6 +50,10 @@ use crate::traversal::{
 /// How many rounds of re-watching after a withdrawal one call runs at most; a round only
 /// repeats when a link was swapped in again meanwhile, and the next call carries on.
 const MAX_REPAIR_ROUNDS: usize = 4;
+
+/// How many directories the second listings of one registration call queue at most beyond
+/// what its walk found; the rest is left to a full reconcile (ADR 0050).
+pub(crate) const MAX_RELISTED: usize = 4096;
 
 /// Why a directory is not watched. A category only: the OS error text and the absolute path
 /// never leave the adapter.
@@ -185,6 +192,12 @@ pub(crate) struct NotifyWatcher {
     /// Set when a watch was withdrawn: its removal may have taken the watch of another
     /// recorded directory with it (a link to it), so the recorded set is watched again.
     withdrawn: bool,
+    /// How many directories the second listings of one call may queue ([`MAX_RELISTED`];
+    /// tests lower it).
+    pub(crate) relist_cap: usize,
+    /// Set when a call stopped queueing at [`Self::relist_cap`]: eligible directories may be
+    /// unwatched, and only a full reconcile is sure to find them. Taken by the source.
+    pub(crate) rescan_needed: bool,
     /// Called with each directory just before it is watched: the window between a listing and
     /// a watch, which tests use to create a directory in it.
     #[cfg(test)]
@@ -247,6 +260,8 @@ impl NotifyWatcher {
             limit_reached: false,
             retry_cursor: None,
             withdrawn: false,
+            relist_cap: MAX_RELISTED,
+            rescan_needed: false,
             #[cfg(test)]
             before_watch: None,
         })
@@ -267,8 +282,10 @@ impl NotifyWatcher {
     /// recorded whose watch was renewed after the walk listed them.
     ///
     /// Each directory is listed once more after its watch is in place, and an eligible child
-    /// the walk did not see is registered the same way, until nothing new appears. Returns the
-    /// failures and the directories newly watched.
+    /// the walk did not see is registered the same way, until nothing new appears or
+    /// [`Self::relist_cap`] such children were queued; then [`Self::rescan_needed`] is set.
+    /// Returns the failures and the directories newly watched. Pinned by
+    /// `should_hand_the_rest_to_a_full_reconcile_when_relisting_passes_the_cap`.
     pub(crate) fn register_relisting(
         &mut self,
         root: &RootDir,
@@ -284,11 +301,13 @@ impl NotifyWatcher {
                 .map(RegistrationError::from)
                 .collect(),
             queue: VecDeque::new(),
+            room: self.relist_cap,
+            truncated: false,
         };
         walk.known.extend(traversal.dirs.iter().cloned());
         walk.queue.extend(traversal.dirs);
         for dir in relist {
-            walk.adopt_children(root, &dir);
+            walk.adopt_children(root, &dir, &self.watched);
         }
         let mut failures = Vec::new();
         let mut added = Vec::new();
@@ -313,7 +332,7 @@ impl NotifyWatcher {
                         add: BTreeSet::from([dir.clone()]),
                         remove: BTreeSet::new(),
                     });
-                    walk.adopt_children(root, &dir);
+                    walk.adopt_children(root, &dir, &self.watched);
                     added.push(dir);
                 }
                 Err(fault) => {
@@ -322,6 +341,7 @@ impl NotifyWatcher {
                 }
             }
         }
+        self.rescan_needed |= walk.truncated;
         self.repair(root, &mut failures);
         walk.errors.extend(failures);
         (walk.errors, added)
@@ -430,13 +450,19 @@ struct Walk {
     reported: BTreeSet<RelPath>,
     errors: Vec<RegistrationError>,
     queue: VecDeque<RelPath>,
+    /// How many more children the second listings may queue.
+    room: usize,
+    /// Set when a second listing found a child past the cap; it was not queued.
+    truncated: bool,
 }
 
 impl Walk {
-    /// Lists `dir`, whose watch is in place now, and queues each eligible child not seen
-    /// before; a child nested too deep is reported instead. A directory that vanished meanwhile
-    /// is skipped: its removal is a change of its own.
-    fn adopt_children(&mut self, root: &RootDir, dir: &RelPath) {
+    /// Lists `dir`, whose watch is in place now, and queues each eligible child neither seen
+    /// before nor already watched, while there is room; a child nested too deep is reported
+    /// instead. A directory that vanished meanwhile is skipped: its removal is a change of its
+    /// own. A watched child never counts against the room, so relisting a large site that is
+    /// already watched never reaches the cap.
+    fn adopt_children(&mut self, root: &RootDir, dir: &RelPath, watched: &WatchSet) {
         let listing = match eligible_children(root, dir) {
             Ok(listing) => listing,
             Err(error) if error.fault == TraversalFault::Io(io::ErrorKind::NotFound) => return,
@@ -449,7 +475,7 @@ impl Walk {
             self.report(error);
         }
         for child in listing.dirs {
-            if !self.known.insert(child.clone()) {
+            if watched.contains(&child) || !self.known.insert(child.clone()) {
                 continue;
             }
             if child.components().len() > MAX_DEPTH {
@@ -457,7 +483,10 @@ impl Walk {
                     dir: child,
                     fault: TraversalFault::TooDeep,
                 });
+            } else if self.room == 0 {
+                self.truncated = true;
             } else {
+                self.room -= 1;
                 self.queue.push_back(child);
             }
         }

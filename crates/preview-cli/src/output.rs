@@ -153,7 +153,9 @@ struct Lines<O: Write> {
     out: O,
     ready: bool,
     /// The latest watcher change that arrived before `ready`, written right after it: an
-    /// agent reads `ready` first, always.
+    /// agent reads `ready` first, always. A held `watching` is dropped when `ready` already
+    /// says `watching:true`: a recovery before `ready` leaves nothing to report, and a
+    /// `watching` event must follow a `degraded` one.
     held: Option<WatcherState>,
 }
 
@@ -218,7 +220,8 @@ impl<O: Write, E: Write> JsonReport<O, E> {
 }
 
 impl<O: Write + Send + 'static, E: Write> StartupReporter for JsonReport<O, E> {
-    /// Pinned by `should_render_ready_event_when_watching_or_unavailable`.
+    /// Pinned by `should_render_ready_event_when_watching_or_unavailable` and
+    /// `should_not_write_watching_event_when_watcher_recovered_before_ready`.
     fn ready(&mut self, ready: &Ready<'_>) {
         if let Some(host) = self.remote {
             let _ = self.err.write_all(remote_warning(host).as_bytes());
@@ -236,7 +239,9 @@ impl<O: Write + Send + 'static, E: Write> StartupReporter for JsonReport<O, E> {
             lines.emit(&watcher_event(WatcherState::Degraded(
                 DegradedReason::RegistrationFailed,
             )));
-        } else if let Some(state) = lines.held.take() {
+        } else if let Some(state) = lines.held.take()
+            && state != WatcherState::Watching
+        {
             lines.emit(&watcher_event(state));
         }
     }
@@ -509,6 +514,24 @@ mod tests {
                 "\"watcher\" \"watching\""
             ]
         );
+    }
+
+    #[test]
+    fn should_not_write_watching_event_when_watcher_recovered_before_ready() {
+        // given: the watcher degrades and recovers before ready is out
+        let (mut report, out, _err) = json_report();
+        let events = report.watcher_events();
+        events.changed(WatcherState::Degraded(DegradedReason::RuntimeFailure));
+        events.changed(WatcherState::Watching);
+
+        // when
+        report.ready(&ready());
+
+        // then: ready says watching:true, and nothing follows it without a degraded first
+        let lines = out.lines();
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert_eq!(parse(&lines[0])["event"], "ready");
+        assert_eq!(parse(&lines[0])["watching"], true);
     }
 
     #[test]

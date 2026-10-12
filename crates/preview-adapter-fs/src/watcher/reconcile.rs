@@ -130,7 +130,7 @@ impl NotifyWatcher {
         ReconcileReport {
             watching: self.watched.len(),
             errors,
-            complete: self.failed.is_empty(),
+            complete: self.failed.is_empty() && !self.rescan_needed,
         }
     }
 

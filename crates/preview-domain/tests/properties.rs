@@ -12,7 +12,8 @@
 //!   reflex.
 //! - Do not set `cases` in code. CI raises the case count through `PROPTEST_CASES`, set to 1024
 //!   by the `cargo xtask test` unit-tests stage (tools/xtask/src/test.rs); a developer can raise
-//!   it the same way.
+//!   it the same way, and that stage keeps a value of 1024 or more (a lower one is raised to
+//!   1024).
 //! - Generate values with strategies that reach the interesting boundary (dots, escapes,
 //!   separators) rather than arbitrary bytes only, and keep the exhaustive deterministic tests
 //!   in the module as the floor.

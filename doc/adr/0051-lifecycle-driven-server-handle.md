@@ -45,6 +45,17 @@ mode, never an exit.
 - **A caller's `stop()` asks as SIGTERM does.** It sends `StopSignal::Terminate` to the serve
   task's stop channel unless a signal already closed the listener, so one stop path serves
   both; a second signal during the drain still forces the exit (ADR 0045).
+- **The serve task ends the event streams as it closes the listener.** It fires the
+  event-stream switch in the same step, before the drain's 500 ms notice grace starts, so a
+  stream still open at the end of the grace is never one the stopping thread had not yet got
+  round to ending (a loaded machine): a browser tab alone never draws the drain notice. The
+  `CloseStreams` effect is still performed, in its place in the order, and finds the switch
+  fired (it is idempotent); it still ends the streams if the serve task died first.
+- **A second signal while the tasks are joined also stops at once.** The serve task hands
+  the stop channel back when it ends, so the join of the pipeline (bounded by the rest of the
+  drain bound) races the next signal: one arriving there is `Stopped::Forced` (exit 130 or
+  143), as during the drain. The signal forwarder is a task the server owns and aborts once
+  the tasks are joined.
 - **`StartupError` names each refusal:** `RemoteBind`, `InvalidRoot`, `ReservedPath`,
   `Runtime`, `Signal`, `Bind`, each keeping its `io::Error` as `source()`. The CLI exits 2 for
   `RemoteBind` and 1 for every other (exit codes unchanged, ADR 0045); each message says what

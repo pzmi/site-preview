@@ -57,10 +57,11 @@ type Connection = http1::Connection<TokioIo<TcpStream>, TowerToHyperService<Rout
 ///
 /// On the first stop the listener is closed (a new connection is refused; one still in the
 /// kernel's accept queue is reset, never served), every open connection is asked to finish its
-/// response and close, and `on_stop` is called with the number still open (composition ends
-/// the event streams there). `on_waiting` is called once if a connection is still open when
-/// `grace` has passed since then: the drain itself decides, on its own clock, whether it is
-/// really waiting, so how late the caller looks never changes the answer. The run then ends
+/// response and close, and `on_stop` is called, on this task, with the number still open:
+/// composition fires the event-stream switch there, so the streams are ending before the
+/// grace starts. `on_waiting` is called once if a connection is still open when `grace` has
+/// passed since `on_stop` returned: the drain itself decides, on its own clock, whether it is
+/// really waiting, so how late any other thread runs never changes the answer. The run then ends
 /// at the first of: every connection closed ([`Stopped::Drained`]), the drain bound
 /// ([`Stopped::DrainTimedOut`]) or a second stop ([`Stopped::Forced`]). Pinned by
 /// `should_report_waiting_only_when_a_connection_outlasts_the_grace`,

@@ -11,13 +11,15 @@
 //! 2. **event streams**: the HTTP-10 [`Shutdown`](preview_adapter_http::Shutdown) switch ends
 //!    every open stream, so a browser tab never holds the process
 //!    (`should_exit_0_when_sigint_received_with_open_sse_connection`,
-//!    `should_drain_without_timeout_when_stopped_with_open_event_stream`);
+//!    `should_not_announce_drain_when_only_a_tab_is_open`). The serve task fires it as it
+//!    closes the listener, before the drain's notice grace starts;
 //! 3. **watcher**: the pipeline task is cancelled; it closes the native watcher and ends;
 //! 4. **tasks**: the serve task's drain and the pipeline are joined within the drain bound,
 //!    then the runtime is shut down without waiting for anything else.
 //!
 //! A drained or timed-out drain is a clean stop (exit 0, `should_exit_0_when_sigterm_received`);
-//! a second signal during the drain stops at once ([`Stopped::Forced`], exit 130 or 143).
+//! a second signal during the drain, or while the pipeline is joined after it, stops at once
+//! ([`Stopped::Forced`], exit 130 or 143).
 //!
 //! The handlers are installed when the lifecycle binds the listener, before readiness is
 //! reported: a signal sent as soon as the URL is known is queued on the channel, never the
@@ -29,20 +31,22 @@ use std::io;
 
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
 
 use crate::connections::{StopSignal, Stopped};
 use crate::lifecycle::Server;
 
 /// Installs the SIGINT and SIGTERM handlers and forwards every delivery, in order, to `tx`.
-/// Must run inside the runtime.
+/// Must run inside the runtime. The returned task is owned by the server, which aborts it once
+/// its tasks are joined; it also ends when the stop channel or the runtime is gone.
 ///
 /// # Errors
 ///
 /// The operating system refused to install a handler.
-pub(crate) fn stop_signals(tx: mpsc::UnboundedSender<StopSignal>) -> io::Result<()> {
+pub(crate) fn stop_signals(tx: mpsc::UnboundedSender<StopSignal>) -> io::Result<JoinHandle<()>> {
     let mut interrupt = signal(SignalKind::interrupt())?;
     let mut terminate = signal(SignalKind::terminate())?;
-    tokio::spawn(async move {
+    Ok(tokio::spawn(async move {
         loop {
             let next = poll_fn(|cx| {
                 if let Poll::Ready(delivered) = interrupt.poll_recv(cx) {
@@ -59,8 +63,7 @@ pub(crate) fn stop_signals(tx: mpsc::UnboundedSender<StopSignal>) -> io::Result<
                 return;
             }
         }
-    });
-    Ok(())
+    }))
 }
 
 impl Server {

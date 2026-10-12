@@ -220,6 +220,7 @@ impl NotifyChangeSource {
                     unavailable: None,
                 };
                 source.watcher = Some(watcher);
+                source.request_rescan_if_needed();
                 report
             }
             Err(fault) => StartReport {
@@ -361,10 +362,32 @@ impl NotifyChangeSource {
         root: &RootDir,
         hints: &BTreeSet<ReconcileHint>,
     ) -> ReconcileReport {
-        match &mut self.watcher {
+        let report = match &mut self.watcher {
             Some(watcher) => watcher.reconcile(root, hints),
             None => ReconcileReport::default(),
+        };
+        self.request_rescan_if_needed();
+        report
+    }
+
+    /// When a registration stopped at its relisting cap, reports a loss: the next batch is
+    /// `Overflow`, whose full reconcile finds the directories left unwatched (and whose full
+    /// reload covers changes in them that were never notified). Pinned by
+    /// `should_hand_the_rest_to_a_full_reconcile_when_relisting_passes_the_cap`.
+    fn request_rescan_if_needed(&mut self) {
+        let Some(watcher) = self.watcher.as_mut() else {
+            return;
+        };
+        if core::mem::take(&mut watcher.rescan_needed) {
+            self.flags.overflow.store(true, Ordering::Release);
+            self.flags.wake.notify_one();
         }
+    }
+
+    /// The native watcher, for a test that sets its hooks after start-up.
+    #[cfg(test)]
+    pub(crate) fn watcher_mut(&mut self) -> Option<&mut NotifyWatcher> {
+        self.watcher.as_mut()
     }
 
     /// The directories currently watched, root-relative; empty once closed.
