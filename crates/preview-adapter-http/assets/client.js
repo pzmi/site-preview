@@ -4,14 +4,16 @@
 //
 // Hot reload (ADR 0030, ADR 0031): a `reload` event that is not `full`, comes from the same
 // server instance and carries exactly the next revision is applied in place when every change
-// can be: stylesheets are swapped (the new link loads before the old one goes). Anything else,
-// including a failed load, reloads the page.
+// can be: stylesheets are swapped (the new link loads before the old one goes). A script change
+// reloads the page and restores the scroll position, carried in `history.state.__sitePreview`
+// (never storage or cookies, never the URL). Anything else, including a failed load, reloads.
 (function () {
   'use strict';
 
   var MARK = '__sp';
   var LOAD_TIMEOUT_MS = 5000;
   var IMPORT_DEPTH = 8;
+  var SCROLL_KEY = '__sitePreview';
 
   function normalize(state) {
     if (!state || typeof state.instance_id !== 'string') return null;
@@ -60,17 +62,58 @@
     return baseline;
   }
 
-  // How a hot change set is applied: 'css' when every change is a stylesheet, else 'full'.
+  // How a hot change set is applied: 'css' when every change is a stylesheet, 'js' when a
+  // script changed and the rest are stylesheets (the reload subsumes them), else 'full'.
   function strategy(changes) {
     if (!Array.isArray(changes) || changes.length === 0) return 'full';
+    var script = false;
     for (var i = 0; i < changes.length; i++) {
       var change = changes[i];
       if (!change || typeof change.path !== 'string' || change.path.charAt(0) !== '/') {
         return 'full';
       }
-      if (change.kind !== 'css') return 'full';
+      if (change.kind === 'js') script = true;
+      else if (change.kind !== 'css') return 'full';
     }
-    return 'css';
+    return script ? 'js' : 'css';
+  }
+
+  // A history state the scroll position may be merged into: null or a plain object. Checked
+  // by tag, not prototype, because a structured clone may come from another realm.
+  function mergeable(state) {
+    if (state === null || state === undefined) return true;
+    return typeof state === 'object' && !Array.isArray(state) &&
+      Object.prototype.toString.call(state) === '[object Object]';
+  }
+
+  // `state` with the scroll position added under `__sitePreview`, or null when the site keeps
+  // a non-object state there (then the reload goes without restore, ADR 0031).
+  function markScroll(state, scrollX, scrollY, revision) {
+    if (!mergeable(state)) return null;
+    var marked = {};
+    if (state !== null && state !== undefined) {
+      Object.keys(state).forEach(function (key) { marked[key] = state[key]; });
+    }
+    var mark = { scrollX: scrollX, scrollY: scrollY, revision: String(revision) };
+    if (state === null || state === undefined) mark.empty = true;
+    marked[SCROLL_KEY] = mark;
+    return marked;
+  }
+
+  // The scroll position stored by markScroll and the state without it ({scroll, state}), or
+  // null when there is none. A state that was null before is null again.
+  function takeScroll(state) {
+    if (!mergeable(state) || state === null || state === undefined) return null;
+    var mark = state[SCROLL_KEY];
+    if (!mark || typeof mark.scrollX !== 'number' || typeof mark.scrollY !== 'number') {
+      return null;
+    }
+    var rest = {};
+    Object.keys(state).forEach(function (key) {
+      if (key !== SCROLL_KEY) rest[key] = state[key];
+    });
+    if (mark.empty === true && Object.keys(rest).length === 0) rest = null;
+    return { scroll: { x: mark.scrollX, y: mark.scrollY }, state: rest };
   }
 
   // Path components, percent-decoded one by one, or null when one does not decode. Server
@@ -159,6 +202,8 @@
       matchStylesheetHref: matchStylesheetHref,
       cacheBustUrl: cacheBustUrl,
       importsPath: importsPath,
+      markScroll: markScroll,
+      takeScroll: takeScroll,
     };
     return;
   }
@@ -226,6 +271,45 @@
     return chosen;
   }
 
+  // Records the scroll position in history.state, then reloads.
+  function scriptReload(revision) {
+    try {
+      var history = window.history;
+      var marked = markScroll(history.state, window.scrollX, window.scrollY, revision);
+      if (marked !== null) history.replaceState(marked, '');
+    } catch (_) {
+      // A throttled or refused replaceState only loses the scroll restore.
+    }
+    fullReload();
+  }
+
+  // Scrolls back to the position a script reload stored, after load and once more on the
+  // next frame (late layout), then removes the marker from history.state.
+  function restoreScroll() {
+    var history = window.history;
+    var taken;
+    try {
+      taken = takeScroll(history.state);
+    } catch (_) {
+      return;
+    }
+    if (taken === null) return;
+    function restore() {
+      var current = takeScroll(history.state);
+      try {
+        if (current !== null) history.replaceState(current.state, '');
+      } catch (_) {
+        // The marker stays; a later script reload overwrites it.
+      }
+      window.scrollTo(taken.scroll.x, taken.scroll.y);
+      window.requestAnimationFrame(function () {
+        window.scrollTo(taken.scroll.x, taken.scroll.y);
+      });
+    }
+    if (document.readyState === 'complete') restore();
+    else window.addEventListener('load', restore);
+  }
+
   // A promise of whether `state`'s change set was applied in place, or null when it cannot be.
   function apply(state, revision) {
     if (strategy(state.changes) !== 'css') return null;
@@ -237,6 +321,10 @@
 
   function hot(state) {
     var revision = String(state.revision);
+    if (strategy(state.changes) === 'js') {
+      scriptReload(revision);
+      return;
+    }
     var applying;
     try {
       applying = apply(state, revision);
@@ -285,6 +373,7 @@
     else if (action === 'hot') hot(state);
   }
 
+  restoreScroll();
   var connection = new EventSource('/__site_preview/events');
   connection.addEventListener('state', function (event) { handle('state', event); });
   connection.addEventListener('reload', function (event) { handle('reload', event); });

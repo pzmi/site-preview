@@ -7,15 +7,20 @@ import vm from 'node:vm';
 const source = readFileSync(fileURLToPath(new URL('./client.js', import.meta.url)), 'utf8');
 const sandbox = { URL };
 vm.runInNewContext(source, sandbox);
-const { decide, adopt, strategy, matchStylesheetHref, cacheBustUrl, importsPath } =
-  sandbox.__sitePreviewTest;
+const {
+  decide, adopt, strategy, matchStylesheetHref, cacheBustUrl, importsPath, markScroll, takeScroll,
+} = sandbox.__sitePreviewTest;
 
 const ORIGIN = 'http://127.0.0.1:8000';
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 
-// A minimal fake page: one container of `<link>` elements, a fake EventSource, recorded
-// timers and reloads. Only what client.js touches is modelled.
-function fakePage({ dataset = { instance: 'a', revision: '3' } } = {}) {
+// A minimal fake page: one container of `<link>` elements, a fake EventSource and history,
+// recorded timers, scrolls and reloads. Only what client.js touches is modelled.
+function fakePage({
+  dataset = { instance: 'a', revision: '3' },
+  historyState = null,
+  readyState = 'loading',
+} = {}) {
   const head = {
     children: [],
     insertBefore(node, ref) {
@@ -55,6 +60,10 @@ function fakePage({ dataset = { instance: 'a', revision: '3' } } = {}) {
     reloads: 0,
     timers: [],
     listeners: {},
+    windowListeners: {},
+    replaced: [],
+    scrolls: [],
+    frames: [],
     head,
     addLink(href, sheet = null) {
       const link = element({ href, sheet });
@@ -72,12 +81,27 @@ function fakePage({ dataset = { instance: 'a', revision: '3' } } = {}) {
     document: {
       currentScript: { dataset },
       baseURI: `${ORIGIN}/`,
+      readyState,
       querySelectorAll(selector) {
         assert.equal(selector, 'link[rel~="stylesheet"]');
         return page.links();
       },
     },
     location: { origin: ORIGIN, reload() { page.reloads += 1; } },
+    window: {
+      history: {
+        state: historyState,
+        replaceState(...args) {
+          page.replaced.push(args);
+          this.state = args[0];
+        },
+      },
+      scrollX: 0,
+      scrollY: 1500,
+      scrollTo(x, y) { page.scrolls.push([x, y]); },
+      requestAnimationFrame(fn) { page.frames.push(fn); },
+      addEventListener(name, fn) { page.windowListeners[name] = fn; },
+    },
     EventSource: function (url) {
       page.url = url;
       this.addEventListener = (name, fn) => { page.listeners[name] = fn; };
@@ -89,13 +113,16 @@ function fakePage({ dataset = { instance: 'a', revision: '3' } } = {}) {
   return page;
 }
 
+function changeSet(revision, changes) {
+  return { instance_id: 'a', revision, changes, full: false };
+}
+
 function css(revision, ...paths) {
-  return {
-    instance_id: 'a',
-    revision,
-    changes: paths.map((path) => ({ path, kind: 'css' })),
-    full: false,
-  };
+  return changeSet(revision, paths.map((path) => ({ path, kind: 'css' })));
+}
+
+function js(revision, ...paths) {
+  return changeSet(revision, paths.map((path) => ({ path, kind: 'js' })));
 }
 
 const base = { instance: 'a', revision: '3' };
@@ -174,6 +201,7 @@ test('should_connect_and_reload_once_when_run_with_current_script', () => {
   const context = {
     document: { currentScript: { dataset: { instance: 'a', revision: '3' } } },
     location: { reload() { reloads += 1; } },
+    window: { history: { state: null } },
     EventSource: function (u) {
       url = u;
       this.addEventListener = (name, fn) => { listeners[name] = fn; };
@@ -379,4 +407,116 @@ test('should_apply_queued_event_when_previous_swap_finishes', async () => {
     `${ORIGIN}/css/site.css?__sp=4`,
     `${ORIGIN}/css/site.css?__sp=5`,
   ]);
+});
+
+test('should_store_scroll_in_history_state_when_js_changes', () => {
+  // given
+  const page = fakePage();
+  page.start();
+
+  // when
+  page.send('reload', js(4, '/js/app.js'));
+
+  // then
+  assert.equal(page.replaced.length, 1);
+  const [state, title, ...rest] = page.replaced[0];
+  assert.equal(title, '');
+  assert.equal(rest.length, 0);
+  const mark = state.__sitePreview;
+  assert.equal(mark.scrollX, 0);
+  assert.equal(mark.scrollY, 1500);
+  assert.equal(mark.revision, '4');
+  assert.equal(page.reloads, 1);
+});
+
+test('should_preserve_existing_state_keys_when_storing_scroll', () => {
+  // given
+  const page = fakePage({ historyState: { tab: 'b', page: 2 } });
+  page.start();
+
+  // when
+  page.send('reload', js(4, '/js/app.js'));
+
+  // then
+  const [state] = page.replaced[0];
+  assert.equal(state.tab, 'b');
+  assert.equal(state.page, 2);
+  assert.equal(state.__sitePreview.scrollY, 1500);
+  assert.equal(page.reloads, 1);
+});
+
+test('should_skip_restore_when_history_state_is_not_object', () => {
+  // given
+  const texts = fakePage({ historyState: 'site-owned' });
+  const lists = fakePage({ historyState: [1, 2] });
+  texts.start();
+  lists.start();
+
+  // when
+  texts.send('reload', js(4, '/js/app.js'));
+  lists.send('reload', js(4, '/js/app.js'));
+
+  // then
+  assert.equal(texts.replaced.length, 0);
+  assert.equal(lists.replaced.length, 0);
+  assert.equal(texts.reloads, 1);
+  assert.equal(lists.reloads, 1);
+  assert.equal(markScroll('site-owned', 0, 1, 4), null);
+  assert.equal(takeScroll('site-owned'), null);
+  assert.equal(texts.windowListeners.load, undefined);
+});
+
+test('should_remove_marker_when_scroll_restored', () => {
+  // given
+  const page = fakePage({
+    historyState: { tab: 'b', __sitePreview: { scrollX: 10, scrollY: 1500, revision: '4' } },
+  });
+  page.start();
+  const beforeLoad = page.scrolls.length;
+
+  // when
+  page.windowListeners.load();
+  page.frames.forEach((frame) => frame());
+
+  // then
+  assert.equal(beforeLoad, 0);
+  assert.deepEqual(page.scrolls, [[10, 1500], [10, 1500]]);
+  assert.equal(page.replaced.length, 1);
+  const [state, title] = page.replaced[0];
+  assert.deepEqual(Object.keys(state), ['tab']);
+  assert.equal(title, '');
+  assert.equal(page.reloads, 0);
+});
+
+test('should_restore_null_state_when_marker_was_added_to_null', () => {
+  // given
+  const marked = markScroll(null, 0, 1500, 4);
+  const page = fakePage({ historyState: marked, readyState: 'complete' });
+
+  // when
+  page.start();
+
+  // then
+  assert.deepEqual(page.scrolls, [[0, 1500]]);
+  assert.equal(page.replaced[0][0], null);
+  assert.equal(takeScroll({ tab: 'b' }), null);
+});
+
+test('should_take_script_path_when_css_and_js_change_together', () => {
+  // given
+  const page = fakePage();
+  page.addLink(`${ORIGIN}/css/site.css`);
+  page.start();
+
+  // when
+  page.send('reload', changeSet(4, [
+    { path: '/css/site.css', kind: 'css' },
+    { path: '/js/app.mjs', kind: 'js' },
+  ]));
+
+  // then
+  assert.equal(strategy([{ path: '/a.css', kind: 'css' }, { path: '/b.js', kind: 'js' }]), 'js');
+  assert.equal(page.links().length, 1);
+  assert.equal(page.replaced.length, 1);
+  assert.equal(page.reloads, 1);
 });
