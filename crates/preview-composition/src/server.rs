@@ -350,4 +350,43 @@ mod tests {
             ]
         );
     }
+
+    #[derive(Default)]
+    struct Recorder(std::sync::Mutex<Vec<(String, String)>>);
+
+    impl WarningSink for Recorder {
+        fn warn(&self, code: &str, message: &str) {
+            self.0
+                .lock()
+                .expect("unpoisoned")
+                .push((code.to_owned(), message.to_owned()));
+        }
+    }
+
+    /// The stand-in for an unavailable native watcher in the black-box suite
+    /// (`crates/preview-cli/tests/watcher.rs`), which cannot lower inotify limits.
+    #[test]
+    fn should_warn_and_keep_serving_when_watcher_is_unavailable() {
+        // given
+        let warnings = Recorder::default();
+        let start = WatchStart {
+            dirs: 0,
+            problems: Vec::new(),
+            unavailable: Some("the native file watcher is unavailable".to_owned()),
+        };
+
+        // when
+        report_watch_problems(&start, &warnings);
+
+        // then
+        let recorded = warnings.0.lock().expect("unpoisoned");
+        assert_eq!(recorded.len(), 1, "{recorded:?}");
+        assert_eq!(recorded[0].0, "watch-unavailable");
+        assert!(
+            recorded[0]
+                .1
+                .ends_with("live reload is disabled, pages are still served"),
+            "{recorded:?}"
+        );
+    }
 }

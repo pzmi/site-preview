@@ -8,22 +8,8 @@ pub mod support;
 /// In the `os-watcher` nextest group: real watches share the system's inotify budget.
 mod os_watcher {
     use std::fs;
-    use std::time::Instant;
 
-    use super::support::{DEADLINE, EventStream, Frame, PreviewProcess, Site};
-
-    /// The next frame that is not a keepalive comment; each read is bounded by [`DEADLINE`],
-    /// and so is the whole wait.
-    fn next_event(stream: &mut EventStream) -> Frame {
-        let start = Instant::now();
-        loop {
-            let frame = stream.next_frame();
-            if !frame.comment {
-                return frame;
-            }
-            assert!(start.elapsed() < DEADLINE, "no event within {DEADLINE:?}");
-        }
-    }
+    use super::support::{PreviewProcess, Site};
 
     #[test]
     fn should_send_reload_when_index_html_is_edited() {
@@ -41,7 +27,7 @@ mod os_watcher {
         .expect("the page is edited");
 
         // then
-        let frame = next_event(&mut stream);
+        let frame = stream.next_event();
         assert_eq!(frame.event.as_deref(), Some("reload"), "{frame:?}");
         let data = frame.data.join("\n");
         assert!(data.contains(r#""revision":1"#), "{data}");
@@ -59,13 +45,13 @@ mod os_watcher {
 
         // when: `mkdir -p`, so the inner directory exists before the outer one is watched
         fs::create_dir_all(site.path().join("new/nested")).expect("mkdir -p");
-        let created = next_event(&mut stream);
+        let created = stream.next_event();
         fs::write(site.path().join("new/nested/a.css"), "a { color: red }\n")
             .expect("a file is written inside");
 
         // then
         assert_eq!(created.event.as_deref(), Some("reload"), "{created:?}");
-        let edited = next_event(&mut stream);
+        let edited = stream.next_event();
         assert_eq!(edited.event.as_deref(), Some("reload"), "{edited:?}");
         let data = edited.data.join("\n");
         assert!(data.contains(r#""path":"/new/nested/a.css""#), "{data}");

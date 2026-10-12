@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use preview_testkit::poll::wait_until;
 use tempfile::TempDir;
@@ -493,6 +493,8 @@ pub struct Frame {
 /// incrementally, because the stream has no end to read to.
 pub struct EventStream {
     reader: BufReader<Dechunk<BufReader<TcpStream>>>,
+    /// A handle on the same socket, to change the read timeout for [`Self::next_event_within`].
+    socket: TcpStream,
     /// The status line's headers, names lowercased.
     pub headers: Vec<(String, String)>,
 }
@@ -511,6 +513,7 @@ impl EventStream {
         stream
             .write_all(head.as_bytes())
             .expect("the request is sent");
+        let socket = stream.try_clone().expect("a second handle on the socket");
         let mut reader = BufReader::new(stream);
         let mut block = Vec::new();
         while !block.ends_with(b"\r\n\r\n") {
@@ -527,6 +530,7 @@ impl EventStream {
         }
         Ok(Self {
             reader: BufReader::new(Dechunk::new(reader)),
+            socket,
             headers: response_headers,
         })
     }
@@ -570,11 +574,134 @@ impl EventStream {
         }
     }
 
+    /// The next frame that is not a keepalive comment; the whole wait is bounded by
+    /// [`DEADLINE`].
+    pub fn next_event(&mut self) -> Frame {
+        let start = Instant::now();
+        loop {
+            let frame = self.next_frame();
+            if !frame.comment {
+                return frame;
+            }
+            assert!(start.elapsed() < DEADLINE, "no event within {DEADLINE:?}");
+        }
+    }
+
+    /// The next `reload` event, parsed.
+    pub fn next_reload(&mut self) -> Reload {
+        let frame = self.next_event();
+        assert_eq!(frame.event.as_deref(), Some("reload"), "{frame:?}");
+        Reload::parse(&frame.data.join("\n"))
+    }
+
+    /// Reads `reload` events until one lists `path` among its changes, and returns it; every
+    /// event read on the way is returned before it. Bounded by [`DEADLINE`] per read.
+    pub fn reload_listing(&mut self, path: &str) -> Reload {
+        loop {
+            let reload = self.next_reload();
+            if reload.paths().contains(&path) {
+                return reload;
+            }
+        }
+    }
+
+    /// The next non-comment frame if one arrives within `window`, else `None`: the check that
+    /// nothing was published. It must be called between frames, never inside one (the harness
+    /// writes a whole frame at a time, so a frame is not split by the wire in practice), and
+    /// `window` is a bound on silence, not a latency assertion.
+    pub fn next_event_within(&mut self, window: Duration) -> Option<Frame> {
+        let start = Instant::now();
+        loop {
+            let left = window.checked_sub(start.elapsed())?;
+            self.socket
+                .set_read_timeout(Some(left.max(Duration::from_millis(1))))
+                .expect("a read timeout");
+            // Waits for the first byte of the next frame without consuming it.
+            let waited = self.reader.fill_buf().map(<[u8]>::is_empty);
+            self.socket
+                .set_read_timeout(Some(DEADLINE))
+                .expect("a read timeout");
+            match waited {
+                Ok(true) => panic!("the stream ended while waiting for silence"),
+                Ok(false) => {
+                    let frame = self.next_frame();
+                    if !frame.comment {
+                        return Some(frame);
+                    }
+                }
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                    ) =>
+                {
+                    return None;
+                }
+                Err(error) => panic!("the stream failed: {error}"),
+            }
+        }
+    }
+
     /// Reads the next frame, which must be the `state` baseline, and returns it.
     pub fn baseline(&mut self) -> Frame {
         let frame = self.next_frame();
         assert_eq!(frame.event.as_deref(), Some("state"), "{frame:?}");
         frame
+    }
+}
+
+/// A parsed `reload` event: `{"instance_id","revision","changes":[{"path","kind"}],"full"}`.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Reload {
+    /// The `revision` field.
+    pub revision: u64,
+    /// The `changes`, as `(path, kind)`.
+    pub changes: Vec<(String, String)>,
+    /// The `full` field.
+    pub full: bool,
+}
+
+impl Reload {
+    /// Parses the data line the server writes (fixed key order, plain paths).
+    pub fn parse(data: &str) -> Self {
+        let revision = data
+            .split(r#""revision":"#)
+            .nth(1)
+            .and_then(|rest| {
+                let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+                digits.parse().ok()
+            })
+            .unwrap_or_else(|| panic!("a revision in {data}"));
+        let changes = data
+            .split(r#"{"path":""#)
+            .skip(1)
+            .map(|entry| {
+                let (path, rest) = entry.split_once('"').expect("a closing quote");
+                let kind = rest
+                    .strip_prefix(r#","kind":""#)
+                    .and_then(|rest| rest.split_once('"'))
+                    .map_or_else(|| panic!("a kind in {data}"), |(kind, _)| kind);
+                (path.to_owned(), kind.to_owned())
+            })
+            .collect();
+        Self {
+            revision,
+            changes,
+            full: data.ends_with(r#""full":true}"#),
+        }
+    }
+
+    /// The changed paths, in order.
+    pub fn paths(&self) -> Vec<&str> {
+        self.changes.iter().map(|(path, _)| path.as_str()).collect()
+    }
+
+    /// The kind reported for `path`.
+    pub fn kind_of(&self, path: &str) -> Option<&str> {
+        self.changes
+            .iter()
+            .find(|(candidate, _)| candidate == path)
+            .map(|(_, kind)| kind.as_str())
     }
 }
 
