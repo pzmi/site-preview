@@ -184,24 +184,6 @@ fn should_not_warn_when_remote_bind_fails() {
 }
 
 #[test]
-fn should_exit_2_when_unimplemented_flag_given() {
-    // given
-    let site = Site::copy();
-    let mut command = site_preview();
-
-    // when
-    let assert = command.args(["serve", "--json", site.arg()]).assert();
-
-    // then
-    assert
-        .code(2)
-        .stdout("")
-        .stderr(predicate::str::starts_with(
-            "site-preview: error: --json is not implemented yet",
-        ));
-}
-
-#[test]
 fn should_warn_and_keep_serving_when_open_launcher_is_missing() {
     // given: a PATH without any launcher program
     let site = Site::copy();

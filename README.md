@@ -26,6 +26,29 @@ site-preview serve --open                # open a browser (opt-in)
 site-preview serve --allow-remote        # bind outside loopback (insecure, no auth)
 ```
 
+## Machine output (`--json`)
+
+With `--json`, stdout carries JSON lines and nothing else; warnings and the shutdown notice
+stay text on stderr. The first line is the `ready` event, written once and flushed as soon as
+the server accepts connections:
+
+```json
+{"event":"ready","url":"http://127.0.0.1:49152/","pid":12345,"watching":true}
+```
+
+`watching` is false when no file watcher could start (pages are still served). Later lines
+are `watcher` events, written when live reload degrades or recovers, never repeated for the
+same state:
+
+```json
+{"event":"watcher","state":"degraded","reason":"runtime-failure"}
+{"event":"watcher","state":"watching"}
+```
+
+`reason` is one of `registration-failed`, `runtime-failure` or `revision-exhausted`. A server
+whose watcher could not start follows `ready` with a `degraded` event naming
+`registration-failed`. New fields may be added to either event; do not rely on their order.
+
 ## Warnings
 
 Warnings go to stderr, one per line, as `site-preview: warning[<code>]: <message>`. The

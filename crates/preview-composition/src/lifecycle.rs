@@ -29,6 +29,7 @@ use std::io;
 use std::net::SocketAddr;
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::sync::Arc;
+use std::time::Duration;
 
 use preview_adapter_http::{
     AppState, DEFAULT_KEEP_ALIVE, DEFAULT_MAX_STREAMS, Injection, Shutdown, StreamLimit,
@@ -42,7 +43,7 @@ use tokio::net::TcpListener;
 use tokio::runtime::{Builder, Runtime};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
-use tokio::time::{Instant, timeout_at};
+use tokio::time::{Instant, timeout, timeout_at};
 
 use crate::bootstrap::{OpenedRoot, WatchStart, open_root};
 use crate::config::{ServeConfig, ServerLimits};
@@ -64,6 +65,11 @@ pub(crate) enum Signals {
     Ignore,
 }
 
+/// How long a shutdown may take before it says it is waiting for connections: longer than
+/// ending event streams and closing idle connections ever takes, far shorter than the drain
+/// bound.
+const DRAIN_NOTICE_GRACE: Duration = Duration::from_millis(500);
+
 /// Why nothing could be watched when the watcher panicked while starting.
 const WATCHER_PANICKED: &str = "the file watcher failed while starting";
 
@@ -78,10 +84,9 @@ pub struct Server {
     url: String,
     /// Asks the serve task to stop; the signal forwarder holds a clone.
     stops: mpsc::UnboundedSender<StopSignal>,
-    /// Answers with the number of open connections once the listener is closed; `None` once
-    /// answered.
+    /// Answers once the listener is closed (with the number of connections then open); `None`
+    /// once answered.
     listener_closed: Option<oneshot::Receiver<usize>>,
-    open_at_stop: usize,
     /// When the drain bound ends, from the moment the listener closed.
     drain_ends: Option<Instant>,
     streams: Shutdown,
@@ -241,8 +246,11 @@ impl Server {
         else {
             return;
         };
-        // An error means the serve task ended without closing it (a panic): it is gone too.
-        self.open_at_stop = runtime.block_on(closed).unwrap_or(0);
+        // An error means the serve task ended without closing it (a panic): it is gone too. The
+        // count is not used: it includes event streams and idle keep-alive connections, which
+        // the shutdown ends at once, so only the grace in `join_tasks` knows whether the drain
+        // waits for anything.
+        let _open = runtime.block_on(closed);
         self.drain_ends = Some(Instant::now() + self.limits.drain_timeout);
     }
 
@@ -253,21 +261,32 @@ impl Server {
         let Some(runtime) = self.runtime.take() else {
             return;
         };
-        if self.open_at_stop > 0 {
-            self.reporter.draining(self.limits.drain_timeout);
-        }
         // A serve task that panicked is re-raised, so a crash never exits 0, unless this
         // stop runs while the thread already unwinds (from `Drop`), where it would abort.
-        let stopped =
-            self.serve
-                .take()
-                .map_or(Stopped::Drained, |serve| match runtime.block_on(serve) {
+        let stopped = match self.serve.take() {
+            None => Stopped::Drained,
+            Some(mut serve) => {
+                // The notice is for a drain that is really waiting: a browser tab's event
+                // stream and idle connections end within the grace, and a notice about
+                // waiting there would be false (`should_not_announce_drain_when_only_a_tab_is_open`).
+                let joined = match runtime
+                    .block_on(async { timeout(DRAIN_NOTICE_GRACE, &mut serve).await })
+                {
+                    Ok(joined) => joined,
+                    Err(_still_open) => {
+                        self.reporter.draining(self.limits.drain_timeout);
+                        runtime.block_on(&mut serve)
+                    }
+                };
+                match joined {
                     Ok(stopped) => stopped,
                     Err(failed) if failed.is_panic() && !std::thread::panicking() => {
                         resume_unwind(failed.into_panic())
                     }
                     Err(_) => Stopped::DrainTimedOut,
-                });
+                }
+            }
+        };
         // Cancelled at the listener's close, the pipeline has normally ended long before the
         // drain does; after a second signal it is not waited for at all.
         let ends = match (stopped, self.drain_ends) {
@@ -460,6 +479,7 @@ impl<W: WatchControl, F: FnOnce(&OpenedRoot) -> (W, WatchStart)> Startup<'_, F> 
                 coordinator,
                 TokioClock::start(),
                 Arc::clone(&self.warnings),
+                self.reporter.watcher_events(),
             );
             let task = {
                 let _context = self.runtime.enter();
@@ -532,7 +552,6 @@ impl<W: WatchControl, F: FnOnce(&OpenedRoot) -> (W, WatchStart)> Startup<'_, F> 
             url,
             stops: self.stops,
             listener_closed: Some(listener_closed),
-            open_at_stop: 0,
             drain_ends: None,
             streams: wiring.streams,
             stop_watching,
@@ -552,11 +571,13 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
 
-    use preview_application::{ChangeBatch, ChangeSource};
+    use preview_application::{ChangeBatch, ChangeSource, SourceFailure};
     use preview_domain::ChangeEvent;
+    use preview_testkit::poll::wait_until;
     use tempfile::TempDir;
 
     use super::*;
+    use crate::server::{DegradedReason, WatcherEvents, WatcherState};
     use crate::watch_pipeline::{ReconcileScope, Reconciled};
 
     /// How long a test waits for a reply that should come at once.
@@ -590,13 +611,27 @@ mod tests {
         }
     }
 
+    /// The watcher state changes the pipeline announced.
+    #[derive(Clone, Default)]
+    struct States(Arc<Mutex<Vec<WatcherState>>>);
+
+    impl WatcherEvents for States {
+        fn changed(&self, state: WatcherState) {
+            self.0.lock().expect("unpoisoned").push(state);
+        }
+    }
+
     /// What the server reported: each `ready` as its `Watching` status, and each drain notice.
     #[derive(Clone, Default)]
-    struct Reports(Arc<Mutex<Vec<String>>>);
+    struct Reports(Arc<Mutex<Vec<String>>>, States);
 
     impl Reports {
         fn recorded(&self) -> Vec<String> {
             self.0.lock().expect("unpoisoned").clone()
+        }
+
+        fn states(&self) -> Vec<WatcherState> {
+            (self.1).0.lock().expect("unpoisoned").clone()
         }
     }
 
@@ -613,6 +648,10 @@ mod tests {
                 .lock()
                 .expect("unpoisoned")
                 .push(format!("draining {bound:?}"));
+        }
+
+        fn watcher_events(&self) -> Arc<dyn WatcherEvents> {
+            Arc::new(self.1.clone())
         }
     }
 
@@ -649,6 +688,29 @@ mod tests {
         fn close(&mut self) {
             self.closed.store(true, Ordering::SeqCst);
         }
+    }
+
+    /// A watcher whose changes the test scripts.
+    struct Scripted(preview_testkit::ScriptedChangeSource);
+
+    impl ChangeSource for Scripted {
+        type Event = ChangeEvent;
+
+        fn next(&mut self) -> impl Future<Output = ChangeBatch<ChangeEvent>> + Send {
+            self.0.next()
+        }
+    }
+
+    impl WatchControl for Scripted {
+        fn reconcile(&mut self, _scope: ReconcileScope) -> Reconciled {
+            Reconciled::default()
+        }
+
+        fn failure_detail(&self) -> Option<String> {
+            None
+        }
+
+        fn close(&mut self) {}
     }
 
     /// A factory whose watcher watches `dirs` directories, or reports `unavailable`.
@@ -837,6 +899,38 @@ mod tests {
     }
 
     #[test]
+    fn should_emit_watcher_degraded_event_when_watcher_fails_at_runtime() {
+        // given: a running server whose watcher worked at start-up
+        let root = site();
+        let (source, handle) = preview_testkit::ScriptedChangeSource::new();
+        let (server, reports, _warnings) = start(&root, move |_root| {
+            let start = WatchStart {
+                dirs: 1,
+                problems: Vec::new(),
+                unavailable: None,
+            };
+            (Scripted(source), start)
+        });
+        let mut server = server.expect("a server");
+
+        // when: the operating system's watcher fails, twice
+        handle.fail(SourceFailure::RuntimeFailure);
+        handle.fail(SourceFailure::RuntimeFailure);
+
+        // then: one event, however often it repeats
+        // Polled: the pipeline task reports on the runtime's own thread.
+        wait_until(DEADLINE, "the degraded event", || {
+            !reports.states().is_empty()
+        })
+        .expect("the pipeline reports the failure");
+        assert_eq!(
+            reports.states(),
+            [WatcherState::Degraded(DegradedReason::RuntimeFailure)]
+        );
+        assert_eq!(server.stop(), Stopped::Drained);
+    }
+
+    #[test]
     fn should_release_listener_when_watcher_init_panics_or_fails() {
         let closed = Arc::new(AtomicBool::new(false));
         let cases: [(&str, Factory); 2] = [
@@ -917,7 +1011,7 @@ mod tests {
     }
 
     #[test]
-    fn should_drain_without_timeout_when_stopped_with_open_event_stream() {
+    fn should_not_announce_drain_when_only_a_tab_is_open() {
         // given: a browser tab's event stream, which never ends on its own
         let root = site();
         let closed = Arc::new(AtomicBool::new(false));
@@ -942,7 +1036,8 @@ mod tests {
         assert!(closed.load(Ordering::SeqCst), "the watcher is closed");
         assert_eq!(
             reports.recorded(),
-            ["ready Watching { dirs: 1 }", "draining 3s"]
+            ["ready Watching { dirs: 1 }"],
+            "the shutdown waited for nothing, so it says nothing"
         );
     }
 

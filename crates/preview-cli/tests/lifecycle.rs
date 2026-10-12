@@ -107,6 +107,39 @@ fn should_exit_130_when_second_sigint_arrives_during_drain() {
 }
 
 #[test]
+fn should_not_announce_drain_when_only_a_tab_is_open() {
+    // given: a browser tab's event stream and an idle keep-alive connection, which a
+    // shutdown ends at once
+    let site = Site::copy();
+    let server = PreviewProcess::serve(&site);
+    let mut events = server.events(&[]).expect("the stream opens");
+    events.baseline();
+    let mut idle = TcpStream::connect(server.authority()).expect("the server accepts");
+    idle.set_read_timeout(Some(DEADLINE))
+        .expect("a read timeout");
+    let head = format!("GET / HTTP/1.1\r\nHost: {}\r\n\r\n", server.authority());
+    idle.write_all(head.as_bytes())
+        .expect("the request is sent");
+    let mut start = [0_u8; 12];
+    idle.read_exact(&mut start).expect("the reply starts");
+
+    // when
+    server.signal("INT");
+
+    // then: the exit is immediate, so nothing claims the server is waiting
+    let finished = server.wait_exit_with_output(DEADLINE);
+    assert_eq!(finished.status.code(), Some(0), "{:?}", finished.status);
+    assert!(
+        !finished
+            .stderr
+            .iter()
+            .any(|line| line.contains("shutting down")),
+        "{:?}",
+        finished.stderr
+    );
+}
+
+#[test]
 fn should_exit_0_when_sigterm_received() {
     // given
     let site = Site::copy();

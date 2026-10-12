@@ -61,14 +61,73 @@ impl<'a> WatchStatus<'a> {
     }
 }
 
-/// Receives the run's reports; the CLI renders them as human output (or, later, JSON).
+/// Why the watcher is degraded, in the categories the machine interface names (README
+/// "Watcher events"); never a path or operating-system text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DegradedReason {
+    /// Initialization or a watch registration failed.
+    RegistrationFailed,
+    /// The operating system's watcher reported a failure while running.
+    RuntimeFailure,
+    /// The revision counter is exhausted: live reload cannot resume until a restart.
+    RevisionExhausted,
+}
+
+impl DegradedReason {
+    /// The stable `reason` string of the `--json` watcher event. Pinned by
+    /// `should_name_each_degraded_reason_with_a_stable_code_when_rendered`.
+    #[must_use]
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::RegistrationFailed => "registration-failed",
+            Self::RuntimeFailure => "runtime-failure",
+            Self::RevisionExhausted => "revision-exhausted",
+        }
+    }
+}
+
+/// A change in whether live reload works, after the server is running.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WatcherState {
+    /// The watcher works again after a degradation.
+    Watching,
+    /// Live reload is unavailable or unreliable; pages are still served.
+    Degraded(DegradedReason),
+}
+
+/// Receives the watcher's state changes from the pipeline task, so it must be callable from
+/// any thread. Called once per change, never for a repeated failure (the health machine
+/// absorbs those, `should_emit_degraded_once_when_failures_repeat`).
+pub trait WatcherEvents: Send + Sync {
+    /// The watcher's state changed to `state`.
+    fn changed(&self, state: WatcherState);
+}
+
+/// Drops every watcher change: the sink of a reporter that has no use for them.
+struct NoWatcherEvents;
+
+impl WatcherEvents for NoWatcherEvents {
+    fn changed(&self, _state: WatcherState) {}
+}
+
+/// Receives the run's reports; the CLI renders them as human output or as JSON lines.
 pub trait StartupReporter {
     /// Called once, after the listener is bound and before the first request is served.
     fn ready(&mut self, ready: &Ready<'_>);
 
-    /// Called once, when a stop signal arrived while connections were open: the server waits
-    /// up to `bound` for them, and a second signal stops it at once.
+    /// Called once, when a stop signal arrived and the shutdown is still waiting for open
+    /// connections after a short grace: it waits up to `bound` for them, and a second signal
+    /// stops it at once. A shutdown that finishes within the grace (a browser tab with its
+    /// event stream and idle keep-alive connections) never calls it.
     fn draining(&mut self, bound: Duration);
+
+    /// Where the watcher pipeline reports later changes of its state; asked once, before the
+    /// pipeline starts. A change that happens before [`Self::ready`] is returned may reach the
+    /// sink first: the sink is responsible for ordering it after the ready report. Defaults to
+    /// dropping them (the human output reports them as warnings only).
+    fn watcher_events(&self) -> Arc<dyn WatcherEvents> {
+        Arc::new(NoWatcherEvents)
+    }
 }
 
 /// Why a `serve` run could not start. Every variant is a run-time failure (exit 1), except

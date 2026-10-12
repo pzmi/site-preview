@@ -7,8 +7,9 @@
 //! drops a forged `Host` or follows a redirect. [`tree_hash`] fingerprints a directory tree
 //! so a test can show that serving changed nothing.
 //!
-//! The process announces its URL on the human `Local:` line; CLI-06 switches discovery to the
-//! `--json` `ready` event.
+//! The process runs with `--json` and the harness reads its URL from the `ready` event (the
+//! way an agent would, CLI-06); [`PreviewProcess::start_human`] runs it without, for the tests
+//! of the human output.
 
 use std::collections::hash_map::DefaultHasher;
 use std::ffi::OsStr;
@@ -176,6 +177,9 @@ fn collect(root: &Path, dir: &Path, out: &mut Vec<(PathBuf, u8, Vec<u8>)>) {
 pub struct PreviewProcess {
     child: Child,
     url: String,
+    /// Every stdout line read before the URL was known, in order.
+    startup: Vec<String>,
+    stdout: Receiver<String>,
     stderr: Receiver<String>,
     stopped: bool,
 }
@@ -186,13 +190,26 @@ impl PreviewProcess {
         Self::start([OsStr::new("serve"), site.path().as_os_str()])
     }
 
-    /// Spawns the binary with `args` and waits for its `Local:` line.
+    /// Spawns the binary with `args` and `--json`, and waits for its `ready` event.
     pub fn start<I, S>(args: I) -> Self
     where
         I: IntoIterator<Item = S>,
         S: AsRef<OsStr>,
     {
-        Self::start_with(Command::new(env!("CARGO_BIN_EXE_site-preview")), args)
+        Self::start_with(Command::new(env!("CARGO_BIN_EXE_site-preview")), args, true)
+    }
+
+    /// [`Self::start`] without `--json`: waits for the human `Local:` line instead.
+    pub fn start_human<I, S>(args: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
+        Self::start_with(
+            Command::new(env!("CARGO_BIN_EXE_site-preview")),
+            args,
+            false,
+        )
     }
 
     /// [`Self::start`] with a `PATH` that holds no program, so a browser launcher the binary
@@ -204,16 +221,19 @@ impl PreviewProcess {
     {
         let mut command = Command::new(env!("CARGO_BIN_EXE_site-preview"));
         command.env("PATH", "/nonexistent-site-preview-path");
-        Self::start_with(command, args)
+        Self::start_with(command, args, true)
     }
 
-    fn start_with<I, S>(mut command: Command, args: I) -> Self
+    fn start_with<I, S>(mut command: Command, args: I, json: bool) -> Self
     where
         I: IntoIterator<Item = S>,
         S: AsRef<OsStr>,
     {
+        command.args(args);
+        if json {
+            command.arg("--json");
+        }
         let mut child = command
-            .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -224,15 +244,22 @@ impl PreviewProcess {
         let mut process = Self {
             child,
             url: String::new(),
+            startup: Vec::new(),
+            stdout,
             stderr,
             stopped: false,
         };
         let mut seen = Vec::new();
         // Polled, not slept: the subprocess prints its URL once the listener is bound, and only
         // the OS scheduler decides when that is.
-        let waited = wait_until(DEADLINE, "the `Local:` line on stdout", || {
-            seen.extend(stdout.try_iter());
-            seen.iter().any(|line| line.starts_with("Local:"))
+        let what = if json {
+            "the `ready` event on stdout"
+        } else {
+            "the `Local:` line on stdout"
+        };
+        let waited = wait_until(DEADLINE, what, || {
+            seen.extend(process.stdout.try_iter());
+            seen.iter().any(|line| announced_url(line, json).is_some())
         });
         if let Err(timeout) = waited {
             let errors: Vec<_> = process.stderr.try_iter().collect();
@@ -240,10 +267,21 @@ impl PreviewProcess {
         }
         process.url = seen
             .iter()
-            .find_map(|line| line.strip_prefix("Local:"))
-            .map(|url| url.trim().to_owned())
-            .expect("a Local: line");
+            .find_map(|line| announced_url(line, json))
+            .expect("an announced URL");
+        process.startup = seen;
         process
+    }
+
+    /// The stdout lines read while waiting for the URL, in order: in `--json` mode, the
+    /// `ready` event and whatever came with it.
+    pub fn startup_stdout(&self) -> &[String] {
+        &self.startup
+    }
+
+    /// The stdout lines written after start-up, as they arrive.
+    pub fn stdout(&self) -> &Receiver<String> {
+        &self.stdout
     }
 
     /// Stops the process and returns every line it wrote to stderr, in order. The reader
@@ -343,6 +381,29 @@ impl PreviewProcess {
     /// Waits up to `within` for the process to exit on its own and returns its status; fails
     /// the test if it is still running then.
     pub fn wait_exit(mut self, within: Duration) -> ExitStatus {
+        self.wait_status(within)
+    }
+
+    /// [`Self::wait_exit`], plus everything the process wrote: stdout from the first line
+    /// (the start-up lines included) and the stderr lines not read before. Each reader thread
+    /// ends when the pipe closes with the process, so nothing written can be missed.
+    pub fn wait_exit_with_output(mut self, within: Duration) -> Finished {
+        let status = self.wait_status(within);
+        let stdout = self
+            .startup
+            .iter()
+            .cloned()
+            .chain(self.stdout.iter())
+            .collect();
+        let stderr = self.stderr.iter().collect();
+        Finished {
+            status,
+            stdout,
+            stderr,
+        }
+    }
+
+    fn wait_status(&mut self, within: Duration) -> ExitStatus {
         let mut status = None;
         // Polled: only the OS scheduler decides when the process has finished its shutdown.
         let waited = wait_until(within, "site-preview to exit", || {
@@ -357,6 +418,22 @@ impl PreviewProcess {
         self.stopped = true;
         status.expect("an exit status")
     }
+
+    /// The process id, as `ready` reports it under `--json`.
+    pub fn pid(&self) -> u32 {
+        self.child.id()
+    }
+}
+
+/// How a process ended and everything it wrote.
+#[derive(Debug)]
+pub struct Finished {
+    /// The exit status.
+    pub status: ExitStatus,
+    /// Every stdout line, in order.
+    pub stdout: Vec<String>,
+    /// Every stderr line not read before the exit, in order.
+    pub stderr: Vec<String>,
 }
 
 impl Drop for PreviewProcess {
@@ -373,6 +450,17 @@ impl Drop for PreviewProcess {
             let errors: Vec<_> = self.stderr.try_iter().collect();
             panic!("site-preview exited before the test ended: {status}; stderr: {errors:?}");
         }
+    }
+}
+
+/// The URL a stdout line announces: the `ready` event's `url` in `--json` mode, the `Local:`
+/// line otherwise.
+fn announced_url(line: &str, json: bool) -> Option<String> {
+    if json {
+        let event: serde_json::Value = serde_json::from_str(line).ok()?;
+        (event["event"] == "ready").then(|| event["url"].as_str().map(str::to_owned))?
+    } else {
+        line.strip_prefix("Local:").map(|url| url.trim().to_owned())
     }
 }
 

@@ -19,6 +19,8 @@ use preview_application::{
     ChangeBatch, ChangeCoordinator, ChangeSource, Clock, Received, SourceFailure,
 };
 use preview_domain::{ChangeEvent, DegradeReason, DomainEvent, Tick};
+
+use crate::server::{DegradedReason, WatcherEvents, WatcherState};
 use tokio::runtime::{Handle, RuntimeFlavor};
 use tokio::sync::oneshot;
 use tokio::task::block_in_place;
@@ -116,12 +118,28 @@ pub(crate) fn warning_for(
     }
 }
 
+/// The watcher state change a domain event announces, if any. Pinned by
+/// `should_announce_state_change_once_when_watcher_degrades_and_recovers`.
+pub(crate) const fn watcher_state(event: &DomainEvent) -> Option<WatcherState> {
+    match event {
+        DomainEvent::WatcherDegraded { reason } => Some(WatcherState::Degraded(match reason {
+            DegradeReason::RegistrationFailed => DegradedReason::RegistrationFailed,
+            DegradeReason::RuntimeFailure => DegradedReason::RuntimeFailure,
+            DegradeReason::RevisionExhausted => DegradedReason::RevisionExhausted,
+        })),
+        DomainEvent::WatcherRecovered => Some(WatcherState::Watching),
+        DomainEvent::RevisionPublished(_) => None,
+    }
+}
+
 /// The pipeline's state: the source it drains, the coordinator it feeds and where warnings go.
 pub(crate) struct WatchPipeline<S, C> {
     source: S,
     coordinator: ChangeCoordinator,
     clock: C,
     warnings: Arc<dyn WarningSink>,
+    /// Told of every change of the watcher's state.
+    events: Arc<dyn WatcherEvents>,
     /// Whether a full reconcile ran since the last published revision, so a rescan the
     /// revision asks for is not repeated.
     reconciled_fully: bool,
@@ -139,12 +157,14 @@ impl<S: WatchControl, C: Clock> WatchPipeline<S, C> {
         coordinator: ChangeCoordinator,
         clock: C,
         warnings: Arc<dyn WarningSink>,
+        events: Arc<dyn WatcherEvents>,
     ) -> Self {
         Self {
             source,
             coordinator,
             clock,
             warnings,
+            events,
             reconciled_fully: false,
         }
     }
@@ -275,6 +295,9 @@ impl<S: WatchControl, C: Clock> WatchPipeline<S, C> {
             if let Some((code, message)) = warning_for(event, detail.as_deref()) {
                 self.warnings.warn(code, &message);
             }
+            if let Some(state) = watcher_state(event) {
+                self.events.changed(state);
+            }
         }
     }
 }
@@ -363,8 +386,18 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct States(Mutex<Vec<WatcherState>>);
+
+    impl WatcherEvents for States {
+        fn changed(&self, state: WatcherState) {
+            self.0.lock().expect("unpoisoned").push(state);
+        }
+    }
+
     struct Harness {
         handle: ScriptedHandle,
+        states: Arc<States>,
         reload: ReloadState,
         log: Arc<Mutex<Log>>,
         reads: Arc<AtomicUsize>,
@@ -404,11 +437,14 @@ mod tests {
             reads: Arc::clone(&reads),
         };
         let sink: Arc<dyn WarningSink> = warnings.clone();
-        let pipeline = WatchPipeline::new(source, coordinator, clock, sink);
+        let states = Arc::new(States::default());
+        let events: Arc<dyn WatcherEvents> = states.clone();
+        let pipeline = WatchPipeline::new(source, coordinator, clock, sink, events);
         let (cancel, cancelled) = oneshot::channel();
         let task = tokio::spawn(pipeline.run(cancelled));
         Harness {
             handle,
+            states,
             reload,
             log,
             reads,
@@ -425,6 +461,10 @@ mod tests {
 
         fn log<T>(&self, read: impl FnOnce(&Log) -> T) -> T {
             read(&self.log.lock().expect("unpoisoned"))
+        }
+
+        fn states(&self) -> Vec<WatcherState> {
+            self.states.0.lock().expect("unpoisoned").clone()
         }
 
         fn warnings(&self) -> Vec<(String, String)> {
@@ -622,6 +662,72 @@ mod tests {
     }
 
     #[test]
+    fn should_announce_state_change_once_when_watcher_degrades_and_recovers() {
+        paused().block_on(async {
+            // given: a reconcile that cannot watch a directory, then one that can
+            let h = start(None);
+            {
+                let mut log = h.log.lock().expect("unpoisoned");
+                log.answers.push_back(Reconciled {
+                    ready: None,
+                    problems: vec!["cannot watch directory `a`: permission denied".into()],
+                });
+                log.answers.push_back(Reconciled {
+                    ready: Some(2),
+                    problems: Vec::new(),
+                });
+            }
+
+            // when: the failure repeats while degraded, then the watch set completes
+            h.handle.fail(SourceFailure::RuntimeFailure);
+            h.handle.fail(SourceFailure::RuntimeFailure);
+            after(1).await;
+            let degraded = h.states();
+            h.handle.push(vec![event(ChangeKind::Create, "a")]);
+            after(WINDOW_MS + 1).await;
+            h.handle.push(vec![event(ChangeKind::Rename, "b")]);
+            after(WINDOW_MS + 1).await;
+
+            // then
+            assert_eq!(
+                degraded,
+                [WatcherState::Degraded(DegradedReason::RuntimeFailure)]
+            );
+            assert_eq!(
+                h.states(),
+                [
+                    WatcherState::Degraded(DegradedReason::RuntimeFailure),
+                    WatcherState::Watching
+                ]
+            );
+            h.stop().await;
+        });
+    }
+
+    #[test]
+    fn should_name_each_degraded_reason_with_a_stable_code_when_rendered() {
+        // given
+        let reasons = [
+            DegradedReason::RegistrationFailed,
+            DegradedReason::RuntimeFailure,
+            DegradedReason::RevisionExhausted,
+        ];
+
+        // when
+        let codes = reasons.map(DegradedReason::code);
+
+        // then
+        assert_eq!(
+            codes,
+            [
+                "registration-failed",
+                "runtime-failure",
+                "revision-exhausted"
+            ]
+        );
+    }
+
+    #[test]
     fn should_not_warn_again_when_registration_failure_is_delivered() {
         paused().block_on(async {
             // given
@@ -698,7 +804,13 @@ mod tests {
                 reload.clone(),
             );
             let sink: Arc<dyn WarningSink> = Arc::new(Recorder::default());
-            let pipeline = WatchPipeline::new(source, coordinator, TokioClock::start(), sink);
+            let pipeline = WatchPipeline::new(
+                source,
+                coordinator,
+                TokioClock::start(),
+                sink,
+                Arc::new(States::default()),
+            );
             let (cancel, cancelled) = oneshot::channel();
             let task = tokio::spawn(pipeline.run(cancelled));
             let mut published = reload.subscribe();

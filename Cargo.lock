@@ -963,6 +963,7 @@ dependencies = [
  "predicates",
  "preview-composition",
  "preview-testkit",
+ "serde_json",
  "tempfile",
 ]
 

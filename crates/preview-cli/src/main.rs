@@ -5,15 +5,18 @@ mod exit;
 mod output;
 
 use std::io;
-use std::process::ExitCode;
+use std::net::IpAddr;
+use std::process::{self, ExitCode};
 use std::sync::Arc;
 
 use clap::Parser;
-use preview_composition::{BindScope, ServeConfig, StartupError, StopSignal, Stopped};
+use preview_composition::{
+    BindScope, ServeConfig, StartupError, StartupReporter, StopSignal, Stopped,
+};
 
 use crate::args::{Cli, Command, ServeArgs};
 use crate::exit::Outcome;
-use crate::output::{HumanReport, StderrWarnings};
+use crate::output::{HumanReport, JsonReport, StderrWarnings};
 
 fn main() -> ExitCode {
     run().into()
@@ -49,29 +52,23 @@ fn config_from(args: ServeArgs) -> ServeConfig {
     config
 }
 
-/// Refuses a flag that does nothing yet, and a remote bind without `--allow-remote`, as usage
-/// errors (exit 2), then runs the server; the remote-binding warning is printed once the
-/// listener is bound. Every other start-up refusal (an invalid or reserved root, the runtime,
-/// the signal handlers, the bind) exits 1 with its message, which says what to do next. A
-/// second stop signal during the drain exits 128 plus its number.
+/// Refuses a remote bind without `--allow-remote` as a usage error (exit 2), then runs the
+/// server with the human report, or with the JSONL report under `--json`; the remote-binding
+/// warning is printed once the listener is bound. Every other start-up refusal (an invalid or
+/// reserved root, the runtime, the signal handlers, the bind) exits 1 with its message, which
+/// says what to do next, on stderr in both modes. A second stop signal during the drain exits
+/// 128 plus its number.
 fn serve(config: &ServeConfig) -> Outcome {
-    if let Some(flag) = unimplemented_flag(config) {
-        eprintln!(
-            "site-preview: error: {flag} is not implemented yet; run without it (the human \
-             output on stdout carries the URL on its `Local:` line)"
-        );
-        return Outcome::Usage;
-    }
-    let report = HumanReport::new(io::stdout(), io::stderr());
-    let report = match config.bind_scope() {
+    let remote = match config.bind_scope() {
         Err(refusal) => {
             eprintln!("site-preview: error: {refusal}");
             return Outcome::Usage;
         }
-        Ok(BindScope::Remote) => report.warn_remote(config.host),
-        Ok(BindScope::Loopback) => report,
+        Ok(BindScope::Remote) => Some(config.host),
+        Ok(BindScope::Loopback) => None,
     };
-    match preview_composition::run(config, Box::new(report), Arc::new(StderrWarnings)) {
+    let report = reporter(config.json, remote);
+    match preview_composition::run(config, report, Arc::new(StderrWarnings)) {
         Ok(Stopped::Drained | Stopped::DrainTimedOut) => Outcome::Success,
         Ok(Stopped::Forced(StopSignal::Interrupt)) => Outcome::Interrupted,
         Ok(Stopped::Forced(StopSignal::Terminate)) => Outcome::Terminated,
@@ -86,9 +83,19 @@ fn serve(config: &ServeConfig) -> Outcome {
     }
 }
 
-/// `--json` (CLI-06) is parsed but not wired yet. Accepting it would promise what the run does
-/// not do: an agent asking for JSON would read human text. Pinned by
-/// `should_exit_2_when_unimplemented_flag_given`.
-const fn unimplemented_flag(config: &ServeConfig) -> Option<&'static str> {
-    if config.json { Some("--json") } else { None }
+/// The reporter for the chosen output mode, warning about a remote bind (`remote`) once ready.
+fn reporter(json: bool, remote: Option<IpAddr>) -> Box<dyn StartupReporter> {
+    if json {
+        let report = JsonReport::new(io::stdout(), io::stderr(), process::id());
+        Box::new(match remote {
+            Some(host) => report.warn_remote(host),
+            None => report,
+        })
+    } else {
+        let report = HumanReport::new(io::stdout(), io::stderr());
+        Box::new(match remote {
+            Some(host) => report.warn_remote(host),
+            None => report,
+        })
+    }
 }

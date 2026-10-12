@@ -29,4 +29,7 @@ pub use launcher::{SystemOpener, UrlOpener};
 pub use lifecycle::Server;
 pub use preview_adapter_http::WarningSink;
 pub use preview_domain::{DebounceWindow, DebounceWindowError};
-pub use server::{Ready, StartupError, StartupReporter, WatchStatus, run};
+pub use server::{
+    DegradedReason, Ready, StartupError, StartupReporter, WatchStatus, WatcherEvents, WatcherState,
+    run,
+};
