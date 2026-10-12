@@ -3,7 +3,7 @@
 //! Whether a response is rewritten at all is the domain's [`preview_domain::injection`]
 //! decision. [`rewrite`] parses the page with `lol_html`, inserts a
 //! [`ScriptTag`] before the real `</body>` end tag (or at document end), refuses to add a second
-//! client script, and returns [`Rewrite::Failed`] rather than ever handing back corrupted HTML.
+//! client script (setting an existing one's snapshot attributes instead), and returns [`Rewrite::Failed`] rather than ever handing back corrupted HTML.
 //! The HTML response ties the decision, the encoding check (ADR 0022), the rewrite and the
 //! [`HtmlBudget`] for pages held in memory together (ADR 0046).
 
@@ -32,21 +32,33 @@ pub const CLIENT_SCRIPT_PATH: &str = "/__site_preview/client.js";
 /// regardless (pinned by `should_render_exact_tag_when_built_from_state` and
 /// `should_escape_attribute_value_when_value_holds_markup`).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ScriptTag(String);
+pub struct ScriptTag {
+    markup: String,
+    instance: String,
+    revision: String,
+}
 
 impl ScriptTag {
     /// The tag for `instance` at `revision`.
     #[must_use]
     pub fn new(instance: &InstanceId, revision: Revision) -> Self {
+        let mut escaped_instance = String::with_capacity(64);
+        push_escaped_attribute(&mut escaped_instance, instance.as_str());
+        let mut escaped_revision = String::with_capacity(20);
+        push_escaped_attribute(&mut escaped_revision, &revision.get().to_string());
         let mut markup = String::with_capacity(128);
         markup.push_str("<script defer src=\"");
         markup.push_str(CLIENT_SCRIPT_PATH);
         markup.push_str("\" data-instance=\"");
-        push_escaped_attribute(&mut markup, instance.as_str());
+        markup.push_str(&escaped_instance);
         markup.push_str("\" data-revision=\"");
-        push_escaped_attribute(&mut markup, &revision.get().to_string());
+        markup.push_str(&escaped_revision);
         markup.push_str("\"></script>");
-        Self(markup)
+        Self {
+            markup,
+            instance: escaped_instance,
+            revision: escaped_revision,
+        }
     }
 
     /// The tag for a snapshot of the site state.
@@ -58,7 +70,17 @@ impl ScriptTag {
     /// The markup to insert.
     #[must_use]
     pub fn as_str(&self) -> &str {
-        &self.0
+        &self.markup
+    }
+
+    /// The `data-instance` value, attribute-escaped.
+    pub(crate) fn instance_attribute(&self) -> &str {
+        &self.instance
+    }
+
+    /// The `data-revision` value, attribute-escaped.
+    pub(crate) fn revision_attribute(&self) -> &str {
+        &self.revision
     }
 }
 

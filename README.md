@@ -37,14 +37,16 @@ server keeps serving after each one. Page warnings are printed once per request 
 | `html-too-large` | An HTML page over 8 MiB is served unchanged, without live reload. |
 | `html-not-utf8` | An HTML page that is not UTF-8, or whose `<meta>` charset names another encoding, is served unchanged without live reload. |
 | `html-rewrite-failed` | The reload script could not be inserted safely; the page is served unchanged. |
-| `csp-blocks-live-reload` | The page's `<meta http-equiv="Content-Security-Policy">` would block the reload script or the reload connection (`script-src`, `connect-src` or their `default-src` fallback lacks `'self'`). The page is still served with the script and its policy untouched, but it will not live reload; edit the policy for development. Only a meta tag is checked; other violations show only in the browser console. |
+| `csp-blocks-live-reload` | The page's `<meta http-equiv="Content-Security-Policy">` would block the reload script or the reload connection: the governing `script-src` or `connect-src` (or their `default-src` fallback) allows none of `'self'`, `*`, `http:` or a host-source (an `https:`-only list warns, since this server speaks plain `http`; `'strict-dynamic'` makes a script list block). The page is still served with the script and its policy untouched, but it will not live reload; edit the policy for development. Only a meta tag is checked; other violations show only in the browser console. |
 
-## Security posture (planned)
+## Security posture
 
-- Binds to loopback (`127.0.0.1`) by default; non-loopback binds require `--allow-remote` and print a warning.
+- Binds to loopback (`127.0.0.1`) by default; a non-loopback bind requires `--allow-remote` and prints the `remote-binding` warning.
+- Every request passes a `Host` gate first (421 for a name that is not this server), which guards against DNS rebinding.
+- The reload stream (`/__site_preview/events`) refuses a foreign `Origin` or a cross-site `Sec-Fetch-Site` with 403; no CORS headers are sent and no route changes state.
 - Dotfiles and hidden directories are denied.
 - Symlinks beneath the site root are rejected.
-- `Host` header checks guard against DNS rebinding.
+- Source files are only read; the reload script is added to served responses, never to files on disk.
 - `--allow-remote` has no authentication; do not use it on untrusted networks.
 
 See [SECURITY.md](SECURITY.md) for scope and reporting, and [doc/security.md](doc/security.md) for the threat model and enforced rules.

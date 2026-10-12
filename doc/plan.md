@@ -242,7 +242,7 @@ Algorithm:
 2. When `Sec-Fetch-Dest` exists, inject only for `document` or `iframe`. If it is `empty`, do not modify an HTML response fetched by JS. For clients without Fetch Metadata headers, use a documented best-effort fallback; do not guarantee navigation/data distinction for very old clients.
 3. Bound rewrite input to **8 MiB**. Stream larger HTML unchanged and warn once per path; keep serving the page.
 4. Parse with `lol_html`. Insert the tag before the closing `body` tag, or at document end when absent. Never match `</body>` inside JavaScript, comments, attributes or text by naïve byte searching.
-5. If the exact preview client script is already present, do not insert a duplicate. Rewrite in memory only; never write back to source files.
+5. If the exact preview client script is already present, do not insert a duplicate; set its `data-instance` and `data-revision` to the current snapshot instead (a saved copy of a served page would otherwise reload forever; ADR 0043). Rewrite in memory only; never write back to source files.
 6. If rewriting fails or a document encoding cannot be handled safely, serve the original bytes without injection and report an actionable warning. Never serve corrupted HTML merely to achieve live reload.
 7. Compute `Content-Length` **after** rewriting (or use correct streaming framing); remove stale validators such as `ETag` when changing response bytes.
 8. Preserve existing CSP. Never insert permissive policy headers, rewrite `Content-Security-Policy`, or bypass integrity requirements. Warn if detectable policy restrictions block `script-src 'self'` or `connect-src 'self'`; document that some CSP violations are discoverable only in the browser console.
@@ -568,6 +568,7 @@ Do not add these “just in case.” In particular, do not invent HMR, bundling,
 ## 15. Known limitations / explicit policy choices
 
 - Files needing a restrictive CSP may preview correctly but **not live reload**; preserve security policy and warn.
+- Some pages are served intact but do not live reload, without a warning: a `</body>` inside SVG `<style>` text or an unclosed `<template>` (the script lands where it is inert), a frameset document (no body to run it in), and a page loaded as a `<frame>` (`Sec-Fetch-Dest: frame`, never injected).
 - The client is injected on document navigation, not all fetched HTML data. Old browsers lacking Fetch Metadata allow only best-effort classification.
 - All hidden file/directory components, including `.well-known`, are inaccessible in P0.
 - Symlinks anywhere beneath the site root are rejected, even if they point within the root.

@@ -32,6 +32,8 @@ permissive licences.
   tag inserted at one offset, and a second parse must see exactly one client `<script>`
   element. Either failure is `Rewrite::Failed`, so the caller serves the original bytes.
 - "Already present" is a `<script>` element whose `src` is exactly `/__site_preview/client.js`.
+  No second tag is added; each such tag's `data-instance` and `data-revision` are set to the
+  response's snapshot (amendment below).
 - `deny.toml` accepts MPL-2.0 through `[[licenses.exceptions]]` for exactly those four crates,
   not through the global `allow` list.
 
@@ -45,3 +47,14 @@ permissive licences.
   crates.io. Release packaging (OPS-05) must ship third-party licence notices that include
   them. Any other MPL-2.0 crate still fails `cargo deny`.
 - `lol_html` brings a second `syn` major into the lock file (a `multiple-versions` warning).
+
+## Amendments
+
+- **2026-10-12 (E2E-02 review).** A page that already holds the client tag, such as a served
+  page saved to disk, was sent unchanged. Its stale `data-instance` made the client reload,
+  the reload fetched the same bytes, and the browser looped. Each client tag now has its
+  `data-instance` and `data-revision` set to the snapshot (added when missing, left alone when
+  already equal), with `lol_html`'s `set_attribute`; only those start tags are re-serialized.
+  The result is verified like an insertion: a second parse must see the same number of client
+  tags, each with the snapshot, and the bytes outside them must equal the input's; otherwise
+  `Rewrite::Failed`.

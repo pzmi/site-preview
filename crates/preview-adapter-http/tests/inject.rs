@@ -318,6 +318,54 @@ async fn should_not_label_utf8_when_meta_names_shift_jis() {
 }
 
 #[tokio::test]
+async fn should_refresh_stale_client_tag_when_page_already_loads_client() {
+    // given: a served page saved to disk, its tag naming an earlier run and revision
+    let stale = "<script defer src=\"/__site_preview/client.js\" data-instance=\"startup-old\" \
+                 data-revision=\"9\"></script>";
+    let page = injected(PAGE, stale);
+    let server = Server::new(InMemorySite::new().with_file("saved.html", page.as_bytes()));
+    let current = server.tag(&server.reload.current());
+
+    // when
+    let head = server.send("HEAD", "/saved.html", Some("document")).await;
+    let response = server.send("GET", "/saved.html", Some("document")).await;
+
+    // then
+    let expected = injected(PAGE, &current);
+    let length = header(&response, "content-length").map(str::to_owned);
+    assert_eq!(header(&head, "content-length"), length.as_deref());
+    assert_eq!(length, Some(expected.len().to_string()));
+    assert_eq!(
+        String::from_utf8(body(response).await).expect("UTF-8"),
+        expected
+    );
+    assert_eq!(server.warnings.warnings(), []);
+    assert_eq!(server.source("/saved.html"), page.as_bytes());
+}
+
+#[tokio::test]
+async fn should_label_utf8_and_inject_when_bom_overrides_meta_charset() {
+    // given: a UTF-8 byte order mark wins over any <meta> declaration in a browser
+    let page = "\u{feff}<!doctype html><meta charset=windows-1252><body><p>caf\u{e9}</p></body>";
+    let server = Server::new(InMemorySite::new().with_file("bom.html", page.as_bytes()));
+    let tag = server.tag(&server.reload.current());
+
+    // when
+    let response = server.send("GET", "/bom.html", Some("document")).await;
+
+    // then
+    assert_eq!(
+        header(&response, "content-type"),
+        Some("text/html; charset=utf-8")
+    );
+    assert_eq!(
+        String::from_utf8(body(response).await).expect("UTF-8"),
+        injected(page, &tag)
+    );
+    assert_eq!(server.warnings.warnings(), []);
+}
+
+#[tokio::test]
 async fn should_serve_unchanged_and_warn_when_html_is_latin1() {
     // given
     let page = b"<!doctype html><body><p>caf\xe9</p></body>";

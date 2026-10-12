@@ -27,6 +27,12 @@ fn injected_tag(page: &str) -> Option<&str> {
     Some(&page[start..end])
 }
 
+/// The double-quoted value of attribute `name` in `tag`.
+fn attribute<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
+    let rest = tag.split(&format!(" {name}=\"")).nth(1)?;
+    rest.split('"').next()
+}
+
 fn warnings(lines: &[String], code: &str) -> Vec<String> {
     let prefix = format!("site-preview: warning[{code}]: ");
     lines
@@ -335,6 +341,42 @@ fn should_warn_once_and_keep_page_bytes_when_meta_csp_blocks_reload() {
         "once per path, none for a permissive page: {lines:?}"
     );
     assert!(found[0].contains("/locked.html"), "{found:?}");
+}
+
+#[test]
+fn should_serve_current_snapshot_when_page_holds_stale_client_tag() {
+    // given: a served page saved to disk, its tag naming a run that has ended
+    let site = Site::copy();
+    let stale = "<script defer src=\"/__site_preview/client.js\" data-instance=\"startup-old\" \
+                 data-revision=\"9\"></script>";
+    let page =
+        format!("<html><head><title>saved</title></head><body><p>x</p>{stale}</body></html>");
+    fs::write(site.path().join("saved.html"), &page).expect("a page");
+    let server = PreviewProcess::serve(&site);
+
+    // when
+    let text = server.request("GET", "/saved.html", &DOCUMENT).text();
+    let state = opened(server.events(&[])).baseline();
+
+    // then
+    assert_eq!(text.matches(CLIENT).count(), 1, "no second tag: {text}");
+    let tag = injected_tag(&text).expect("the client script element");
+    let revision = state.id.clone().expect("a revision id");
+    let expected = format!(
+        "{{\"instance_id\":\"{}\",\"revision\":{revision}}}",
+        attribute(tag, "data-instance").expect("a data-instance attribute")
+    );
+    assert_eq!(attribute(tag, "data-revision"), Some(revision.as_str()));
+    assert_eq!(state.data, [expected], "the tag names the live instance");
+    assert_eq!(
+        text.replacen(tag, "", 1),
+        page.replacen(stale, "", 1),
+        "only the tag changed"
+    );
+    assert_eq!(
+        fs::read_to_string(site.path().join("saved.html")).expect("the page"),
+        page
+    );
 }
 
 #[test]

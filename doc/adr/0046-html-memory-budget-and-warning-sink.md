@@ -20,7 +20,9 @@ format, once per path, but the HTTP adapter cannot name the CLI.
 - **Budget.** Every HTML response that holds a page in memory reserves twice the page size
   plus 64 KiB from one shared byte budget (a `tokio::sync::Semaphore` counted in KiB,
   `HtmlBudget`, 128 MiB by default) before reading it, and keeps the reservation until its
-  body has been sent or dropped. The body is sent in 64 KiB copies, so a connection's write
+  body has been sent or dropped. The reservation travels with the page into the blocking
+  read and rewrite and comes back with it, so a request dropped mid-rewrite (client gone,
+  connection cap, shutdown drain) releases it only when that blocking work ends. The body is sent in 64 KiB copies, so a connection's write
   buffer never pins the whole page after the reservation is released. A request that does
   not fit waits for a release; a single page larger than the whole budget takes all of it.
   Waiting was chosen over serving unchanged when the budget is spent: unchanged service would
@@ -41,7 +43,9 @@ format, once per path, but the HTTP adapter cannot name the CLI.
 
 ## Consequences
 
-- Peak memory for HTML buffers is the budget, independent of the number of connections.
+- Peak memory for HTML buffers is the budget, independent of the number of connections,
+  including requests abandoned while their page is still being read or rewritten (pinned by
+  `should_keep_reservation_until_blocking_work_ends_when_request_dropped`).
 - A HEAD of HTML reads the file, unlike any other HEAD.
 - Lane work that builds an `AppState` passes `injection: Injection::default()` in tests.
 - HTTP-08 adds `csp-blocks-live-reload` through the same sink and memo.

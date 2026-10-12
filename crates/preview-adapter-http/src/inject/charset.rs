@@ -26,14 +26,21 @@ impl Encoding {
 
 /// Classifies `html`.
 ///
-/// A declaration is the first `<meta charset>` element, or the first
+/// A UTF-8 byte order mark decides first, as it does in a browser (WHATWG encoding sniffing:
+/// the BOM wins over the transport label and every `<meta>`), so a valid UTF-8 page that
+/// starts with one is UTF-8 whatever it declares. Otherwise a declaration is the first
+/// `<meta charset>` element, or the first
 /// `<meta http-equiv="content-type" content="…; charset=…">`, anywhere in the document the
 /// tokenizer sees as markup (not in a comment or script text): a browser that finds one
 /// past its 1024-byte prescan still switches encoding when it reaches it, so the whole page
-/// is scanned. Pinned by `should_classify_encoding_when_meta_varies`.
+/// is scanned. Pinned by `should_classify_encoding_when_meta_varies` and
+/// `should_classify_as_utf8_when_bom_precedes_other_meta`.
 pub(crate) fn classify(html: &[u8]) -> Encoding {
     if std::str::from_utf8(html).is_err() {
         return Encoding::InvalidBytes;
+    }
+    if html.starts_with(UTF8_BOM) {
+        return Encoding::Utf8;
     }
     match declared_charset(html) {
         Declared::None => Encoding::Utf8,
@@ -41,6 +48,9 @@ pub(crate) fn classify(html: &[u8]) -> Encoding {
         Declared::Label(_) | Declared::Unreadable => Encoding::DeclaredOther,
     }
 }
+
+/// The UTF-8 encoding of U+FEFF.
+const UTF8_BOM: &[u8] = b"\xef\xbb\xbf";
 
 enum Declared {
     None,
@@ -162,6 +172,28 @@ mod tests {
             // then
             assert_eq!(encoding, expected, "{}", String::from_utf8_lossy(html));
         }
+    }
+
+    #[test]
+    fn should_classify_as_utf8_when_bom_precedes_other_meta() {
+        // given
+        let bom_then_other = b"\xef\xbb\xbf<meta charset=windows-1252><p>caf\xc3\xa9</p>";
+        let bom_mid_page = b"<meta charset=shift_jis>\xef\xbb\xbf<p>x</p>";
+        let bom_then_latin1 = b"\xef\xbb\xbf<p>caf\xe9</p>";
+
+        // when
+        let encodings = [bom_then_other, &bom_mid_page[..], &bom_then_latin1[..]].map(classify);
+
+        // then
+        // Only a leading BOM counts, and it never makes invalid bytes valid.
+        assert_eq!(
+            encodings,
+            [
+                Encoding::Utf8,
+                Encoding::DeclaredOther,
+                Encoding::InvalidBytes
+            ]
+        );
     }
 
     #[test]

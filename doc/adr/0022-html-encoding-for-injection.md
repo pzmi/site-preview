@@ -28,3 +28,7 @@ Label HTML `text/html; charset=utf-8` and make it eligible for injection only wh
   that names no UTF-8 label, or that cannot be read, disagrees. Pages over 8 MiB are not
   read ahead, so they are labeled plain `text/html` and warned `html-too-large` instead
   (ADR 0046).
+- **2026-10-12 (E2E-02 review).** A UTF-8 byte order mark at the start of the page decides
+  first, as in a browser (WHATWG encoding sniffing puts the BOM ahead of the transport label
+  and any `<meta>`): valid UTF-8 bytes after a BOM are labeled and injected whatever the
+  page's `<meta>` declares.

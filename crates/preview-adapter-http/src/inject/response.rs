@@ -84,6 +84,9 @@ pub(crate) struct HtmlRequest<'a> {
 ///   warned once per path (`html-too-large`) when a navigation GET would have been injected.
 /// - **Not UTF-8**, by its bytes or its `<meta>` declaration: sent unchanged as plain
 ///   `text/html` and warned once per path (`html-not-utf8`).
+/// - **Client already present** (a saved copy of a served page): no second tag; the existing
+///   tag's `data-instance` and `data-revision` are set to `snapshot`, so a stale copy cannot
+///   make the client reload on every load.
 /// - **CSP**: an injected page whose `<meta http-equiv="Content-Security-Policy">` would block
 ///   the client script or the reload connection is still injected, byte for byte as before, and
 ///   warned once per path (`csp-blocks-live-reload`); see [`super::csp`].
@@ -91,7 +94,10 @@ pub(crate) struct HtmlRequest<'a> {
 ///   (`html-rewrite-failed`).
 ///
 /// A page held in memory is charged to the [`HtmlBudget`] until its body is sent or
-/// dropped; a request that does not fit waits. The file is only ever read. A file that ends
+/// dropped, and never released before the blocking read and rewrite have ended, even when
+/// this future is dropped first (pinned by
+/// `should_keep_reservation_until_blocking_work_ends_when_request_dropped`); a request that
+/// does not fit waits. The file is only ever read. A file that ends
 /// before its open-time length answers 500, since no byte has been sent yet.
 ///
 /// Pinned by the tests in `tests/inject.rs`, among them
@@ -143,16 +149,20 @@ pub(crate) async fn html_response(
         return plain(StatusCode::INTERNAL_SERVER_ERROR);
     };
     let warnings = get.then(|| Arc::clone(&injection.warnings));
+    // The permit moves into the blocking task and comes back with the page: if this future is
+    // dropped (client gone, connection cap, drain) while the page is read or rewritten, the
+    // blocking task still holds both copies, so the reservation must stay with it until it
+    // ends (ADR 0046).
     let prepared = tokio::task::spawn_blocking(move || {
         let page = prepare(file, len, input, &snapshot)?;
         if let (Some(warnings), Some(path), Some((code, message))) = (warnings, path, &page.warning)
         {
             warnings.warn(code, &path, message);
         }
-        Ok::<_, io::Error>(page)
+        Ok::<_, io::Error>((page, permit))
     })
     .await;
-    let Ok(Ok(page)) = prepared else {
+    let Ok(Ok((page, permit))) = prepared else {
         return plain(StatusCode::INTERNAL_SERVER_ERROR);
     };
     let sent = page.bytes.len() as u64;
@@ -191,7 +201,9 @@ fn prepare(
                 (Rewrite::Injected(rewritten), policies) => {
                     (rewritten, detect(&policies).map(csp_warning))
                 }
-                (Rewrite::AlreadyPresent, policies) => (bytes, detect(&policies).map(csp_warning)),
+                (Rewrite::AlreadyPresent(refreshed), policies) => {
+                    (refreshed, detect(&policies).map(csp_warning))
+                }
                 (Rewrite::Failed(failure), _) => (
                     bytes,
                     Some((
@@ -262,7 +274,87 @@ fn html_with_headers(body: Body, utf8: bool, len: u64) -> Response {
 
 #[cfg(test)]
 mod tests {
+    use std::future::Future;
+    use std::sync::mpsc::{Receiver, Sender, channel};
+    use std::task::{Context, Waker};
+
+    use preview_domain::{InstanceId, Revision};
+
     use super::*;
+    use crate::inject::budget::HtmlBudget;
+
+    /// A page whose first read reports `entered` and then blocks until `release` is sent.
+    struct GatedPage {
+        bytes: io::Cursor<Vec<u8>>,
+        entered: Option<Sender<()>>,
+        release: Receiver<()>,
+    }
+
+    impl Read for GatedPage {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            if let Some(entered) = self.entered.take() {
+                entered.send(()).expect("test is waiting");
+                self.release.recv().expect("test releases the read");
+            }
+            self.bytes.read(buf)
+        }
+    }
+
+    impl ContentFile for GatedPage {
+        fn len(&self) -> u64 {
+            self.bytes.get_ref().len() as u64
+        }
+    }
+
+    #[tokio::test]
+    async fn should_keep_reservation_until_blocking_work_ends_when_request_dropped() {
+        // given
+        let budget = HtmlBudget::new(1024 * 1024);
+        let full = budget.available_bytes();
+        let injection = Injection::default().with_budget(budget.clone());
+        let (entered_tx, entered_rx) = channel();
+        let (release_tx, release_rx) = channel();
+        let page = GatedPage {
+            bytes: io::Cursor::new(b"<html><body><p>x</p></body></html>".to_vec()),
+            entered: Some(entered_tx),
+            release: release_rx,
+        };
+        let headers = HeaderMap::new();
+        let request = HtmlRequest {
+            method: &Method::GET,
+            headers: &headers,
+            raw_path: "/",
+        };
+        let snapshot = SiteState::new(
+            InstanceId::parse("startup-abc").expect("valid instance id"),
+            Revision::from(1),
+        );
+        let mut response = Box::pin(html_response(
+            &injection,
+            &request,
+            Box::new(page),
+            snapshot,
+        ));
+        let mut cx = Context::from_waker(Waker::noop());
+        assert!(response.as_mut().poll(&mut cx).is_pending());
+        entered_rx.recv().expect("the blocking read started");
+
+        // when
+        drop(response);
+        let while_blocked = budget.available_bytes();
+        release_tx.send(()).expect("the blocking read waits");
+        let after = budget.reserve(full).await;
+
+        // then
+        assert!(
+            while_blocked < full,
+            "the reservation must outlive a dropped request while the page is in memory"
+        );
+        assert!(
+            after.is_some(),
+            "the blocking task must release it when it ends"
+        );
+    }
 
     #[test]
     fn should_show_encoded_path_when_warning_names_page() {

@@ -13,9 +13,10 @@
 //!
 //! - Script: the first present of `script-src-elem`, `script-src`, `default-src` governs.
 //! - Connect: the first present of `connect-src`, `default-src` governs.
-//! - A list allows the request when it holds `'self'`, `*`, or `http:`/`https:`. `'none'`, an
-//!   empty list, and a list of only nonces, hashes, `'unsafe-*'` keywords or other schemes
-//!   (`data:`, `blob:`) do not: the injected tag has no nonce or hash. `'strict-dynamic'`
+//! - A list allows the request when it holds `'self'`, `*` or `http:`. `'none'`, an empty list,
+//!   and a list of only nonces, hashes, `'unsafe-*'` keywords or other schemes (`https:`,
+//!   `data:`, `blob:`) do not: the injected tag has no nonce or hash, and this server speaks
+//!   plain `http`, which an `https:` source never matches. `'strict-dynamic'`
 //!   makes a script list ignore `'self'`, so it blocks too.
 //! - A host-source (`example.com`, `http://127.0.0.1:8080`) may or may not match this server;
 //!   without knowing the origin it counts as allowing, so there is no warning (a false
@@ -116,7 +117,7 @@ fn allows_same_origin(sources: &[&str], script: bool) -> bool {
         return false;
     }
     lower.iter().any(|source| match source.as_str() {
-        "'self'" | "*" | "http:" | "https:" => true,
+        "'self'" | "*" | "http:" => true,
         keyword if keyword.starts_with('\'') => false,
         other => !other.ends_with(':'),
     })
@@ -182,7 +183,8 @@ mod tests {
             "script-src 'SELF' 'nonce-a'; default-src 'none'; connect-src 'self'",
             "img-src 'none'",
             "",
-            "script-src *; connect-src https:",
+            "script-src *; connect-src http:",
+            "default-src https://cdn.example.test 'self'",
             "default-src 'none'; script-src 'self'; connect-src 'self'",
         ];
 
@@ -191,6 +193,33 @@ mod tests {
 
         // then
         assert!(warnings.iter().all(Option::is_none), "{warnings:?}");
+    }
+
+    #[test]
+    fn should_warn_when_only_https_scheme_allowed() {
+        // given
+        // This server is plain http, so `https:` never matches it.
+        let default_https = "default-src https:";
+        let script_https = "script-src https: 'unsafe-inline'; connect-src 'self'";
+
+        // when
+        let (default, script) = (detect(&[default_https]), detect(&[script_https]));
+
+        // then
+        assert_eq!(
+            default,
+            Some(CspWarning {
+                script: Some("default-src"),
+                connect: Some("default-src")
+            })
+        );
+        assert_eq!(
+            script,
+            Some(CspWarning {
+                script: Some("script-src"),
+                connect: None
+            })
+        );
     }
 
     #[test]

@@ -107,7 +107,8 @@ pub struct InjectionInput {
     pub fetch_dest: Option<FetchDest>,
     /// The file size in bytes.
     pub size: u64,
-    /// The body is valid UTF-8 and any `<meta charset>` names UTF-8 (ADR 0022; see
+    /// The body is valid UTF-8 and either starts with a UTF-8 byte order mark or any
+    /// `<meta charset>` names UTF-8 (ADR 0022 and its amendments; see
     /// [`charset_label_is_utf8`]). Consulted last, after the size limit, so an adapter never
     /// needs to read an oversize body to fill it in.
     pub utf8_ok: bool,

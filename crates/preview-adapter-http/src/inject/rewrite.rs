@@ -9,10 +9,17 @@
 //! optional in HTML), the tag is appended at document end, where a browser places it in the
 //! body.
 //!
-//! Known limits, none of which corrupts the page: an unclosed `<template>` or a `</body>`
-//! inside SVG `<style>` text can still receive the tag, where it is inert (no live reload);
-//! "already present" means a `src` attribute that is exactly `/__site_preview/client.js` as
-//! written, so an entity-encoded `src` or one with a query string gets a second client.
+//! A page that already loads the client (a `<script>` whose `src` is exactly
+//! `/__site_preview/client.js` as written, say a saved copy of a served page) gets no second
+//! tag. Its stale `data-instance` and `data-revision` would make the client reload on every
+//! load, so each such tag has both attributes set to the snapshot (added when missing); only
+//! those start tags change, and every other byte is kept.
+//!
+//! Known limits, none of which corrupts the page (plan.md §15): an unclosed `<template>`, a
+//! `</body>` inside SVG `<style>` text, or a frameset document can receive the tag where it is
+//! inert, and a page loaded as a frame (`Sec-Fetch-Dest: frame`) is not injected at all, so
+//! none of these live reloads; an entity-encoded `src`, or one with a query string, is not
+//! recognized as the client and gets a second one.
 //!
 //! Safety net: the rewriter runs in `lol_html`'s strict mode, which refuses markup it cannot
 //! tokenize unambiguously without a full tree builder, and every result is checked before it
@@ -26,6 +33,7 @@
 
 use core::cell::{Cell, RefCell};
 use core::fmt;
+use core::ops::Range;
 use std::rc::Rc;
 
 use lol_html::errors::RewritingError;
@@ -41,8 +49,10 @@ use super::{CLIENT_SCRIPT_PATH, ScriptTag};
 pub enum Rewrite {
     /// The page with the script tag inserted once.
     Injected(Vec<u8>),
-    /// The page already loads `/__site_preview/client.js`; serve it unchanged.
-    AlreadyPresent,
+    /// The page already loads `/__site_preview/client.js`: no tag was added, and every client
+    /// tag's `data-instance` and `data-revision` now hold the snapshot (added when missing).
+    /// Byte for byte the page when they already did.
+    AlreadyPresent(Vec<u8>),
     /// The page could not be rewritten safely; serve it unchanged and warn.
     Failed(RewriteFailure),
 }
@@ -91,7 +101,8 @@ impl From<RewritingError> for RewriteFailure {
 /// `should_insert_before_real_body_end_when_script_contains_fake_body_tag`,
 /// `should_insert_before_body_end_when_comment_contains_fake_body_tag`,
 /// `should_insert_when_closing_tag_is_mixed_case`, `should_append_when_body_end_absent`,
-/// `should_not_duplicate_when_client_already_present` and
+/// `should_not_duplicate_when_client_already_present`,
+/// `should_refresh_snapshot_attributes_when_client_tag_is_stale` and
 /// `should_return_failed_when_parser_errors`. The caller bounds the input (8 MiB, HTTP-07)
 /// and has already decided that the page is UTF-8 HTML to inject.
 #[must_use]
@@ -115,7 +126,12 @@ fn rewrite_with_memory_limit(
 ) -> (Rewrite, Vec<String>) {
     let (inserted, policies) = match insert(html, tag, memory_limit) {
         Ok((Inserted::Output(output), policies)) => (output, policies),
-        Ok((Inserted::ClientPresent, policies)) => return (Rewrite::AlreadyPresent, policies),
+        Ok((Inserted::ClientPresent, policies)) => {
+            return match refresh(html, tag, memory_limit) {
+                Ok(refreshed) => (Rewrite::AlreadyPresent(refreshed), policies),
+                Err(failure) => (Rewrite::Failed(failure), Vec::new()),
+            };
+        }
         Err(failure) => return (Rewrite::Failed(failure), Vec::new()),
     };
     if !is_single_insertion(html, &inserted, tag.as_str().as_bytes()) {
@@ -124,7 +140,7 @@ fn rewrite_with_memory_limit(
             Vec::new(),
         );
     }
-    match count_client_scripts(&inserted, memory_limit) {
+    match client_tags(&inserted, memory_limit).map(|tags| tags.len()) {
         Ok(1) => (Rewrite::Injected(inserted), policies),
         Ok(_) => (Rewrite::Failed(RewriteFailure::NotAnElement), Vec::new()),
         Err(failure) => (Rewrite::Failed(failure), Vec::new()),
@@ -247,20 +263,99 @@ fn is_single_insertion(input: &[u8], output: &[u8], tag: &[u8]) -> bool {
     lowest <= highest && (lowest..=highest).any(|k| output.get(k..k + tag.len()) == Some(tag))
 }
 
-/// How many `<script>` elements loading the client the tokenizer sees in `html`.
-fn count_client_scripts(html: &[u8], memory_limit: usize) -> Result<usize, RewriteFailure> {
-    let count = Cell::new(0_usize);
+/// The attribute names carrying the snapshot (plan.md §6).
+const DATA_INSTANCE: &str = "data-instance";
+const DATA_REVISION: &str = "data-revision";
+
+/// A `<script>` start tag loading the client, as the tokenizer saw it.
+struct ClientTag {
+    /// The start tag's bytes in the parsed document.
+    range: Range<usize>,
+    instance: Option<String>,
+    revision: Option<String>,
+}
+
+/// The `<script>` elements loading the client that the tokenizer sees in `html`.
+fn client_tags(html: &[u8], memory_limit: usize) -> Result<Vec<ClientTag>, RewriteFailure> {
+    let tags = RefCell::new(Vec::new());
     let settings =
         settings_base(memory_limit).append_element_content_handler(element!("script[src]", |el| {
             if is_client_script(el) {
-                count.set(count.get() + 1);
+                tags.borrow_mut().push(ClientTag {
+                    range: el.source_location().bytes(),
+                    instance: el.get_attribute(DATA_INSTANCE),
+                    revision: el.get_attribute(DATA_REVISION),
+                });
             }
             Ok(())
         }));
     let mut parser = HtmlRewriter::new(settings, |_: &[u8]| {});
     parser.write(html)?;
     parser.end()?;
-    Ok(count.get())
+    Ok(tags.take())
+}
+
+/// `html`, which already loads the client, with every client tag's snapshot attributes set
+/// to `tag`'s values.
+///
+/// Only an attribute that differs is set, so `lol_html` re-serializes just those start tags
+/// (other attributes keep their raw bytes). Checked like an insertion: a second parse must see
+/// the same number of client tags, each carrying the snapshot, and the bytes between and
+/// around them must equal the input's.
+fn refresh(html: &[u8], tag: &ScriptTag, memory_limit: usize) -> Result<Vec<u8>, RewriteFailure> {
+    let instance = tag.instance_attribute();
+    let revision = tag.revision_attribute();
+    let ranges = RefCell::new(Vec::new());
+    let mut output = Vec::with_capacity(html.len() + 2 * tag.as_str().len());
+    let settings =
+        settings_base(memory_limit).append_element_content_handler(element!("script[src]", |el| {
+            if !is_client_script(el) {
+                return Ok(());
+            }
+            ranges.borrow_mut().push(el.source_location().bytes());
+            for (name, value) in [(DATA_INSTANCE, instance), (DATA_REVISION, revision)] {
+                if el.get_attribute(name).as_deref() != Some(value) {
+                    el.set_attribute(name, value)?;
+                }
+            }
+            Ok(())
+        }));
+    let mut rewriter = HtmlRewriter::new(settings, |chunk: &[u8]| {
+        output.extend_from_slice(chunk);
+    });
+    rewriter.write(html)?;
+    rewriter.end()?;
+
+    let before = ranges.take();
+    let after = client_tags(&output, memory_limit)?;
+    let refreshed = !before.is_empty()
+        && after.len() == before.len()
+        && after.iter().all(|found| {
+            found.instance.as_deref() == Some(instance)
+                && found.revision.as_deref() == Some(revision)
+        });
+    let after_ranges: Vec<Range<usize>> = after.into_iter().map(|found| found.range).collect();
+    let unchanged_elsewhere = matches!(
+        (outside(html, &before), outside(&output, &after_ranges)),
+        (Some(input), Some(rewritten)) if input == rewritten
+    );
+    if !refreshed || !unchanged_elsewhere {
+        return Err(RewriteFailure::UnexpectedOutput);
+    }
+    Ok(output)
+}
+
+/// The bytes of `html` before, between and after the ordered, disjoint `ranges`; `None` when a
+/// range is out of order or out of bounds.
+fn outside<'a>(html: &'a [u8], ranges: &[Range<usize>]) -> Option<Vec<&'a [u8]>> {
+    let mut parts = Vec::with_capacity(ranges.len() + 1);
+    let mut from = 0;
+    for range in ranges {
+        parts.push(html.get(from..range.start)?);
+        from = range.end;
+    }
+    parts.push(html.get(from..)?);
+    Some(parts)
 }
 
 #[cfg(test)]
@@ -432,23 +527,74 @@ mod tests {
         assert_eq!(output, expected_before(html, "</html>"));
     }
 
+    fn already_present(html: &str) -> String {
+        match rewrite(html.as_bytes(), &tag()) {
+            Rewrite::AlreadyPresent(bytes) => String::from_utf8(bytes).expect("output stays UTF-8"),
+            other => panic!("expected AlreadyPresent for {html:?}, got {other:?}"),
+        }
+    }
+
     #[test]
     fn should_not_duplicate_when_client_already_present() {
         // given
         let cases = [
-            "<html><body><script src=\"/__site_preview/client.js\"></script></body></html>",
-            "<html><head><script defer src='/__site_preview/client.js' data-revision=\"1\">\
-             </script></head><body></body></html>",
-            "<html><body></body></html><SCRIPT SRC=/__site_preview/client.js></SCRIPT>",
+            (
+                "<html><body><script src=\"/__site_preview/client.js\"></script></body></html>",
+                "<html><body><script src=\"/__site_preview/client.js\" \
+                 data-instance=\"startup-abc\" data-revision=\"42\"></script></body></html>",
+            ),
+            (
+                "<html><head><script defer src='/__site_preview/client.js' data-revision=\"1\">\
+                 </script></head><body></body></html>",
+                "<html><head><script defer src='/__site_preview/client.js' data-revision=\"42\" \
+                 data-instance=\"startup-abc\"></script></head><body></body></html>",
+            ),
+            (
+                "<html><body></body></html><SCRIPT SRC=/__site_preview/client.js></SCRIPT>",
+                "<html><body></body></html><SCRIPT SRC=/__site_preview/client.js \
+                 data-instance=\"startup-abc\" data-revision=\"42\"></SCRIPT>",
+            ),
         ];
 
-        for html in cases {
+        for (html, expected) in cases {
             // when
-            let outcome = rewrite(html.as_bytes(), &tag());
+            let output = already_present(html);
 
             // then
-            assert_eq!(outcome, Rewrite::AlreadyPresent, "input {html:?}");
+            assert_eq!(output, expected, "input {html:?}");
+            assert_eq!(output.matches(CLIENT_SCRIPT_PATH).count(), 1);
         }
+    }
+
+    #[test]
+    fn should_refresh_snapshot_attributes_when_client_tag_is_stale() {
+        // given
+        // A served page saved to disk: its tag names an earlier run and revision.
+        let before = "<!doctype html>\r\n<html><body><p>caf\u{e9}</p>\n";
+        let after = "\n</body></html>\n";
+        let stale = format!(
+            "{before}<script defer src=\"/__site_preview/client.js\" \
+             data-instance=\"startup-old\"\n  data-revision=\"7\"></script>{after}"
+        );
+        let current = format!("{before}{}{after}", tag().as_str());
+        let twice =
+            format!("{stale}<script src=\"/__site_preview/client.js\" data-revision=7></script>");
+
+        // when
+        let refreshed = already_present(&stale);
+        let unchanged = already_present(&current);
+        let both = already_present(&twice);
+
+        // then
+        assert_eq!(refreshed, current);
+        assert_eq!(unchanged, current, "a current tag must keep its bytes");
+        assert_eq!(
+            both,
+            format!(
+                "{current}<script src=\"/__site_preview/client.js\" data-revision=\"42\" \
+                 data-instance=\"startup-abc\"></script>"
+            )
+        );
     }
 
     #[test]
