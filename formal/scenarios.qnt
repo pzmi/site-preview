@@ -393,3 +393,293 @@ module reloadScenarios {
         page.trigger == at(1, 2),
       })
 }
+
+/// The watcher pipeline (`watcher.qnt`, FORMAL-02): the runs FORMAL-06 exports to
+/// `formal/traces/regression/` and replays against the real `ChangeCoordinator`.
+module watcherScenarios {
+  import watcher.* from "./watcher"
+
+  /// A burst of edits to one stylesheet, a duplicate notification and an edit of the page,
+  /// received in two batches within the window: one revision, a full one (the page is a
+  /// document), and nothing more once the deadline has passed.
+  run burstOneReload =
+    initWith(false)
+      .then(modify(Css))
+      .then(modify(Css))
+      .then(duplicate(0))
+      .expect(allInvariants and src.queue.length() == 3)
+      .then(receive(1, false))
+      .expect(allInvariants and deb.dirty and deb.deadline == WINDOW and ghost.cycles == 1)
+      .then(tick)
+      .then(modify(Index))
+      .then(receive(4, false))
+      .expect(and {
+        allInvariants,
+        last.recorded == 3,
+        deb.deadline == 1 + WINDOW,
+        deb.paths == Set(Css, Index),
+        deb.full,
+        ghost.cycles == 1,
+        not(due(deb, now)),
+      })
+      .then(tick)
+      .then(tick)
+      .expect(allInvariants and due(deb, now) and revision == 0)
+      .then(settle(false))
+      .expect(and {
+        allInvariants,
+        revision == 1,
+        last.fired,
+        last.firedFull,
+        deb == CLEAN,
+        ghost.pending == Set(),
+        settled,
+      })
+      .then(tick)
+      .then(tick)
+      .expect(allInvariants and revision == 1 and not(deb.dirty))
+
+  /// Git and editor swap-file churn is received and dropped: the debouncer stays clean and no
+  /// revision is ever published.
+  run gitOnlyNoReload =
+    initWith(false)
+      .then(gitChange(true))
+      .then(gitChange(true))
+      .then(tempWrite)
+      .then(gitChange(false))
+      .expect(allInvariants and src.queue.length() == 3)
+      .then(receive(4, false))
+      .expect(and {
+        allInvariants,
+        last.ineligibleOnly,
+        last.recorded == 0,
+        deb == CLEAN,
+        settled,
+      })
+      .then(tick)
+      .then(tick)
+      .then(tick)
+      .expect(allInvariants and revision == 0 and not(due(deb, now)) and ghost.cycles == 0)
+
+  /// Atomic saves: the temporary file's create, write and rename are dropped, the rename onto
+  /// the target is recorded (and asks for a reconcile, since a rename may move a directory).
+  /// The page reloads in full; the stylesheet is swapped in place.
+  run atomicSave =
+    initWith(false)
+      .then(saveAtomically(Index))
+      .expect(allInvariants and src.queue.length() == 4)
+      .then(receive(4, false))
+      .expect(and {
+        allInvariants,
+        last.recorded == 1,
+        last.needsReconcile,
+        deb.paths == Set(Index),
+        deb.full,
+        not(deb.rescan),
+      })
+      .then(tick)
+      .then(tick)
+      .then(settle(false))
+      .expect(allInvariants and revision == 1 and last.firedFull and settled and ghost.pending == Set())
+      .then(saveAtomically(Css))
+      .then(receive(4, false))
+      .then(tick)
+      .then(tick)
+      .then(settle(false))
+      .expect(and {
+        allInvariants,
+        revision == 2,
+        not(last.firedFull),
+        last.firedPaths == Set(Css),
+        settled,
+        ghost.pending == Set(),
+      })
+
+  /// Losses: the OS drops a notification (its queue overflowed), then the channel fills. Each
+  /// loss is reported as `Overflow` before the changes queued after it, is a full rescan and
+  /// reconcile, and settles in one full revision that covers the lost change.
+  run overflowRescan =
+    initWith(false)
+      .then(kernelQueue(true))
+      .then(modify(Css))
+      .expect(allInvariants and src.overflow and src.queue == [])
+      .then(kernelQueue(false))
+      .then(modify(Index))
+      .then(receive(4, false))
+      .expect(and {
+        allInvariants,
+        last.recorded == 0,
+        deb.rescan,
+        deb.full,
+        reconciledFully,
+        src.queue.length() == 1,
+      })
+      .then(receive(4, false))
+      .then(tick)
+      .then(tick)
+      .then(settle(false))
+      .expect(and {
+        allInvariants,
+        revision == 1,
+        last.firedRescan,
+        last.firedFull,
+        last.fullDone,
+        not(reconciledFully),
+        settled,
+        ghost.pending == Set(),
+      })
+      // Five notifications into a channel of four.
+      .then(modify(Css))
+      .then(modify(Css))
+      .then(modify(Sub))
+      .then(modify(Index))
+      .then(modify(Css))
+      .expect(allInvariants and src.queue.length() == CAP and src.overflow)
+      .then(receive(4, false))
+      .expect(allInvariants and deb.rescan and last.recorded == 0)
+      .then(receive(4, false))
+      .expect(allInvariants and last.recorded == 4 and src.queue == [] and ghost.cycles == 2)
+      .then(tick)
+      .then(tick)
+      .then(settle(false))
+      .expect(allInvariants and revision == 2 and last.firedFull and settled and ghost.pending == Set())
+
+  /// `d` is deleted (one revision), then created again; a file written in the new `d` before
+  /// its watch exists is not notified, but the directory change's full revision covers it. Once the reconcile
+  /// has watched the new `d`, its edits are notified again and swapped in place.
+  run dirRecreate =
+    initWith(false)
+      .then(dirDelete)
+      .expect(allInvariants and src.watched == Set(Root) and src.queue.length() == 2)
+      .then(receive(4, false))
+      .expect(allInvariants and last.needsReconcile and deb.full and src.outstanding == Set())
+      .then(tick)
+      .then(tick)
+      .then(settle(false))
+      .expect(allInvariants and revision == 1 and settled and ghost.pending == Set())
+      .then(dirCreate(false))
+      .then(createFile(Sub))
+      .expect(allInvariants and src.queue.length() == 1 and ghost.pending == Set(Sub))
+      .then(receive(4, false))
+      .expect(allInvariants and src.watched == Set(Root, DirD) and health == HWatching)
+      .then(tick)
+      .then(tick)
+      .then(settle(false))
+      .expect(allInvariants and revision == 2 and last.firedFull and settled and ghost.pending == Set())
+      .then(modify(Sub))
+      .expect(allInvariants and src.queue.length() == 1)
+      .then(receive(4, false))
+      .then(tick)
+      .then(tick)
+      .then(settle(false))
+      .expect(and {
+        allInvariants,
+        revision == 3,
+        not(last.firedFull),
+        last.firedPaths == Set(Sub),
+        settled,
+        ghost.pending == Set(),
+      })
+
+  /// A new `d` cannot be watched (the watch limit): the watcher degrades once, a change in `d`
+  /// is unseen (excused, never silent), and when a watch is freed the next reconcile watches
+  /// `d` and recovers once. The unseen change is not caught up by the next revision, which
+  /// carries only its own path (ADR 0054, Consequences).
+  run recoveryAfterWatchLimit =
+    initWith(false)
+      .then(dirDelete)
+      .then(receive(4, false))
+      .then(dirCreate(true))
+      .then(receive(4, false))
+      .expect(and {
+        allInvariants,
+        health == HDegraded(RegistrationFailed),
+        last.events == [EvDegraded(RegistrationFailed)],
+        src.outstanding == Set(DirD),
+      })
+      .then(tick)
+      .then(tick)
+      .then(settle(false))
+      .then(createFile(Sub))
+      .expect(allInvariants and ghost.excused == Set(Sub) and src.queue == [])
+      .then(freeWatch)
+      .then(createFile(Css2))
+      .then(receive(4, false))
+      .expect(and {
+        allInvariants,
+        health == HWatching,
+        last.events == [EvRecovered],
+        src.watched == Set(Root, DirD),
+      })
+      .then(tick)
+      .then(tick)
+      .then(settle(false))
+      .expect(and {
+        allInvariants,
+        revision == 2,
+        last.firedPaths == Set(Css2),
+        not(last.firedFull),
+        settled,
+        ghost.pending == Set(Sub),
+        reachesRecoveredWithStaleChange,
+      })
+
+  /// Runtime failures degrade once and report once; a further failure is absorbed; the next
+  /// complete reconcile recovers, once.
+  run runtimeFailureDegrades =
+    initWith(false)
+      .then(runtimeFailure)
+      .then(receive(1, false))
+      .expect(allInvariants and health == HDegraded(RuntimeFailure) and last.events == [EvDegraded(RuntimeFailure)])
+      .then(runtimeFailure)
+      .then(receive(1, false))
+      .expect(allInvariants and health == HDegraded(RuntimeFailure) and last.events == [])
+      .then(createFile(Css2))
+      .then(receive(4, false))
+      .expect(allInvariants and health == HWatching and last.events == [EvRecovered])
+      .expect(ghost.degradedEvents == 1 and ghost.recoveredEvents == 1)
+
+  /// Start-up with `d` unwatchable: `Starting`, then the queued registration failure
+  /// degrades; an overflow's full reconcile retries `d` once a watch is free and recovers.
+  run startupRegistrationFailure =
+    initWith(true)
+      .expect(allInvariants and health == HStarting and src.outstanding == Set(DirD))
+      .then(receive(1, false))
+      .expect(allInvariants and health == HDegraded(RegistrationFailed))
+      .then(freeWatch)
+      .then(kernelQueue(true))
+      .then(modify(Index))
+      .then(receive(1, false))
+      .expect(allInvariants and health == HWatching and src.outstanding == Set() and deb.rescan)
+
+  /// The root is deleted: every removal and the root's own, more than the channel holds, so
+  /// a loss too. One full revision covers it all. The root recreated at the same path is not
+  /// the served one and is never notified.
+  run rootDeleteRecreate =
+    initWith(false)
+      .then(rootDelete)
+      .expect(allInvariants and src.overflow and src.queue.length() == CAP and src.watched == Set())
+      .then(receive(4, false))
+      .then(receive(4, false))
+      .then(rootRecreate)
+      .then(tick)
+      .then(tick)
+      .then(settle(false))
+      .expect(and {
+        allInvariants,
+        revision == 1,
+        last.firedFull,
+        settled,
+        ghost.pending == Set(),
+      })
+
+  /// Shutdown drops a pending change with the task: nothing fires afterwards.
+  run shutdownDropsPending =
+    initWith(false)
+      .then(modify(Css))
+      .then(receive(1, false))
+      .then(shutdown)
+      .then(tick)
+      .then(tick)
+      .expect(allInvariants and cancelled and revision == 0 and src.queue == [])
+}

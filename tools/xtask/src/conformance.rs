@@ -36,7 +36,7 @@ pub struct Model {
     pub steps: &'static [&'static str],
 }
 
-/// The models `formal-simulate` runs. FORMAL-02 and FORMAL-03 add `watcher` and `reload`.
+/// The models `formal-simulate` runs.
 pub const MODELS: &[Model] = &[
     Model {
         file: "lifecycle.qnt",
@@ -44,6 +44,10 @@ pub const MODELS: &[Model] = &[
     },
     Model {
         file: "reload.qnt",
+        steps: &["step"],
+    },
+    Model {
+        file: "watcher.qnt",
         steps: &["step"],
     },
 ];
@@ -639,6 +643,52 @@ mod tests {
         }
         assert!(text.contains("temporal reconnectObservesNewer ="));
         assert!(MODELS.iter().any(|m| m.file == "reload.qnt"));
+    }
+
+    #[test]
+    fn should_check_the_task_invariants_when_watcher_is_simulated() {
+        // given
+        let text = std::fs::read_to_string(formal_dir().join("watcher.qnt")).expect("model");
+
+        // when
+        let invariants = all_invariants(&text).expect("allInvariants block");
+
+        // then
+        assert!(MODELS.iter().any(|m| m.file == "watcher.qnt"));
+        for name in [
+            "onlyEligibleTriggerReload",
+            "noLostEligibleChange",
+            "boundedReloadsPerBurst",
+            "failureIsExplicit",
+        ] {
+            assert!(invariants.iter().any(|i| i == name), "{name} missing");
+            assert!(text.contains(&format!("val {name} =")), "{name} undefined");
+        }
+    }
+
+    #[test]
+    fn should_list_the_watcher_scenarios_when_the_file_is_parsed() {
+        // given
+        let text = std::fs::read_to_string(formal_dir().join(SCENARIOS)).expect("scenarios");
+
+        // when
+        let modules = scenario_runs(&text).expect("parsed");
+
+        // then
+        let watcher = &modules
+            .iter()
+            .find(|(m, _)| m == "watcherScenarios")
+            .expect("watcherScenarios")
+            .1;
+        for name in [
+            "burstOneReload",
+            "gitOnlyNoReload",
+            "atomicSave",
+            "overflowRescan",
+            "dirRecreate",
+        ] {
+            assert!(watcher.iter().any(|r| r == name), "{name} missing");
+        }
     }
 
     #[test]
