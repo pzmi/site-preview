@@ -18,3 +18,7 @@ preview-testkit = { path = "../preview-testkit" }
 preview-adapter-fs = { path = "../preview-adapter-fs" }
 preview-adapter-http = { path = "../preview-adapter-http" }
 serde_json = { version = "1.0.152", default-features = false, features = ["std"] }
+preview-composition = { path = "../preview-composition" }
+
+[dev-dependencies]
+tempfile = "3.27.0"

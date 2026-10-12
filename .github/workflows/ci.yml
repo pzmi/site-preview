@@ -54,5 +54,10 @@ jobs:
         working-directory: tests/e2e/browser
         run: npm ci && npx playwright install --with-deps chromium
 
+      # The lifecycle conformance test generates seeded traces with the locked Quint
+      # (FORMAL-05); npx never fetches it (ADR 0052).
+      - name: Install Quint for the conformance tests
+        run: npm ci --prefix formal
+
       - name: Full gate
         run: cargo xtask check

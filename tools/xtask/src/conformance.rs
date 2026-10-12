@@ -40,7 +40,7 @@ pub struct Model {
 pub const MODELS: &[Model] = &[
     Model {
         file: "lifecycle.qnt",
-        steps: &["step", "serverStep"],
+        steps: &["step", "serverStep", "serverStepMostlyBound"],
     },
     Model {
         file: "reload.qnt",

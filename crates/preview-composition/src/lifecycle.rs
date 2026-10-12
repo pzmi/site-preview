@@ -87,6 +87,9 @@ const DRAIN_NOTICE_GRACE: Duration = Duration::from_millis(500);
 /// Why nothing could be watched when the watcher panicked while starting.
 const WATCHER_PANICKED: &str = "the file watcher failed while starting";
 
+/// Why nothing is watched under [`Server::start_with_unavailable_watcher`].
+const WATCHER_REPORTED_UNAVAILABLE: &str = "the file watcher was reported unavailable";
+
 /// What the serve task hands back: how the drain ended, and the stop channel, so a second
 /// signal while the other tasks are joined still stops at once.
 type ServeOutcome = (Stopped, mpsc::UnboundedReceiver<StopSignal>);
@@ -200,10 +203,52 @@ impl Server {
         Ok(server)
     }
 
+    /// [`Server::start`] with the native watcher reported as unable to watch anything, as when
+    /// the operating system refuses it: the watcher is created, closed and never piped, and
+    /// the server serves degraded (`WatcherFailed`).
+    ///
+    /// A seam for the lifecycle conformance driver, which needs a watcher failure without a
+    /// test-only watcher type (FORMAL-05, ADR 0056); not part of the supported API. Pinned by
+    /// `should_serve_degraded_and_release_tasks_when_native_watcher_reported_unavailable`.
+    ///
+    /// # Errors
+    ///
+    /// As [`Server::start`].
+    #[doc(hidden)]
+    pub fn start_with_unavailable_watcher(
+        config: &ServeConfig,
+        reporter: Box<dyn StartupReporter>,
+        warnings: Arc<dyn WarningSink>,
+    ) -> Result<Self, StartupError> {
+        Self::start_with(
+            config,
+            reporter,
+            warnings,
+            |root: &OpenedRoot| {
+                let (watch, mut start) = crate::bootstrap::start_watcher(root);
+                start.unavailable = Some(WATCHER_REPORTED_UNAVAILABLE.to_owned());
+                (watch, start)
+            },
+            Signals::Ignore,
+            &SystemOpener,
+        )
+    }
+
     /// The lifecycle state, for conformance and tests.
     #[must_use]
     pub const fn state(&self) -> LifecycleState {
         self.lifecycle.state()
+    }
+
+    /// Whether the server still owns a task it has not joined: the serve task, the watcher
+    /// pipeline or the signal forwarder. True from `AnnounceReady` until `JoinTasks` takes
+    /// them; the lifecycle conformance driver observes it as the model's `tasksAlive`
+    /// (FORMAL-05, ADR 0056). Not part of the supported API. Pinned by
+    /// `should_serve_degraded_and_release_tasks_when_native_watcher_reported_unavailable`.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn owns_tasks(&self) -> bool {
+        self.serve.is_some() || self.pipeline.is_some() || self.forwarder.is_some()
     }
 
     /// The address the listener is bound to (the operating system's choice for port 0).
@@ -1068,6 +1113,41 @@ mod tests {
         );
         assert_eq!(reports.recorded(), ["ready Watching { dirs: 1 }"]);
         drop(server);
+    }
+
+    #[test]
+    fn should_serve_degraded_and_release_tasks_when_native_watcher_reported_unavailable() {
+        // given
+        let root = site();
+        let reports = Reports::default();
+        let warnings = Arc::new(Warnings::default());
+        let config = ServeConfig::new(root.path().to_path_buf());
+
+        // when
+        let mut server = Server::start_with_unavailable_watcher(
+            &config,
+            Box::new(reports.clone()),
+            Arc::clone(&warnings) as Arc<dyn WarningSink>,
+        )
+        .expect("a watcher failure is degraded mode");
+
+        // then: degraded serving, owning the serve task until the stop joins it
+        assert_eq!(server.state(), LifecycleState::Serving { watcher: false });
+        assert!(server.owns_tasks());
+        assert_eq!(get_status(server.local_addr()), 200);
+        assert_eq!(
+            warnings.recorded(),
+            [(
+                "watch-unavailable".to_owned(),
+                format!(
+                    "file watching is unavailable: {WATCHER_REPORTED_UNAVAILABLE}; live reload \
+                     is disabled, pages are still served"
+                )
+            )]
+        );
+        assert_eq!(server.stop(), Stopped::Drained);
+        assert_eq!(server.state(), LifecycleState::Stopped);
+        assert!(!server.owns_tasks());
     }
 
     /// An open `GET /__site_preview/events` on `addr`, read up to the end of the response

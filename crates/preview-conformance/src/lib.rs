@@ -7,10 +7,15 @@
 //!   over the real code and compares its observation with the model's projected state after
 //!   every step;
 //! - [`report`] formats a [`Divergence`]: model, seed, trace, step, action, expected, actual
-//!   and a line diff.
+//!   and a line diff;
+//! - [`drivers`] holds one driver per model over the real code (the lifecycle driver drives
+//!   the composition's `Server`, FORMAL-05);
+//! - [`generate`] writes seeded random traces with the locked Quint at test time.
 //!
 //! Production crates never depend on this crate (`architecture.toml`, `test_only`).
 
+pub mod drivers;
+pub mod generate;
 pub mod itf;
 pub mod replay;
 pub mod report;

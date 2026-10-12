@@ -22,7 +22,9 @@
  *   meet a start-up step in flight, and the `Stopping(Await*)` states are unreachable here
  *   (ADR 0051, Consequences). A refusal before `Start` (bind scope, root, runtime) is
  *   `refuseStart`: the machine stays `Stopped` and nothing is held. FORMAL-05 replays
- *   `serverStep` traces against the real `Server`, observing `Server::state()`.
+ *   `serverStep` traces against the real `Server`, observing `Server::state()`; its
+ *   generated traces come from `serverStepMostlyBound`, the same transitions with fewer
+ *   bind failures sampled, and its named ones from `lifecycle_traces.qnt`.
  *
  * Both relations also let a client send a request or open an event stream, answered only by
  * an open listener with a running serve task. Every invariant must hold under both.
@@ -398,6 +400,14 @@ module lifecycle {
     startServerWith(bindOk, watcherOk)
   }
 
+  /// `startServer` with a bind that succeeds: the same transitions, sampled more often by
+  /// `serverStepMostlyBound` (FORMAL-05).
+  action startServerBound = {
+    nondet bindOk = Set(true).oneOf()
+    nondet watcherOk = oneOf(Set(true, false))
+    startServerWith(bindOk, watcherOk)
+  }
+
   /// `Server::start` refused before `Start`: a remote bind without `--allow-remote`, a missing
   /// or reserved root, or no runtime. Nothing was started, nothing is held.
   action refuseStart = all {
@@ -448,9 +458,26 @@ module lifecycle {
     openStream,
   }
 
+  /// `serverStep` sampled for conformance traces (FORMAL-05, ADR 0056): the same transitions
+  /// (`startServerBound` is `startServer` with `bindOk` true), but the simulator picks an
+  /// enabled branch of `any` uniformly, so listing the bound start three more times makes a
+  /// start fail its bind one time in eight rather than one in two. `Failed` is terminal, and
+  /// under `serverStep` about 60% of the steps of 25-step traces are spent there; here about
+  /// a third are, and restarts and degraded serving are reached more often.
+  action serverStepMostlyBound = any {
+    startServer,
+    startServerBound,
+    startServerBound,
+    startServerBound,
+    refuseStart,
+    stopServer,
+    request,
+    openStream,
+  }
+
   // ---------------------------------------------------------------------------------------
-  // Invariants (foundation.md section 6.1 item 1). Each is checked under `step` and
-  // `serverStep` by `quint run --invariant`.
+  // Invariants (foundation.md section 6.1 item 1). Each is checked under `step`,
+  // `serverStep` and `serverStepMostlyBound` by `quint run --invariant`.
 
   /// No responses in a stopped state: a request is answered, or an event stream is open, only
   /// while serving.

@@ -990,9 +990,11 @@ dependencies = [
  "preview-adapter-fs",
  "preview-adapter-http",
  "preview-application",
+ "preview-composition",
  "preview-domain",
  "preview-testkit",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]
