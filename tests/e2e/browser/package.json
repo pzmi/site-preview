@@ -1,0 +1,9 @@
+{
+  "name": "site-preview-browser-tests",
+  "private": true,
+  "description": "Playwright browser tests for site-preview. Development only: the shipped binary never needs Node.",
+  "type": "module",
+  "devDependencies": {
+    "@playwright/test": "1.56.1"
+  }
+}

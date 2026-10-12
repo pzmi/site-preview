@@ -71,6 +71,13 @@ pub const CATALOG: &[Check] = &[
         "HTTP-09",
         true,
     ),
+    row(
+        "browser",
+        "e2e",
+        "cargo build --locked -p preview-cli, npm ci --prefix tests/e2e/browser, npx playwright test",
+        "E2E-04",
+        true,
+    ),
     row("fmt", "tooling", "cargo xtask fmt", "FND-03", false),
     row("quick", "gate", "cargo xtask quick", "FND-03", false),
     row(

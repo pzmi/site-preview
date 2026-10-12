@@ -49,5 +49,10 @@ jobs:
       - name: Install pinned dev tools
         run: cargo xtask install-tools cargo-nextest cargo-deny
 
+      # The browser stage never downloads a browser itself (D9); CI provides Chromium here.
+      - name: Install Chromium for Playwright
+        working-directory: tests/e2e/browser
+        run: npm ci && npx playwright install --with-deps chromium
+
       - name: Full gate
         run: cargo xtask check

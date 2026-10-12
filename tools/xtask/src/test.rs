@@ -1,9 +1,9 @@
 //! `cargo xtask test`: every ordinary test level. Today that is the workspace tests under the
 //! `ci` nextest profile and the doctests; the `client-js` stage runs the dependency-free `node --test` suites beside the embedded
-//! scripts; the `browser` stage joins here when its task registers it (D18, ADR 0019).
+//! scripts; the `browser` stage runs the Playwright specs (E2E-04).
 
 use crate::process::{Stage, finish, run_report};
-use crate::tools;
+use crate::{browser, tools};
 
 /// Generated cases per property under the `ci` profile (foundation.md section 5).
 const PROPTEST_CASES_CI: &str = "1024";
@@ -39,12 +39,33 @@ pub fn stages() -> Vec<Stage> {
             &["--test", "crates/*/assets/*.test.mjs"],
         )
         .needs("node"),
+        browser::stage(),
     ]
 }
 
-/// Runs `test` and returns the exit code.
-pub fn run() -> i32 {
-    finish(&run_report(&stages(), &tools::require))
+/// The stages to run: all, or only the one named by `--only`. An unknown name is an error
+/// that lists the valid ones, never an empty green run.
+fn select(all: Vec<Stage>, only: Option<&str>) -> Result<Vec<Stage>, String> {
+    let Some(name) = only else { return Ok(all) };
+    if !all.iter().any(|s| s.name == name) {
+        let names: Vec<_> = all.iter().map(|s| s.name).collect();
+        return Err(format!(
+            "no test stage named {name}; choose one of {}",
+            names.join(", ")
+        ));
+    }
+    Ok(all.into_iter().filter(|s| s.name == name).collect())
+}
+
+/// Runs `test` (or one of its stages) and returns the exit code.
+pub fn run(only: Option<&str>) -> i32 {
+    match select(stages(), only) {
+        Ok(stages) => finish(&run_report(&stages, &tools::require)),
+        Err(err) => {
+            eprintln!("xtask: {err}");
+            2
+        }
+    }
 }
 
 #[cfg(test)]
@@ -61,7 +82,7 @@ mod tests {
         let names: Vec<_> = stages.iter().map(|s| s.name).collect();
 
         // then
-        assert_eq!(names, ["unit-tests", "doctests", "client-js"]);
+        assert_eq!(names, ["unit-tests", "doctests", "client-js", "browser"]);
         assert!(format!("{:?}", stages[0].action).contains("\"ci\""));
         assert_eq!(stages[0].tool, Some("cargo-nextest"));
     }
@@ -93,6 +114,34 @@ mod tests {
         // then
         assert_eq!(stage.tool, Some("node"));
         assert!(format!("{:?}", stage.action).contains("--test"));
+    }
+
+    #[test]
+    fn should_keep_only_the_named_stage_when_only_is_given() {
+        // given
+        let all = stages();
+
+        // when
+        let picked = select(all, Some("browser")).unwrap();
+
+        // then
+        assert_eq!(picked.len(), 1);
+        assert_eq!(picked[0].name, "browser");
+    }
+
+    #[test]
+    fn should_list_valid_stages_when_only_names_an_unknown_one() {
+        // given
+        let all = stages();
+
+        // when
+        let err = select(all, Some("nope")).unwrap_err();
+
+        // then
+        assert!(
+            err.contains("unit-tests") && err.contains("browser"),
+            "{err}"
+        );
     }
 
     #[test]

@@ -2,6 +2,7 @@
 
 mod action_pins;
 mod architecture;
+mod browser;
 mod catalog;
 mod check;
 mod cli;
@@ -24,7 +25,7 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     let code = match &cli.command {
         Command::Quick => quick::run(),
-        Command::Test => test::run(),
+        Command::Test { only } => test::run(only.as_deref()),
         Command::Check => check::run(),
         Command::Security => security::run(),
         Command::Fmt => run_fmt(),

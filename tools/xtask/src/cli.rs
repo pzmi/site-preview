@@ -29,7 +29,11 @@ pub enum Command {
         manifest_path: Option<PathBuf>,
     },
     /// All ordinary test levels including docs and E2E.
-    Test,
+    Test {
+        /// Run only this stage (a `test` stage id such as `browser`), not the others.
+        #[arg(long, value_name = "STAGE")]
+        only: Option<String>,
+    },
     /// Quint model, scenarios and traces plus Rust replay.
     Conformance,
     /// LLVM coverage, threshold and changed-code gate.
@@ -64,7 +68,7 @@ impl Command {
             Self::Fmt => "fmt",
             Self::Quick => "quick",
             Self::Architecture { .. } => "architecture",
-            Self::Test => "test",
+            Self::Test { .. } => "test",
             Self::Conformance => "conformance",
             Self::Coverage => "coverage",
             Self::Security => "security",

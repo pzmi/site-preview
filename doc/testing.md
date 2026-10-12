@@ -22,7 +22,8 @@ is one of its entries, or a planned one it lists as not yet available.
 | Security fixtures | The dependency policy, secret scanning and workflow lint reject a seeded bad input | `tools/xtask/tests/security_fixtures.rs` | `unit-tests` | in place |
 | Integration | Real tempdir filesystem, threads, the root capability under a concurrent symlink swap | `crates/preview-adapter-fs/tests/` (`root.rs`, `capability.rs`, `symlink_race.rs`) | `unit-tests` | in place; OS watcher tests planned with the watcher |
 | CLI black box | The built binary's flags, output and exit codes through `assert_cmd` | `crates/preview-cli/tests/cli_meta.rs` (version, help), `serve_slice.rs` (the served slice), `flags.rs` (port, host and `--allow-remote` flags, warnings, exit codes) | `unit-tests` | in place |
-| E2E | The built binary's HTTP and security behaviour over a real socket against a copy of the hostile fixture site, and that serving leaves the tree unchanged | `crates/preview-cli/tests/http_security.rs`, with `crates/preview-cli/tests/support/mod.rs` | `unit-tests` | in place (E2E-01); E2E-02 and E2E-04+ (browser) planned |
+| E2E | The built binary's HTTP and security behaviour over a real socket against a copy of the hostile fixture site, and that serving leaves the tree unchanged | `crates/preview-cli/tests/http_security.rs`, with `crates/preview-cli/tests/support/mod.rs` | `unit-tests` | in place (E2E-01); E2E-02 planned |
+| Browser E2E | The real binary under `--json --port 0` driven by Chromium through Playwright (`@playwright/test` 1.56.1, locked): harness fixtures `site` and `preview`, `startPreview`, `trackNavigations` | `tests/e2e/browser/` (`support/preview.ts`, `playwright.config.ts`, `*.spec.ts`) | `browser` (`cargo xtask test --only browser`) | harness and smoke spec in place (E2E-04); reload, reconnect and hot-reload specs planned (E2E-05, E2E-06, E2E-09) |
 | Compile-fail | An invalid API use does not compile (`trybuild`) | `crates/preview-domain/tests/compile_fail.rs`, `crates/preview-adapter-fs/tests/compile_fail.rs` | `unit-tests` | in place (ARCH-08) |
 | Client JavaScript | The reload client's `node:test` suite, with no npm dependency | `crates/preview-adapter-http/assets/client.test.mjs` | `client-js` (`node --test crates/*/assets/*.test.mjs`) | in place (HTTP-09) |
 | Conformance | Quint model traces replayed against the real code | `crates/preview-conformance` is a placeholder today | `conformance` (not yet available) | FORMAL-01 to FORMAL-09 |
@@ -163,7 +164,7 @@ cargo xtask check          # the full blocking gate, run before every commit
 ```
 
 `quick` is not `check`. `check` runs the `quick` stages other than the tests, then `test`
-(the `ci` profile and the doctests), the `client-js` node tests, then the security stages
+(the `ci` profile and the doctests), the `client-js` node tests, the `browser` Playwright specs, then the security stages
 (`deny`, `secrets`, `workflows`, `action-pins`). A stage whose tool is missing is reported as
 `UNAVAILABLE` with the install instruction and a non-success exit; it never counts as passed.
 
@@ -178,6 +179,7 @@ cargo xtask architecture                                  # rules, fixtures, tes
 cargo xtask test                                          # unit-tests under the ci profile, then doctests
 cargo xtask security                                      # deny, secrets, workflows, action pins
 node --test crates/*/assets/*.test.mjs                    # client-js: the reload client's tests
+cargo xtask test --only browser                           # browser: build, npm ci, npx playwright test (needs Node 22 and Chromium 1194)
 cargo xtask fmt                                           # apply rustfmt (developer convenience)
 ```
 
@@ -206,6 +208,6 @@ cargo xtask release-check  # OPS-05
 ## Checks the gate runs
 
 `cargo xtask list-checks` marks the stages `check` runs with `"in_check": true`. Today those are
-`fmt-check`, `clippy`, `unit-tests`, `doctests`, `client-js`, `architecture` (with its `ARCH-*` rules),
+`fmt-check`, `clippy`, `unit-tests`, `doctests`, `client-js`, `browser`, `architecture` (with its `ARCH-*` rules),
 `deny`, `secrets`, `workflows` and `action-pins`. (`security` is the umbrella command for the last four, not a stage of its own.) `check` runs each stage once; a stage that
 is in the catalog but not yet implemented is absent from the run, not skipped.
