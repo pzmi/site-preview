@@ -50,3 +50,4 @@ This directory holds the decisions behind site-preview, one file per decision, i
 | [0044](0044-sse-admission-and-absolute-form-scheme.md) | SSE admission order, `HEAD` on the event stream, and the absolute-form scheme | Proposed |
 | [0045](0045-connection-limits-and-bounded-shutdown.md) | Connection limits and a bounded shutdown drain | Proposed |
 | [0046](0046-html-memory-budget-and-warning-sink.md) | HTML memory budget, HEAD parity and the warning sink | Proposed |
+| [0047](0047-notify-watcher-registration.md) | The `notify` watcher: per-directory registration, failure reports, scoped CC0-1.0 exception | Proposed |

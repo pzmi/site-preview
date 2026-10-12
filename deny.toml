@@ -49,6 +49,13 @@ allow = ["MPL-2.0"]
 crate = "selectors"
 allow = ["MPL-2.0"]
 
+# CC0-1.0 (a public-domain dedication with a permissive fallback) is accepted only for `notify`,
+# the native file watcher plan.md section 2 names; scoped to the crate so no other CC0
+# dependency slips in unreviewed (ADR 0047).
+[[licenses.exceptions]]
+crate = "notify"
+allow = ["CC0-1.0"]
+
 [bans]
 multiple-versions = "warn"
 # A path dependency must carry a version (preview-cli's does), so a wildcard requirement
