@@ -61,3 +61,4 @@ This directory holds the decisions behind site-preview, one file per decision, i
 | [0056](0056-lifecycle-conformance-driver.md) | Lifecycle conformance driver: composition seams, scripted named traces, a sampling relation | Proposed |
 | [0054](0054-watcher-model.md) | The watcher model: abstraction, a settled-state encoding of no lost change, a full reload at recovery, root deletion | Proposed |
 | [0057](0057-reload-conformance-driver.md) | Reload conformance driver: in-process SSE bodies, the client's choice read from the model | Proposed |
+| [0058](0058-watcher-conformance-driver.md) | Watcher conformance driver: the coordinator in process, the environment from the trace | Proposed |

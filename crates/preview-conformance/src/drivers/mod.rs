@@ -3,3 +3,4 @@
 
 pub mod lifecycle;
 pub mod reload;
+pub mod watcher;
