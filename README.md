@@ -34,7 +34,7 @@ site-preview serve --allow-remote        # bind outside loopback (insecure, no a
 - `Host` header checks guard against DNS rebinding.
 - `--allow-remote` has no authentication; do not use it on untrusted networks.
 
-See [SECURITY.md](SECURITY.md) for scope and reporting.
+See [SECURITY.md](SECURITY.md) for scope and reporting, and [doc/security.md](doc/security.md) for the threat model and enforced rules.
 
 ## Supported platforms
 

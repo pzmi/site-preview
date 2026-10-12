@@ -8,6 +8,8 @@ No version has been released yet. Only the latest commit on `main` is considered
 
 Please report privately using GitHub private vulnerability reporting: open the repository's **Security** tab and choose **Report a vulnerability** (<https://github.com/pzmi/site-preview/security/advisories/new>). Do not open a public issue for security problems.
 
+The threat model, the rules that are enforced and the test behind each one are in [doc/security.md](doc/security.md).
+
 ## Scope
 
 In scope:
