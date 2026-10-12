@@ -59,3 +59,4 @@ This directory holds the decisions behind site-preview, one file per decision, i
 | [0053](0053-conformance-harness.md) | Conformance harness: an explicit ITF replay path; Quint Connect not adopted yet | Proposed |
 | [0054](0054-watcher-model.md) | The watcher model: abstraction, a settled-state encoding of no lost change, root deletion | Proposed |
 | [0056](0056-lifecycle-conformance-driver.md) | Lifecycle conformance driver: composition seams, scripted named traces, a sampling relation | Proposed |
+| [0054](0054-watcher-model.md) | The watcher model: abstraction, a settled-state encoding of no lost change, a full reload at recovery, root deletion | Proposed |

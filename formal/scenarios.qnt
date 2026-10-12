@@ -583,8 +583,8 @@ module watcherScenarios {
 
   /// A new `d` cannot be watched (the watch limit): the watcher degrades once, a change in `d`
   /// is unseen (excused, never silent), and when a watch is freed the next reconcile watches
-  /// `d` and recovers once. The unseen change is not caught up by the next revision, which
-  /// carries only its own path (ADR 0054, Consequences).
+  /// `d` and recovers once. The recovery marks the next revision full (ADR 0054), so the
+  /// unseen change is caught up a window later, not left stale while live reload is claimed.
   run recoveryAfterWatchLimit =
     initWith(false)
       .then(dirDelete)
@@ -610,6 +610,9 @@ module watcherScenarios {
         health == HWatching,
         last.events == [EvRecovered],
         src.watched == Set(Root, DirD),
+        deb.full,
+        not(deb.rescan),
+        deb.paths == Set(Css2),
       })
       .then(tick)
       .then(tick)
@@ -618,11 +621,33 @@ module watcherScenarios {
         allInvariants,
         revision == 2,
         last.firedPaths == Set(Css2),
-        not(last.firedFull),
+        last.firedFull,
+        not(last.firedRescan),
         settled,
-        ghost.pending == Set(Sub),
-        reachesRecoveredWithStaleChange,
+        ghost.pending == Set(),
+        ghost.excused == Set(),
+        reachesRecoveredCaughtUp,
+        not(reachesRecoveredWithStaleChange),
       })
+
+  /// A recovery with nothing else pending still publishes one full revision, a window after
+  /// the reconcile that recovered; readiness at start-up publishes nothing.
+  run recoveryAloneReloads =
+    initWith(true)
+      .then(receive(1, false))
+      .expect(allInvariants and health == HDegraded(RegistrationFailed) and deb == CLEAN)
+      .then(modify(Sub))
+      .expect(allInvariants and ghost.excused == Set(Sub))
+      .then(freeWatch)
+      .then(kernelQueue(true))
+      .then(modify(Index))
+      .then(kernelQueue(false))
+      .then(receive(1, false))
+      .expect(allInvariants and health == HWatching and last.events == [EvRecovered] and deb.full)
+      .then(tick)
+      .then(tick)
+      .then(settle(false))
+      .expect(allInvariants and revision == 1 and last.firedFull and settled and ghost.pending == Set())
 
   /// Runtime failures degrade once and report once; a further failure is absorbed; the next
   /// complete reconcile recovers, once.

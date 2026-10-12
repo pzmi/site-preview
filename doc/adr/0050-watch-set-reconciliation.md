@@ -66,7 +66,8 @@ inode and birth time cannot tell a replaced directory from the original.
   Each problem (relative path and reason, at most ten named, the rest counted) is warned as
   `watch-registration-failed`; problems without readiness degrade the watcher
   (`RegistrationFailed`, no further warning); `ready` is `Some(dirs)` only when every eligible
-  directory is watched, and is reported to `watcher_ready`, so a degraded watcher recovers.
+  directory is watched, and is reported to `watcher_reconciled` (ADR 0054), so a degraded
+  watcher recovers and the next revision is a full reload.
 
 Rejected: passing paths through the hook (composition would have to classify again, and the
 hook would carry adapter knowledge); comparing device and inode, or birth time, to detect a

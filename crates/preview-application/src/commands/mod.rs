@@ -9,7 +9,7 @@
 //! |:--|:--|:--|
 //! | record a batch of changes, a lost-change overflow, or any [`ChangeBatch`](crate::ChangeBatch) | `record`, `overflow`, `receive` | [`record_change`] |
 //! | publish the settled changes as the next revision | `settle` | [`settle`] |
-//! | report the watcher failed or registered | `watcher_failed`, `watcher_ready` | [`watcher_health`] |
+//! | report the watcher failed or registered | `watcher_failed`, `watcher_ready`, `watcher_reconciled` | [`watcher_health`] |
 
 mod change_coordinator;
 pub mod record_change;

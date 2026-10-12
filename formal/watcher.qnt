@@ -7,10 +7,10 @@
  *   `crates/preview-domain/src/change.rs` (`classify` below, for the paths of the model);
  * - the change set: `ChangeSet::accumulate_classified` in `change_set.rs` (`accumulate`);
  * - the debounce: the global trailing-edge `Debouncer` in `debounce.rs` (`touch`,
- *   `markOverflow`; a fire is `settle`);
+ *   `markOverflow`, `markRecovered`; a fire is `settle`);
  * - the coordinator: `ChangeCoordinator::{receive, record, overflow, settle, watcher_failed,
- *   watcher_ready}` in `crates/preview-application/src/commands/`, with the health machine
- *   `WatcherHealth::step` in `crates/preview-domain/src/watcher_health.rs`;
+ *   watcher_ready, watcher_reconciled}` in `crates/preview-application/src/commands/`, with
+ *   the health machine `WatcherHealth::step` in `crates/preview-domain/src/watcher_health.rs`;
  * - the source: the bridge of `crates/preview-adapter-fs/src/watcher/bridge.rs` (ADR 0048): a
  *   bounded channel (`CAP` messages here, 1024 in the code), an overflow flag set when the
  *   channel is full or the OS reports a loss, a failure flag beside it, and `next`'s order
@@ -136,6 +136,9 @@ module watcher {
     firedFull: bool,
     firedPaths: Set[Path],
     firedRescan: bool,
+    // The fired revision came a full window after the latest change recorded before it (a
+    // recovery during the revision's own reconcile records after it).
+    firedQuiet: bool,
     // The fired revision asked for a rescan and a full reconcile ran for it.
     fullDone: bool,
     // A batch of changes was received and every change named an ineligible entry.
@@ -247,12 +250,25 @@ module watcher {
       last: { ...w.last, events: w.last.events.append(EvDegraded(r)) },
     }
 
-  /// `ChangeCoordinator::watcher_ready`: a recovery after a failure is reported once.
+  /// `Debouncer::mark_recovered`: dirty with a full set (`FullReason::Recovered`), no rescan.
+  pure def markRecovered(d: Deb, now: int): Deb = { ...touch(d, now, false), full: true }
+
+  /// `ChangeCoordinator::watcher_reconciled`: a recovery after a failure is reported once,
+  /// and the next revision is full (ADR 0054): a change made in a directory while it could
+  /// not be watched was never notified, so only a full reload catches it up. Readiness from
+  /// `Starting` marks nothing (no spurious reload at start-up).
   pure def ready(w: World): World =
     if (isDegraded(w.health)) {
       ...w,
       health: HWatching,
-      ghost: { ...w.ghost, recoveredEvents: w.ghost.recoveredEvents + 1 },
+      deb: markRecovered(w.deb, w.now),
+      ghost: {
+        ...w.ghost,
+        recoveredEvents: w.ghost.recoveredEvents + 1,
+        cycles: w.ghost.cycles + (if (w.deb.dirty) 0 else 1),
+        lastRecordAt: w.now,
+        eligibleCause: true,
+      },
       last: { ...w.last, events: w.last.events.append(EvRecovered) },
     }
     else { ...w, health: HWatching }
@@ -431,6 +447,7 @@ module watcher {
         firedFull: d.full,
         firedPaths: d.paths,
         firedRescan: d.rescan,
+        firedQuiet: w.now >= w.ghost.lastRecordAt + WINDOW,
       },
     }
     val w2 = if (d.rescan and not(w.reconciledFully)) reconcile(w1, true, capped) else w1
@@ -489,6 +506,7 @@ module watcher {
       firedFull: false,
       firedPaths: Set(),
       firedRescan: false,
+      firedQuiet: false,
       fullDone: false,
       ineligibleOnly: false,
       recorded: 0,
@@ -554,6 +572,7 @@ module watcher {
         firedFull: false,
         firedPaths: Set(),
         firedRescan: false,
+        firedQuiet: false,
         fullDone: false,
         ineligibleOnly: false,
         recorded: 0,
@@ -865,8 +884,15 @@ module watcher {
   /// unsettled state either receives something or fires the deadline, so a trace that
   /// reaches a settled state has published every change it saw; a lost change shows up as a
   /// settled state with it still pending. A change covered by a full revision or by its own
-  /// path counts as published: a reload fetches the current content.
-  val noLostEligibleChange = settled implies ghost.pending.subseteq(ghost.excused)
+  /// path counts as published: a reload fetches the current content. An unseen change is
+  /// excused only while live reload is not claimed: once the watcher is `Watching` again, a
+  /// settled state holds nothing pending, so the recovery must be followed by a revision that
+  /// covers what changed while it was blind (ADR 0054; the old recovery, which published only
+  /// the paths notified after it, violates this conjunct).
+  val noLostEligibleChange = settled implies and {
+    ghost.pending.subseteq(ghost.excused),
+    health == HWatching implies ghost.pending == Set(),
+  }
 
   /// Duplicates and bursts cannot cause a reload storm: exactly one revision per burst (a
   /// clean-to-dirty cycle of the debouncer, however many changes, duplicates and reorderings
@@ -875,7 +901,7 @@ module watcher {
     revision <= ghost.cycles,
     ghost.cycles <= revision + 1,
     (ghost.cycles == revision + 1) == deb.dirty,
-    last.fired implies now >= ghost.lastRecordAt + WINDOW,
+    last.fired implies last.firedQuiet,
   }
 
   /// A watcher failure goes through explicit error and recovery handling: live reload is
@@ -921,7 +947,10 @@ module watcher {
   val reachesDegraded = isDegraded(health)
   val reachesRecovered = ghost.recoveredEvents > 0
   val reachesExcusedChange = ghost.excused != Set()
-  /// The gap ADR 0054 records: live again with a change made while unwatched still unpublished.
+  /// A recovery caught up: live again, settled, after the full revision that followed it.
+  val reachesRecoveredCaughtUp = settled and health == HWatching and ghost.recoveredEvents > 0 and last.firedFull
+  /// The gap ADR 0054 closed: live again with a change made while unwatched still unpublished.
+  /// No reachable state satisfies it now (`noLostEligibleChange` forbids it).
   val reachesRecoveredWithStaleChange = settled and health == HWatching and ghost.pending != Set()
   val reachesRootDeleted = not(fs.rootPresent)
 }

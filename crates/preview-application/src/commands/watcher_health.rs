@@ -7,7 +7,7 @@
 //! caller after the watcher adapter registered its directories, at startup or after a
 //! reconcile or a bounded retry: the source has no "recovered" batch (ADR 0040).
 
-use preview_domain::{DegradeReason, DomainEvent, WatcherHealthRefusal, WatcherInput};
+use preview_domain::{DegradeReason, DomainEvent, Tick, WatcherHealthRefusal, WatcherInput};
 
 use super::change_coordinator::ChangeCoordinator;
 use crate::ports::SourceFailure;
@@ -51,17 +51,51 @@ impl ChangeCoordinator {
     /// (`should_degrade_once_and_refuse_when_revisions_are_exhausted`). Also for `dirs == 0`:
     /// the root is always watched, so no registered directory means no watch at all, and live
     /// reload must not be claimed (`should_refuse_ready_when_nothing_was_registered`).
+    ///
+    /// This is the start-up report, made on a fresh coordinator. After a reconcile, report
+    /// readiness with [`watcher_reconciled`](Self::watcher_reconciled) instead, which also
+    /// catches up the changes a recovery may have missed.
     pub fn watcher_ready(&mut self, dirs: usize) -> Result<Vec<DomainEvent>, WatcherHealthRefusal> {
         let transition = self.health.apply(WatcherInput::Ready { dirs })?;
         Ok(transition.event.into_iter().collect())
+    }
+
+    /// Reports, at `now`, that a reconcile left `dirs` directories registered and none
+    /// outstanding: [`watcher_ready`](Self::watcher_ready), and when that is a recovery the
+    /// next revision is a full reload, due a debounce window after `now` (ADR 0054).
+    ///
+    /// While a directory could not be watched, a change made inside it was never notified;
+    /// the reload that follows the recovery is full because nothing else would publish that
+    /// change, and live reload is claimed again from this report on
+    /// (`should_publish_full_revision_when_watcher_recovers`). No rescan is requested: the
+    /// reconcile that reported readiness has just registered every directory. Readiness that
+    /// is no recovery (from `Starting`, or while already watching) marks nothing, so start-up
+    /// causes no reload (`should_mark_nothing_when_reconciled_without_recovery`).
+    ///
+    /// # Errors
+    ///
+    /// As [`watcher_ready`](Self::watcher_ready); a refusal marks nothing.
+    pub fn watcher_reconciled(
+        &mut self,
+        dirs: usize,
+        now: Tick,
+    ) -> Result<Vec<DomainEvent>, WatcherHealthRefusal> {
+        let events = self.watcher_ready(dirs)?;
+        if events.contains(&DomainEvent::WatcherRecovered) {
+            self.debouncer.mark_recovered(now);
+        }
+        Ok(events)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use preview_domain::{DebounceWindow, InstanceId, WatcherHealth};
+    use preview_domain::{
+        ChangeKind, Deadline, DebounceWindow, FullReason, InstanceId, WatcherHealth,
+    };
 
     use super::*;
+    use crate::commands::test_support::{event, ms};
     use crate::reload_state::ReloadState;
 
     fn coordinator() -> ChangeCoordinator {
@@ -131,5 +165,55 @@ mod tests {
         assert_eq!(first, [DomainEvent::WatcherRecovered]);
         assert!(second.is_empty());
         assert_eq!(c.health(), WatcherHealth::Watching { dirs: 3 });
+    }
+
+    #[test]
+    fn should_publish_full_revision_when_watcher_recovers() {
+        // given: degraded, with nothing pending
+        let mut c = coordinator();
+        c.watcher_ready(2).expect("accepted");
+        c.watcher_failed(SourceFailure::RegistrationFailed);
+        // when
+        let events = c.watcher_reconciled(3, ms(100)).expect("accepted");
+        let early = c.settle(ms(249));
+        let outcome = c.settle(ms(250));
+        // then: one full reload a window later, with no rescan
+        assert_eq!(events, [DomainEvent::WatcherRecovered]);
+        assert_eq!(early.next_deadline.map(Deadline::at), Some(ms(250)));
+        let settled = outcome.settled.expect("the recovery publishes");
+        assert!(!settled.rescan);
+        assert_eq!(settled.changes.reason(), Some(FullReason::Recovered));
+        assert_eq!(settled.state.revision().get(), 1);
+        assert_eq!(c.deadline(), None);
+    }
+
+    #[test]
+    fn should_make_pending_hot_revision_full_when_watcher_recovers() {
+        // given: a stylesheet edit pending while degraded
+        let mut c = coordinator();
+        c.watcher_failed(SourceFailure::RuntimeFailure);
+        c.record(&[event(ChangeKind::Modify, &["a.css"])], ms(0));
+        // when
+        c.watcher_reconciled(3, ms(40)).expect("accepted");
+        let outcome = c.settle(ms(190));
+        // then: still one revision, now a full one carrying the edit
+        let settled = outcome.settled.expect("settled");
+        assert!(settled.changes.is_full());
+        assert_eq!(settled.changes.changes().len(), 1);
+        assert_eq!(c.reload_state().current().revision().get(), 1);
+    }
+
+    #[test]
+    fn should_mark_nothing_when_reconciled_without_recovery() {
+        // given
+        let mut c = coordinator();
+        // when: readiness from `Starting`, then again while watching
+        let startup = c.watcher_reconciled(3, ms(0)).expect("accepted");
+        let again = c.watcher_reconciled(4, ms(10)).expect("accepted");
+        // then: no reload is due
+        assert!(startup.is_empty());
+        assert!(again.is_empty());
+        assert_eq!(c.deadline(), None);
+        assert_eq!(c.settle(ms(1_000)), crate::SettleOutcome::default());
     }
 }

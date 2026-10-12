@@ -1,4 +1,4 @@
-# 0054. The watcher model: abstraction, a settled-state encoding of no lost change, root deletion
+# 0054. The watcher model: abstraction, a settled-state encoding of no lost change, a full reload at recovery, root deletion
 
 Date: 2026-10-12
 
@@ -23,8 +23,10 @@ settled by the plan:
   it serves the deleted, empty directory, and a directory recreated at the same path is not
   the served one.
 - The watcher recovers (`WatcherRecovered`) at the first complete reconcile (ADR 0040,
-  ADR 0050). Nothing marks the revision that follows as full, so a change made inside a
-  directory while it could not be watched, and never notified, is not caught up.
+  ADR 0050). As first built, nothing marked the revision that follows as full, so a change
+  made inside a directory while it could not be watched, and never notified, was not caught
+  up: the browser kept stale content while live reload was claimed again. The model found
+  it (`recoveryAfterWatchLimit` settled `Watching` with the change pending).
 
 ## Decision
 
@@ -42,28 +44,62 @@ settled by the plan:
   a reload fetches the current content), and separately the changes made while their
   directory's watch had failed and been reported. The invariant is: whenever the pipeline has
   settled (not shut down, nothing queued, no loss or failure flag, debouncer clean), every
-  pending change is one of those unseen ones. Every way out of an unsettled state receives
+  pending change is one of those unseen ones, and, once the health is `Watching`, that
+  nothing is pending at all: an unseen change is excused only while live reload is not
+  claimed. Every way out of an unsettled state receives
   something or fires the deadline, so under the fairness that the task keeps running a trace
   that settles has published everything the watcher saw. The unseen changes belong to
   `failureIsExplicit`: their directory is outstanding only while the health is degraded (or
   the start-up failure is still queued), and every degradation and recovery is announced once.
+- **A recovery publishes a full reload.** After a reconcile, composition reports readiness
+  through `ChangeCoordinator::watcher_reconciled(dirs, now)`. When that readiness is a
+  recovery (`Degraded` to `Watching`), the coordinator marks the debouncer with
+  `Debouncer::mark_recovered(now)`: dirty, deadline a window later, the change set full with
+  the new `FullReason::Recovered`, and no rescan, since the reconcile that recovered has just
+  registered every directory. A pending hot revision becomes full; with nothing pending, one
+  full revision follows. Readiness from `Starting` (start-up, `watcher_ready`) or while
+  already watching marks nothing, so start-up causes no reload. The model's `ready` does the
+  same (`markRecovered`). Rejected: treating the recovery as an overflow (`mark_overflow`),
+  which also asks for a rescan and so a second full walk of the tree for nothing; a rescan
+  request from the reconcile that newly registers a directory, which needs the adapter to
+  tell new registrations apart and still publishes nothing when the registration was a
+  retry; giving `watcher_ready` itself a `now`, which would date the start-up report for a
+  transition that cannot happen there (its coordinator is fresh).
+  A recovery found by the reconcile that a rescan revision runs after its publish adds one
+  more full reload a window later; it is rare and harmless, and the model allows it
+  (`boundedReloadsPerBurst` dates a revision's quiet window against the changes recorded
+  before it, `firedQuiet`).
 - **Root deletion** is every removal plus the root's own, which classifies as `Rescan`, and
-  then no watch at all. Recreation is never notified and changes nothing served.
+  then no watch at all. Recreation is never notified and changes nothing served. plan.md is
+  silent on root deletion: section 8.1 handles removed subdirectories (drop their watches,
+  rescan the nearest existing parent) and section 8.4 runtime failures, and section 5.3 serves
+  through the root descriptor opened at start-up. The behaviour is kept as built: the
+  health stays `Watching`. The served directory is unlinked, so no entry can be created in it
+  and nothing served can change again; the full revision the deletion causes shows the
+  browser the empty site, and "live reload active" claims nothing false about the served
+  tree. A distinct "root removed" report (or exiting) is left to the owner as a product
+  decision.
 - **One step relation**, `step`, picks a lane first (OS, pipeline, or the run-ending actions
   of root deletion and shutdown, each lane able to tick), so random traces publish, fail and
   recover instead of ending early.
 
 ## Consequences
 
-- The recovery gap is visible: `recoveryAfterWatchLimit` in `formal/scenarios.qnt` settles
-  with the health `Watching` and a change still unpublished (`reachesRecoveredWithStaleChange`).
-  It is allowed by the invariants as stated, since the loss was reported while it happened.
-  Closing it (for example a full revision at `WatcherRecovered`, or a rescan request from the
-  reconcile that newly registers a directory) is a code change for a later task, together
-  with tightening the model's invariant.
+- The recovery gap is closed in the model and the code. `noLostEligibleChange` now fails on
+  the old model: a random run (`quint run --invariant noLostEligibleChange --max-steps 40
+  --max-samples 5000 --seed 7`) finds a settled `Watching` state with `d/b.js` pending, and
+  `recoveryAfterWatchLimit` reached it by hand. With the fix the scenario settles with
+  nothing pending after a full revision (`reachesRecoveredCaughtUp`), and
+  `reachesRecoveredWithStaleChange` is witnessed by no trace. `recoveryAloneReloads` pins a
+  recovery with nothing else pending. In Rust, `should_publish_full_revision_when_watcher_recovers`,
+  `should_make_pending_hot_revision_full_when_watcher_recovers` and the pipeline's
+  `should_publish_full_reload_when_watcher_recovers` fail without the fix;
+  `should_mark_nothing_when_reconciled_without_recovery` and
+  `should_keep_revision_hot_when_reconcile_is_ready_without_recovery` fail if every readiness
+  marked a full reload.
 - After a root deletion the health stays `Watching` with no watch: nothing served can change
   any more, so the claim is vacuous; the model does not flag it.
 - FORMAL-06 replays these traces against the real `ChangeCoordinator` and `ReloadState`: the
   model's `receive` maps to `ChangeCoordinator::receive`, `settle` to `settle`, a reconcile's
-  outcome to `watcher_ready` or `watcher_failed(RegistrationFailed)`; the OS actions and the
+  outcome to `watcher_reconciled` or `watcher_failed(RegistrationFailed)`; the OS actions and the
   queue are the driver's scripted source.

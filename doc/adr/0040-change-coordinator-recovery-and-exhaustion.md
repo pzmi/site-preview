@@ -4,7 +4,9 @@ Date: 2026-10-11
 
 ## Status
 
-Proposed (planner default — owner may override)
+Proposed (planner default — owner may override). Amended by ADR 0054: after a reconcile,
+readiness is reported through `watcher_reconciled(dirs, now)`, and a recovery makes the next
+revision a full reload.
 
 ## Context
 

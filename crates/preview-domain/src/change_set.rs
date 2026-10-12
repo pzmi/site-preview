@@ -154,6 +154,9 @@ pub enum FullReason {
     /// An entry of unknown type whose name is denied as a directory (`vendor`) changed: its
     /// path is withheld from the set ([`Relevance::Undisclosed`]).
     Undisclosed,
+    /// The watcher recovered after a failure: a change made while a directory could not be
+    /// watched was never notified, so the paths are unknown (ADR 0054).
+    Recovered,
 }
 
 /// The changes accumulated over one debounce window.

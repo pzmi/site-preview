@@ -254,9 +254,11 @@ impl<S: WatchControl, C: Clock> WatchPipeline<S, C> {
 
     /// Reconciles the watch set and reports what changed: each directory that newly cannot
     /// be watched is warned about and degrades the watcher; a complete set is readiness, so a
-    /// degraded watcher recovers. Pinned by
-    /// `should_warn_and_degrade_when_reconcile_cannot_watch_a_directory` and
-    /// `should_recover_when_reconcile_completes_the_watch_set`.
+    /// degraded watcher recovers, and the coordinator makes the next revision a full reload
+    /// that catches up what changed while a directory was unwatched (ADR 0054). Pinned by
+    /// `should_warn_and_degrade_when_reconcile_cannot_watch_a_directory`,
+    /// `should_recover_when_reconcile_completes_the_watch_set` and
+    /// `should_publish_full_reload_when_watcher_recovers`.
     ///
     /// The walk and the watch registrations block (a directory walk, and calls that wait on
     /// the native watcher's own thread), so on the multi-thread runtime they run inside
@@ -278,7 +280,8 @@ impl<S: WatchControl, C: Clock> WatchPipeline<S, C> {
         }
         if let Some(dirs) = reconciled.ready {
             // Refused only once the revisions are exhausted, which was already reported.
-            if let Ok(events) = self.coordinator.watcher_ready(dirs) {
+            // A recovery makes the next revision full (ADR 0054).
+            if let Ok(events) = self.coordinator.watcher_reconciled(dirs, self.clock.now()) {
                 self.report(&events);
             }
         } else if !reconciled.problems.is_empty() {
@@ -930,6 +933,71 @@ mod tests {
             let codes: Vec<String> = h.warnings().into_iter().map(|(code, _)| code).collect();
             assert_eq!(codes, ["watch-registration-failed", "watch-failed"]);
             assert_eq!(h.revision(), 2);
+            h.stop().await;
+        });
+    }
+
+    #[test]
+    fn should_publish_full_reload_when_watcher_recovers() {
+        paused().block_on(async {
+            // given: degraded by a directory that could not be watched, its change published
+            let h = start(None);
+            let mut published = h.reload.subscribe();
+            {
+                let mut log = h.log.lock().expect("unpoisoned");
+                log.answers.push_back(Reconciled {
+                    ready: None,
+                    problems: vec!["cannot watch directory `blog`: no watches left".into()],
+                });
+                log.answers.push_back(Reconciled {
+                    ready: Some(2),
+                    problems: Vec::new(),
+                });
+            }
+            h.handle
+                .push(vec![event(ChangeKind::DirectoryChanged, "blog")]);
+            after(WINDOW_MS + 1).await;
+            published.changed().await.expect("open");
+
+            // when: a stylesheet renamed into place makes the reconcile that recovers
+            h.handle.push(vec![event(ChangeKind::Rename, "a.css")]);
+            after(WINDOW_MS + 1).await;
+
+            // then: one revision, full, so what changed in `blog` while unwatched reloads too
+            assert_eq!(h.revision(), 2);
+            let seen = published.changed().await.expect("open");
+            assert!(seen.changes.is_full(), "a recovery reloads in full");
+            assert_eq!(h.states().last(), Some(&WatcherState::Watching));
+            after(10_000).await;
+            assert_eq!(h.revision(), 2, "and nothing after it");
+            h.stop().await;
+        });
+    }
+
+    #[test]
+    fn should_keep_revision_hot_when_reconcile_is_ready_without_recovery() {
+        paused().block_on(async {
+            // given: never degraded (the coordinator is still `Starting`)
+            let h = start(None);
+            let mut published = h.reload.subscribe();
+            h.log
+                .lock()
+                .expect("unpoisoned")
+                .answers
+                .push_back(Reconciled {
+                    ready: Some(2),
+                    problems: Vec::new(),
+                });
+
+            // when
+            h.handle.push(vec![event(ChangeKind::Rename, "a.css")]);
+            after(WINDOW_MS + 1).await;
+
+            // then: readiness alone reloads nothing in full
+            assert_eq!(h.revision(), 1);
+            let seen = published.changed().await.expect("open");
+            assert!(!seen.changes.is_full());
+            assert!(h.states().is_empty());
             h.stop().await;
         });
     }

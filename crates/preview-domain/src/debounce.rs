@@ -138,6 +138,17 @@ impl Debouncer {
         self.touch(now, true)
     }
 
+    /// Records that the watcher recovered at `now` after a failure: dirty like
+    /// [`Self::record`], and the next fire's change set is full with [`FullReason::Recovered`],
+    /// since a change made while a directory could not be watched was never notified and only
+    /// a full reload catches it up (ADR 0054). No rescan is requested: the reconcile that
+    /// reported the recovery has just registered every directory (pinned by
+    /// `should_fire_full_without_rescan_when_recovery_marked`).
+    pub fn mark_recovered(&mut self, now: Tick) -> Deadline {
+        self.changes.mark_full(FullReason::Recovered);
+        self.touch(now, false)
+    }
+
     /// Fires once the deadline is reached (`now >= deadline`), clearing the dirty state.
     ///
     /// Pinned by `should_fire_once_when_burst_settles` and
@@ -269,6 +280,29 @@ mod tests {
         // then
         assert_eq!(polls, [Poll::Idle, Poll::Idle, Poll::Idle]);
         assert_eq!(d.deadline(), None);
+    }
+
+    #[test]
+    fn should_fire_full_without_rescan_when_recovery_marked() {
+        // given: a hot change pending, then a recovery inside its window
+        let mut d = debouncer(150);
+        rec(&mut d, t(0));
+        let deadline = d.mark_recovered(t(50));
+        // when
+        let early = d.poll(t(199));
+        let fired = d.poll(t(200));
+        // then
+        let mut changes = css_set();
+        changes.mark_full(FullReason::Recovered);
+        assert_eq!(deadline.at(), t(200));
+        assert_eq!(early, Poll::Wait(deadline));
+        assert_eq!(
+            fired,
+            Poll::Fire(Settled {
+                rescan: false,
+                changes,
+            })
+        );
     }
 
     #[test]
