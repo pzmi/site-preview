@@ -37,7 +37,7 @@ xtask = []
 # as a dev-dependency.
 [external.normal]
 preview-domain = { percent-encoding = ["default"] }
-preview-adapter-fs = { notify = ["macos_fsevent"], rustix = ["fs", "std"] }
+preview-adapter-fs = { notify = ["macos_fsevent"], rustix = ["fs", "std"], tokio = ["sync"] }
 preview-adapter-http = { axum = ["http1", "tokio"], lol_html = [], mime_guess = [], serde_json = ["std"], tokio = ["rt", "sync"], tokio-stream = ["default"] }
 preview-application = { tokio = ["sync"] }
 preview-composition = { axum = ["http1"], hyper = ["server", "http1"], hyper-util = ["tokio", "service"], tokio = ["rt-multi-thread", "net", "signal", "sync", "time"] }

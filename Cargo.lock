@@ -923,6 +923,7 @@ dependencies = [
  "preview-testkit",
  "rustix",
  "tempfile",
+ "tokio",
  "trybuild",
 ]
 

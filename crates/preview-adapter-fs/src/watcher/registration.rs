@@ -128,7 +128,7 @@ impl From<TraversalError> for RegistrationError {
 }
 
 /// The native watcher and the directories registered with it. Dropping it removes every watch.
-pub struct NotifyWatcher {
+pub(crate) struct NotifyWatcher {
     inner: RecommendedWatcher,
     display_root: PathBuf,
     watched: WatchSet,

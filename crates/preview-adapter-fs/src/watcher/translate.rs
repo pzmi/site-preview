@@ -21,7 +21,7 @@
 //!
 //! Paths are made root-relative component-wise (`/site2/x` is not below `/site`). A path
 //! outside the root, or with a component that is not UTF-8 or not a valid [`Component`] (a name
-//! that cannot be requested), is dropped. No `notify` type leaves this module's caller.
+//! that cannot be requested), is dropped. No `notify` type leaves the crate.
 
 use std::path::{self, Path};
 
@@ -32,7 +32,7 @@ use preview_domain::{ChangeEvent, ChangeKind, Component, RelPath};
 /// The change events `event` stands for, in its path order; empty when none of its paths is
 /// inside `root`. Pinned by the table tests of this module.
 #[must_use]
-pub fn translate(event: Event, root: &Path) -> Vec<ChangeEvent> {
+pub(crate) fn translate(event: Event, root: &Path) -> Vec<ChangeEvent> {
     if event.need_rescan() {
         return vec![ChangeEvent {
             kind: ChangeKind::Ambiguous,
@@ -71,7 +71,7 @@ fn change_kind(kind: EventKind) -> ChangeKind {
 
 /// `path` relative to `root`, or `None` when it is outside it or names something that cannot
 /// be requested.
-fn relative(path: &Path, root: &Path) -> Option<RelPath> {
+pub(crate) fn relative(path: &Path, root: &Path) -> Option<RelPath> {
     let rest = path.strip_prefix(root).ok()?;
     let mut components = Vec::new();
     for part in rest.components() {

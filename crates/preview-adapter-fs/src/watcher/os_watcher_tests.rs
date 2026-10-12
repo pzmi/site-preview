@@ -13,7 +13,9 @@ use preview_domain::{ChangeEvent, ChangeKind, Component, RelPath};
 use preview_testkit::poll::wait_until;
 use tempfile::TempDir;
 
-use crate::{NotifyWatcher, SiteRoot, WatchFault, eligible_dirs, open_site_root, translate};
+use crate::watcher::{NotifyWatcher, translate};
+use crate::{MAX_DEPTH, NotifyChangeSource, SiteRoot, WatchFault, eligible_dirs, open_site_root};
+use preview_application::{ChangeBatch, ChangeSource, SourceFailure};
 
 const DEADLINE: Duration = Duration::from_secs(10);
 
@@ -287,4 +289,91 @@ fn should_translate_native_rename_to_both_relative_names_when_file_is_renamed() 
         expected.iter().all(|wanted| changes.contains(wanted))
     })
     .expect("rename translated");
+}
+
+/// Polls the source once without a runtime; the source never needs one.
+fn poll_next(source: &mut NotifyChangeSource) -> Option<ChangeBatch<ChangeEvent>> {
+    let future = core::pin::pin!(source.next());
+    match future.poll(&mut core::task::Context::from_waker(
+        core::task::Waker::noop(),
+    )) {
+        core::task::Poll::Ready(batch) => Some(batch),
+        core::task::Poll::Pending => None,
+    }
+}
+
+#[test]
+fn should_deliver_relative_change_when_file_written_under_change_source() {
+    // given
+    let (_base, root) = site();
+    fs::create_dir_all(root.join("docs/guide")).expect("create docs");
+    fs::create_dir(root.join("node_modules")).expect("create ignored");
+    let site = open_site_root(&root).expect("open root");
+    let (mut source, report) = NotifyChangeSource::start(&site.dir, &site.display_path);
+
+    // when
+    fs::write(site.display_path.join("node_modules/x.js"), b"x").expect("write ignored");
+    fs::write(site.display_path.join("docs/guide/page.html"), b"x").expect("write page");
+
+    // then
+    assert!(report.is_complete(), "unexpected report: {report:?}");
+    assert_eq!(report.watching, 3);
+    let mut seen = Vec::new();
+    wait_until(DEADLINE, "the page change delivered", || {
+        while let Some(batch) = poll_next(&mut source) {
+            match batch {
+                ChangeBatch::Events(changes) => seen.extend(changes),
+                other => panic!("unexpected batch: {other:?}"),
+            }
+        }
+        seen.iter()
+            .any(|change| change.path == rel("docs/guide/page.html"))
+    })
+    .expect("change delivered");
+    assert!(
+        seen.iter()
+            .all(|change| !change.path.starts_with(&rel("node_modules"))),
+        "ignored subtree delivered: {seen:?}"
+    );
+}
+
+#[test]
+fn should_report_registration_failure_first_when_a_directory_cannot_be_watched() {
+    // given
+    let (_base, root) = site();
+    // a path this long is built in steps: the OS limits one path, not the tree
+    let mut at = root.clone();
+    for _ in 0..MAX_DEPTH + 2 {
+        at = at.join("d");
+        fs::create_dir(&at).expect("create level");
+    }
+    let site = open_site_root(&root).expect("open root");
+
+    // when
+    let (mut source, report) = NotifyChangeSource::start(&site.dir, &site.display_path);
+
+    // then
+    assert_eq!(report.watching, MAX_DEPTH + 1);
+    assert_eq!(report.errors.len(), 1);
+    assert_eq!(report.errors[0].fault, WatchFault::TooDeep);
+    assert_eq!(
+        poll_next(&mut source),
+        Some(ChangeBatch::Failed(SourceFailure::RegistrationFailed))
+    );
+}
+
+#[test]
+fn should_return_closed_when_source_is_closed() {
+    // given
+    let (_base, root) = site();
+    let site = open_site_root(&root).expect("open root");
+    let (mut source, _report) = NotifyChangeSource::start(&site.dir, &site.display_path);
+
+    // when
+    source.close();
+    fs::write(site.display_path.join("late.html"), b"x").expect("write after close");
+
+    // then
+    assert_eq!(poll_next(&mut source), Some(ChangeBatch::Closed));
+    assert_eq!(poll_next(&mut source), Some(ChangeBatch::Closed));
 }
