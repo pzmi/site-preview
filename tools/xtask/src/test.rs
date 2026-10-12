@@ -11,7 +11,7 @@ const PROPTEST_CASES_CI: u32 = 1024;
 /// The case count the unit-tests stage passes on: the developer's `PROPTEST_CASES` when it
 /// raises the floor, otherwise the floor. A lower or unparsable value never weakens the gate.
 /// Pinned by `should_keep_developer_proptest_cases_when_set_at_or_above_the_floor`.
-fn proptest_cases(developer: Option<&str>) -> String {
+pub(crate) fn proptest_cases(developer: Option<&str>) -> String {
     developer
         .and_then(|value| value.trim().parse::<u32>().ok())
         .filter(|cases| *cases >= PROPTEST_CASES_CI)

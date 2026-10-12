@@ -40,7 +40,7 @@ pub enum Command {
         #[arg(long)]
         typecheck: bool,
     },
-    /// LLVM coverage, threshold and changed-code gate.
+    /// LLVM line coverage of the whole workspace against `coverage-floor.toml`.
     Coverage,
     /// Dependency policy, secrets and workflow checks.
     Security,

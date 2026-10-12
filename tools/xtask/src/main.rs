@@ -7,6 +7,7 @@ mod catalog;
 mod check;
 mod cli;
 mod conformance;
+mod coverage;
 mod fuzz;
 mod process;
 mod quick;
@@ -30,6 +31,7 @@ fn main() -> ExitCode {
         Command::Test { only } => test::run(only.as_deref()),
         Command::Check => check::run(),
         Command::Conformance { typecheck } => conformance::run(*typecheck),
+        Command::Coverage => coverage::command(),
         Command::Security => security::run(),
         Command::Fmt => run_fmt(),
         Command::Architecture { manifest_path } => architecture::run(manifest_path.as_deref()),

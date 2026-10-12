@@ -147,9 +147,9 @@ pub const CATALOG: &[Check] = &[
     row(
         "coverage",
         "coverage",
-        "cargo xtask coverage",
+        "cargo llvm-cov nextest --workspace --locked --profile ci --lcov --output-path target/coverage/lcov.info, then coverage-floor.toml",
         "TEST-06",
-        false,
+        true,
     ),
     row(
         "security",

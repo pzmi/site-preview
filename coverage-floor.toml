@@ -1,0 +1,12 @@
+# Line-coverage floors enforced by `cargo xtask coverage` (ADR 0018, ADR 0062). Each value is
+# a whole percent of instrumented lines (LCOV `DA:` records) that tests must reach. A floor
+# starts at the measured value rounded down, never below 90, and is only ratcheted up here;
+# lowering one needs owner review.
+
+# Every instrumented line of the workspace, tools/xtask included.
+overall_line = 92
+
+# Per-crate floors, keyed by crate directory name under crates/.
+[crate]
+preview-domain = 98
+preview-application = 97
