@@ -9,6 +9,7 @@ const sandbox = { URL };
 vm.runInNewContext(source, sandbox);
 const {
   decide, adopt, strategy, matchStylesheetHref, cacheBustUrl, importsPath, markScroll, takeScroll,
+  parseSrcset, rewriteSrcset, cssUrls, referencesPath,
 } = sandbox.__sitePreviewTest;
 
 const ORIGIN = 'http://127.0.0.1:8000';
@@ -29,18 +30,30 @@ function fakePage({
       node.parentNode = this;
     },
   };
-  function element(fields) {
+  function element(tag, attrs, sheet = null) {
     const node = {
-      rel: 'stylesheet',
-      sheet: null,
+      tag,
+      attrs: { ...attrs },
+      sheet,
       parentNode: null,
       handlers: {},
-      ...fields,
+      get href() {
+        return this.attrs.href ?? '';
+      },
+      set href(value) {
+        this.attrs.href = value;
+      },
+      getAttribute(name) {
+        return this.attrs[name] ?? null;
+      },
+      setAttribute(name, value) {
+        this.attrs[name] = String(value);
+      },
       get nextSibling() {
         return head.children[head.children.indexOf(this) + 1] ?? null;
       },
       cloneNode() {
-        return element({ rel: this.rel, href: this.href });
+        return element(this.tag, this.attrs);
       },
       addEventListener(name, fn) {
         (this.handlers[name] ??= []).push(fn);
@@ -56,6 +69,14 @@ function fakePage({
     };
     return node;
   }
+  const rel = (node, token) => (node.attrs.rel ?? '').split(/\s+/).includes(token);
+  const selectors = {
+    'link[rel~="stylesheet"]': (node) => node.tag === 'link' && rel(node, 'stylesheet'),
+    'link[rel~="icon"]': (node) => node.tag === 'link' && rel(node, 'icon'),
+    'img[src]': (node) => node.tag === 'img' && 'src' in node.attrs,
+    'img[srcset], source[srcset]': (node) =>
+      (node.tag === 'img' || node.tag === 'source') && 'srcset' in node.attrs,
+  };
   const page = {
     reloads: 0,
     timers: [],
@@ -65,13 +86,16 @@ function fakePage({
     scrolls: [],
     frames: [],
     head,
+    add(tag, attrs, sheet = null) {
+      const node = element(tag, attrs, sheet);
+      head.insertBefore(node, null);
+      return node;
+    },
     addLink(href, sheet = null) {
-      const link = element({ href, sheet });
-      head.insertBefore(link, null);
-      return link;
+      return page.add('link', { rel: 'stylesheet', href }, sheet);
     },
     links() {
-      return head.children.filter((node) => node.rel === 'stylesheet');
+      return head.children.filter(selectors['link[rel~="stylesheet"]']);
     },
     send(kind, payload) {
       page.listeners[kind]({ data: JSON.stringify(payload) });
@@ -83,8 +107,8 @@ function fakePage({
       baseURI: `${ORIGIN}/`,
       readyState,
       querySelectorAll(selector) {
-        assert.equal(selector, 'link[rel~="stylesheet"]');
-        return page.links();
+        assert.ok(selector in selectors, selector);
+        return head.children.filter(selectors[selector]);
       },
     },
     location: { origin: ORIGIN, reload() { page.reloads += 1; } },
@@ -119,6 +143,10 @@ function changeSet(revision, changes) {
 
 function css(revision, ...paths) {
   return changeSet(revision, paths.map((path) => ({ path, kind: 'css' })));
+}
+
+function asset(revision, ...paths) {
+  return changeSet(revision, paths.map((path) => ({ path, kind: 'asset' })));
 }
 
 function js(revision, ...paths) {
@@ -519,4 +547,112 @@ test('should_take_script_path_when_css_and_js_change_together', () => {
   assert.equal(page.links().length, 1);
   assert.equal(page.replaced.length, 1);
   assert.equal(page.reloads, 1);
+});
+
+test('should_rewrite_img_src_when_asset_matches', async () => {
+  // given
+  const page = fakePage();
+  const image = page.add('img', { src: 'images/sample.svg' });
+  const other = page.add('img', { src: '/images/other.svg' });
+  page.start();
+
+  // when
+  page.send('reload', asset(4, '/images/sample.svg'));
+  await flush();
+  page.send('reload', asset(5, '/images/sample.svg'));
+  await flush();
+
+  // then
+  assert.equal(image.getAttribute('src'), `${ORIGIN}/images/sample.svg?__sp=5`);
+  assert.equal(other.getAttribute('src'), '/images/other.svg');
+  assert.equal(page.reloads, 0);
+});
+
+test('should_rewrite_only_matching_srcset_candidate_when_asset_changes', async () => {
+  // given
+  const page = fakePage();
+  const source = page.add('source', { srcset: 'images/a.png 1x,images/b.png 2x' });
+  const image = page.add('img', { srcset: 'images/a.png, images/b.png 640w' });
+  page.start();
+
+  // when
+  page.send('reload', asset(4, '/images/b.png'));
+  await flush();
+
+  // then
+  assert.equal(source.getAttribute('srcset'), `images/a.png 1x, ${ORIGIN}/images/b.png?__sp=4 2x`);
+  assert.equal(image.getAttribute('srcset'), `images/a.png, ${ORIGIN}/images/b.png?__sp=4 640w`);
+  assert.equal(page.reloads, 0);
+});
+
+test('should_full_reload_when_asset_unreferenced', () => {
+  // given
+  const page = fakePage();
+  const image = page.add('img', { src: '/images/sample.svg' });
+  page.start();
+
+  // when
+  page.send('reload', asset(4, '/images/sample.svg', '/data/routes.gpx'));
+
+  // then
+  assert.equal(page.reloads, 1);
+  assert.equal(image.getAttribute('src'), '/images/sample.svg');
+});
+
+test('should_parse_srcset_when_urls_hold_commas_or_descriptors_hold_parentheses', () => {
+  // when
+  const candidates = parseSrcset(' a.png, data:image/png;base64,AAA 2x ,c.png (x, y) 3x');
+
+  // then
+  assert.deepEqual(
+    Array.from(candidates, (candidate) => [candidate.url, candidate.descriptor]),
+    [['a.png', ''], ['data:image/png;base64,AAA', '2x'], ['c.png', '(x, y) 3x']],
+  );
+  assert.equal(rewriteSrcset('a.png 1x', '/b.png', 4, `${ORIGIN}/`), null);
+});
+
+test('should_bust_icon_and_swap_referencing_stylesheet_when_asset_changes', async () => {
+  // given
+  const page = fakePage();
+  const icon = page.add('link', { rel: 'shortcut icon', href: '/images/bg.png?v=1' });
+  const sheet = {
+    href: `${ORIGIN}/css/site.css`,
+    cssRules: [
+      { cssText: 'h1 { color: red; }' },
+      { cssText: 'body { background: url("../images/bg.png"); }' },
+    ],
+  };
+  const owner = page.addLink(`${ORIGIN}/css/site.css`, sheet);
+  page.start();
+
+  // when
+  page.send('reload', asset(4, '/images/bg.png'));
+  page.links()[1].fire('load');
+  await flush();
+
+  // then
+  assert.equal(icon.getAttribute('href'), `${ORIGIN}/images/bg.png?v=1&__sp=4`);
+  assert.equal(owner.parentNode, null);
+  assert.equal(page.links()[0].href, `${ORIGIN}/css/site.css?__sp=4`);
+  assert.equal(page.reloads, 0);
+});
+
+test('should_find_css_url_references_when_rules_are_serialized', () => {
+  // given
+  const sheet = {
+    href: `${ORIGIN}/css/site.css`,
+    cssRules: [{ cssText: '@media print { a { background: url(img/x.png) } }' }],
+  };
+  const locked = { get cssRules() { throw new Error('SecurityError'); } };
+
+  // when / then
+  assert.deepEqual(
+    [...cssUrls(`url(a.png) url( 'b c.png' ) url("d\\"e.png")`)],
+    ['a.png', 'b c.png', 'd"e.png'],
+  );
+  assert.equal(referencesPath(sheet, '/css/img/x.png', ORIGIN, 0), true);
+  assert.equal(referencesPath(sheet, '/img/x.png', ORIGIN, 0), false);
+  assert.equal(referencesPath(locked, '/img/x.png', ORIGIN, 0), false);
+  assert.equal(strategy([{ path: '/a.css', kind: 'css' }, { path: '/b.png', kind: 'asset' }]), 'asset');
+  assert.equal(strategy([{ path: '/a.js', kind: 'js' }, { path: '/b.png', kind: 'asset' }]), 'js');
 });

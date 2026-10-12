@@ -4,7 +4,8 @@
 //
 // Hot reload (ADR 0030, ADR 0031): a `reload` event that is not `full`, comes from the same
 // server instance and carries exactly the next revision is applied in place when every change
-// can be: stylesheets are swapped (the new link loads before the old one goes). A script change
+// can be: stylesheets are swapped (the new link loads before the old one goes), and images,
+// icons and stylesheets that reference a changed asset are cache-busted. A script change
 // reloads the page and restores the scroll position, carried in `history.state.__sitePreview`
 // (never storage or cookies, never the URL). Anything else, including a failed load, reloads.
 (function () {
@@ -62,20 +63,110 @@
     return baseline;
   }
 
-  // How a hot change set is applied: 'css' when every change is a stylesheet, 'js' when a
-  // script changed and the rest are stylesheets (the reload subsumes them), else 'full'.
+  // How a hot change set is applied: 'js' when a script changed and the rest are stylesheets
+  // or assets (the reload subsumes them), else 'asset' when an asset changed and the rest are
+  // stylesheets, 'css' when every change is a stylesheet, and 'full' for anything else.
   function strategy(changes) {
     if (!Array.isArray(changes) || changes.length === 0) return 'full';
     var script = false;
+    var asset = false;
     for (var i = 0; i < changes.length; i++) {
       var change = changes[i];
       if (!change || typeof change.path !== 'string' || change.path.charAt(0) !== '/') {
         return 'full';
       }
       if (change.kind === 'js') script = true;
+      else if (change.kind === 'asset') asset = true;
       else if (change.kind !== 'css') return 'full';
     }
-    return script ? 'js' : 'css';
+    return script ? 'js' : asset ? 'asset' : 'css';
+  }
+
+  // The candidates of a `srcset` attribute ({url, descriptor}), split as the HTML parser does:
+  // a URL runs to whitespace (a trailing comma ends it), descriptors run to a comma outside
+  // parentheses.
+  function parseSrcset(text) {
+    var candidates = [];
+    var i = 0;
+    while (i < text.length) {
+      while (i < text.length && /[\s,]/.test(text.charAt(i))) i++;
+      if (i >= text.length) break;
+      var start = i;
+      while (i < text.length && !/\s/.test(text.charAt(i))) i++;
+      var url = text.slice(start, i);
+      var descriptor = '';
+      if (/,$/.test(url)) {
+        url = url.replace(/,+$/, '');
+      } else {
+        var from = i;
+        var depth = 0;
+        while (i < text.length) {
+          var c = text.charAt(i);
+          if (c === '(') depth++;
+          else if (c === ')' && depth > 0) depth--;
+          else if (c === ',' && depth === 0) break;
+          i++;
+        }
+        descriptor = text.slice(from, i).trim();
+        i++;
+      }
+      if (url !== '') candidates.push({ url: url, descriptor: descriptor });
+    }
+    return candidates;
+  }
+
+  // `srcset` with only the candidates whose URL is `path` cache-busted, or null when none is.
+  function rewriteSrcset(srcset, path, revision, base, origin) {
+    var matched = false;
+    var rewritten = parseSrcset(srcset).map(function (candidate) {
+      var url = candidate.url;
+      if (matchStylesheetHref(url, path, base, origin)) {
+        matched = true;
+        url = cacheBustUrl(url, revision, base);
+      }
+      return candidate.descriptor === '' ? url : url + ' ' + candidate.descriptor;
+    });
+    return matched ? rewritten.join(', ') : null;
+  }
+
+  // The URLs inside `url(...)` tokens of serialized CSS text.
+  function cssUrls(text) {
+    var urls = [];
+    var pattern = /url\(\s*(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'|([^)\s]*))\s*\)/g;
+    var found;
+    while ((found = pattern.exec(text)) !== null) {
+      var raw = found[1] !== undefined ? found[1] : found[2] !== undefined ? found[2] : found[3];
+      urls.push(raw.replace(/\\(.)/g, '$1'));
+    }
+    return urls;
+  }
+
+  // Whether a rule of `sheet` (or of a sheet it imports) references `path` in a `url(...)`,
+  // resolved against the sheet's own URL. Best-effort like importsPath.
+  function referencesPath(sheet, path, origin, depth) {
+    var level = depth || 0;
+    if (!sheet || level > IMPORT_DEPTH) return false;
+    var rules;
+    try {
+      rules = sheet.cssRules;
+    } catch (_) {
+      return false;
+    }
+    if (!rules) return false;
+    var base = typeof sheet.href === 'string' && sheet.href !== '' ? sheet.href : origin + '/';
+    for (var i = 0; i < rules.length; i++) {
+      var rule = rules[i];
+      if (!rule) continue;
+      if (typeof rule.href === 'string' && 'styleSheet' in rule) {
+        if (referencesPath(rule.styleSheet, path, origin, level + 1)) return true;
+        continue;
+      }
+      var urls = typeof rule.cssText === 'string' ? cssUrls(rule.cssText) : [];
+      for (var j = 0; j < urls.length; j++) {
+        if (matchStylesheetHref(urls[j], path, base, origin)) return true;
+      }
+    }
+    return false;
   }
 
   // A history state the scroll position may be merged into: null or a plain object. Checked
@@ -202,6 +293,10 @@
       matchStylesheetHref: matchStylesheetHref,
       cacheBustUrl: cacheBustUrl,
       importsPath: importsPath,
+      parseSrcset: parseSrcset,
+      rewriteSrcset: rewriteSrcset,
+      cssUrls: cssUrls,
+      referencesPath: referencesPath,
       markScroll: markScroll,
       takeScroll: takeScroll,
     };
@@ -251,9 +346,13 @@
     });
   }
 
+  function all(selector) {
+    return Array.prototype.slice.call(document.querySelectorAll(selector));
+  }
+
   // The stylesheet links to swap for `changes`, or null when a path has none.
   function stylesheetsFor(changes) {
-    var links = Array.prototype.slice.call(document.querySelectorAll('link[rel~="stylesheet"]'));
+    var links = all('link[rel~="stylesheet"]');
     var origin = location.origin;
     var chosen = [];
     for (var i = 0; i < changes.length; i++) {
@@ -310,11 +409,73 @@
     else window.addEventListener('load', restore);
   }
 
+  // The rewrites that cache-bust every reference to the asset `changes` (stylesheet links that
+  // reference one are added to `links`), or null when a path is referenced by nothing this
+  // client can refresh (an image fetched by script, an inline style).
+  function assetRewrites(changes, revision, links) {
+    if (changes.length === 0) return [];
+    var base = document.baseURI;
+    var origin = location.origin;
+    var images = all('img[src]');
+    var sets = all('img[srcset], source[srcset]');
+    var icons = all('link[rel~="icon"]');
+    var sheets = all('link[rel~="stylesheet"]');
+    var rewrites = [];
+    function attribute(element, name) {
+      return function () {
+        element.setAttribute(name, cacheBustUrl(element.getAttribute(name), revision, base));
+      };
+    }
+    function srcset(element, path) {
+      return function () {
+        var text = rewriteSrcset(element.getAttribute('srcset'), path, revision, base, origin);
+        if (text !== null) element.setAttribute('srcset', text);
+      };
+    }
+    for (var i = 0; i < changes.length; i++) {
+      var path = changes[i].path;
+      var found = false;
+      images.forEach(function (image) {
+        if (matchStylesheetHref(image.getAttribute('src'), path, base, origin)) {
+          found = true;
+          rewrites.push(attribute(image, 'src'));
+        }
+      });
+      sets.forEach(function (element) {
+        if (rewriteSrcset(element.getAttribute('srcset'), path, revision, base, origin) !== null) {
+          found = true;
+          rewrites.push(srcset(element, path));
+        }
+      });
+      icons.forEach(function (icon) {
+        if (matchStylesheetHref(icon.getAttribute('href'), path, base, origin)) {
+          found = true;
+          rewrites.push(attribute(icon, 'href'));
+        }
+      });
+      sheets.forEach(function (link) {
+        if (referencesPath(link.sheet, path, origin, 0)) {
+          found = true;
+          if (links.indexOf(link) < 0) links.push(link);
+        }
+      });
+      if (!found) return null;
+    }
+    return rewrites;
+  }
+
   // A promise of whether `state`'s change set was applied in place, or null when it cannot be.
+  // Nothing is touched unless every change has somewhere to go.
   function apply(state, revision) {
-    if (strategy(state.changes) !== 'css') return null;
-    var links = stylesheetsFor(state.changes);
+    var plan = strategy(state.changes);
+    if (plan !== 'css' && plan !== 'asset') return null;
+    var styles = state.changes.filter(function (change) { return change.kind === 'css'; });
+    var assets = state.changes.filter(function (change) { return change.kind === 'asset'; });
+    var links = stylesheetsFor(styles);
     if (links === null) return null;
+    var rewrites = assetRewrites(assets, revision, links);
+    if (rewrites === null) return null;
+    rewrites.forEach(function (rewrite) { rewrite(); });
     return Promise.all(links.map(function (link) { return swap(link, revision); }))
       .then(function (results) { return results.indexOf(false) < 0; });
   }
