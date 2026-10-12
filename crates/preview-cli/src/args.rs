@@ -49,11 +49,11 @@ pub struct ServeArgs {
     #[arg(long, value_name = "DUR", default_value = "150ms", value_parser = parse_debounce)]
     pub debounce: DebounceWindow,
 
-    /// Print start-up and watcher events as JSON lines on stdout (not yet implemented: refused).
+    /// Print start-up and watcher events as JSON lines on stdout; warnings stay on stderr.
     #[arg(long)]
     pub json: bool,
 
-    /// Open the site in a browser once it is ready (not yet implemented: refused).
+    /// Open the site in the default browser once it is ready (xdg-open or open).
     #[arg(long)]
     pub open: bool,
 }
