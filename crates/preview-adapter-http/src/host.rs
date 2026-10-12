@@ -4,10 +4,15 @@
 //! the method gate sees it; a refusal is `421 Misdirected Request` with the fixed body
 //! `Host not allowed`. Nothing from the header reaches the response, and no CORS header is
 //! ever added.
+//!
+//! The accepted [`Authority`] is stored in the request's extensions, so a handler that needs
+//! it (the SSE Origin check) reads exactly what this gate accepted instead of parsing the
+//! header a second time.
 
 use axum::extract::{Request, State};
 use axum::http::StatusCode;
 use axum::http::header::HOST;
+use axum::http::uri::Scheme;
 use axum::middleware::Next;
 use axum::response::Response;
 use preview_domain::{Authority, HostDecision, HostPolicy, HostReject};
@@ -23,14 +28,20 @@ use crate::errors::plain;
 ///   (`should_reject_with_421_when_host_is_not_utf8`);
 /// - an absolute-form request target (`GET http://a/ HTTP/1.1`) must name the same accepted
 ///   authority as the Host header, since RFC 9112 §3.2.2 lets a server route by either
-///   (`should_reject_with_421_when_absolute_target_disagrees_with_host`).
+///   (`should_reject_with_421_when_absolute_target_disagrees_with_host`), and its scheme
+///   must be `http`, the only one this listener speaks: RFC 9110 §15.5.20 makes 421 the
+///   answer for a scheme and authority the server will not produce a response for
+///   (`should_reject_with_421_when_absolute_target_scheme_is_not_http`).
 pub(crate) async fn host_gate(
     State(policy): State<HostPolicy>,
-    request: Request,
+    mut request: Request,
     next: Next,
 ) -> Response {
     match authorize(policy, &request) {
-        Ok(_) => next.run(request).await,
+        Ok(authority) => {
+            request.extensions_mut().insert(authority);
+            next.run(request).await
+        }
         Err(_) => plain(StatusCode::MISDIRECTED_REQUEST),
     }
 }
@@ -43,6 +54,13 @@ fn authorize(policy: HostPolicy, request: &Request) -> Result<Authority, HostRej
         (Some(_), Some(_)) => return Err(HostReject::Malformed),
     };
     let accepted = decide(policy, raw)?;
+    if request
+        .uri()
+        .scheme()
+        .is_some_and(|scheme| *scheme != Scheme::HTTP)
+    {
+        return Err(HostReject::AddressNotAllowed);
+    }
     if let Some(target) = request.uri().authority()
         && decide(policy, Some(target.as_str()))? != accepted
     {

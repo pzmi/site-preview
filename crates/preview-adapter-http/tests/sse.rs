@@ -9,9 +9,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::body::Body;
-use axum::http::{Request, StatusCode};
+use axum::http::{HeaderValue, Method, Request, StatusCode};
 use http_body_util::BodyExt;
-use preview_adapter_http::{AppState, Shutdown, build_router};
+use preview_adapter_http::{AppState, DEFAULT_MAX_STREAMS, Shutdown, StreamLimit, build_router};
 use preview_application::ReloadState;
 use preview_domain::{BoundAddr, ChangeSet, HostPolicy};
 use preview_testkit::{FixedInstanceIds, InMemorySite};
@@ -25,21 +25,35 @@ const KEEP_ALIVE_FRAME: &str = ":\n\n";
 struct Server {
     reload: ReloadState,
     shutdown: Shutdown,
+    streams: StreamLimit,
     instance: String,
 }
 
 impl Server {
     fn new() -> Self {
+        Self::with_limit(DEFAULT_MAX_STREAMS)
+    }
+
+    fn with_limit(max_streams: usize) -> Self {
         let instance = FixedInstanceIds::new(7, 1).next_id();
         Self {
             instance: instance.as_str().to_owned(),
             reload: ReloadState::new(instance),
             shutdown: Shutdown::new(),
+            streams: StreamLimit::new(max_streams),
         }
     }
 
     async fn connect(&self, headers: &[(&str, &str)]) -> (axum::http::response::Parts, Body) {
         open(build_router(state_of(self)), headers).await
+    }
+
+    async fn send(&self, request: Request<Body>) -> (axum::http::response::Parts, Body) {
+        let response = build_router(state_of(self))
+            .oneshot(request)
+            .await
+            .expect("response");
+        response.into_parts()
     }
 
     fn publish(&self) {
@@ -75,6 +89,7 @@ fn state_of(server: &Server) -> AppState {
         host: HostPolicy::new(BoundAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 80), false),
         shutdown: server.shutdown.signal(),
         keep_alive: KEEP_ALIVE,
+        streams: server.streams.clone(),
     }
 }
 
@@ -271,4 +286,276 @@ async fn should_ignore_last_event_id_when_reconnecting() {
         next_frame(&mut body).await.as_deref(),
         Some(KEEP_ALIVE_FRAME)
     );
+}
+
+fn request(method: Method, host: &str, headers: &[(&str, HeaderValue)]) -> Request<Body> {
+    let mut request = Request::builder()
+        .method(method)
+        .uri("/__site_preview/events")
+        .header("host", host);
+    for (name, value) in headers {
+        request = request.header(*name, value.clone());
+    }
+    request.body(Body::empty()).expect("request")
+}
+
+fn text(value: &'static str) -> HeaderValue {
+    HeaderValue::from_static(value)
+}
+
+fn header<'a>(parts: &'a axum::http::response::Parts, name: &str) -> Option<&'a str> {
+    parts.headers.get(name).and_then(|v| v.to_str().ok())
+}
+
+async fn body_text(body: Body) -> String {
+    let bytes = body.collect().await.expect("body").to_bytes();
+    String::from_utf8(bytes.to_vec()).expect("utf-8")
+}
+
+/// A fixed 403 with no CORS header and nothing from the request; and nothing subscribed or
+/// held: the server's only permit is still free afterwards.
+async fn assert_forbidden(
+    server: &Server,
+    (parts, body): (axum::http::response::Parts, Body),
+    case: &str,
+) {
+    assert_eq!(parts.status, StatusCode::FORBIDDEN, "{case}");
+    assert_eq!(header(&parts, "cache-control"), Some("no-store"), "{case}");
+    assert!(
+        !parts
+            .headers
+            .keys()
+            .any(|k| k.as_str().starts_with("access-control-")),
+        "{case}"
+    );
+    assert_eq!(body_text(body).await, "403 Forbidden", "{case}");
+    let (after, _body) = server.connect(&[]).await;
+    assert_eq!(after.status, StatusCode::OK, "{case}: permit still free");
+}
+
+#[tokio::test(start_paused = true)]
+async fn should_reject_with_403_when_origin_cross_site() {
+    for (case, headers) in [
+        (
+            "cross-site fetch",
+            vec![("sec-fetch-site", text("cross-site"))],
+        ),
+        (
+            "cross-site fetch with a matching origin",
+            vec![
+                ("origin", text("http://127.0.0.1")),
+                ("sec-fetch-site", text("cross-site")),
+            ],
+        ),
+        (
+            "foreign origin",
+            vec![("origin", text("http://evil.example"))],
+        ),
+        ("opaque origin", vec![("origin", text("null"))]),
+        ("other scheme", vec![("origin", text("https://127.0.0.1"))]),
+        ("other port", vec![("origin", text("http://127.0.0.1:81"))]),
+        (
+            "localhost is another origin",
+            vec![("origin", text("http://localhost"))],
+        ),
+        (
+            "origin with a path",
+            vec![("origin", text("http://127.0.0.1/x"))],
+        ),
+    ] {
+        // given
+        let server = Server::with_limit(1);
+        let refused = request(Method::GET, "127.0.0.1", &headers);
+
+        // when
+        let outcome = server.send(refused).await;
+
+        // then
+        assert_forbidden(&server, outcome, case).await;
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn should_reject_with_403_when_origin_header_is_ambiguous() {
+    let non_utf8 = HeaderValue::from_bytes(b"http://127.0.0.1\xff").expect("obs-text is valid");
+    for (case, headers) in [
+        (
+            "repeated origin",
+            vec![
+                ("origin", text("http://127.0.0.1")),
+                ("origin", text("http://127.0.0.1")),
+            ],
+        ),
+        ("non-UTF-8 origin", vec![("origin", non_utf8.clone())]),
+        (
+            "repeated sec-fetch-site",
+            vec![
+                ("sec-fetch-site", text("same-origin")),
+                ("sec-fetch-site", text("same-origin")),
+            ],
+        ),
+    ] {
+        // given
+        let server = Server::with_limit(1);
+        let refused = request(Method::GET, "127.0.0.1", &headers);
+
+        // when
+        let outcome = server.send(refused).await;
+
+        // then
+        assert_forbidden(&server, outcome, case).await;
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn should_reject_with_403_when_origin_differs_from_accepted_host() {
+    // given: both authorities are ones the Host gate accepts, but not the same one
+    let server = Server::with_limit(1);
+    let refused = request(
+        Method::GET,
+        "localhost",
+        &[("origin", text("http://127.0.0.1"))],
+    );
+
+    // when
+    let outcome = server.send(refused).await;
+
+    // then
+    assert_forbidden(&server, outcome, "127.0.0.1 origin on a localhost host").await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn should_accept_when_no_origin_headers() {
+    for (host, headers) in [
+        ("127.0.0.1", vec![]),
+        (
+            "127.0.0.1",
+            vec![
+                ("origin", text("http://127.0.0.1")),
+                ("sec-fetch-site", text("same-origin")),
+            ],
+        ),
+        ("localhost", vec![("origin", text("http://localhost:80"))]),
+        ("127.0.0.1", vec![("sec-fetch-site", text("same-site"))]),
+    ] {
+        // given
+        let server = Server::new();
+
+        // when
+        let (parts, mut body) = server.send(request(Method::GET, host, &headers)).await;
+
+        // then
+        assert_eq!(parts.status, StatusCode::OK, "{host} {headers:?}");
+        assert_eq!(next_frame(&mut body).await, Some(server.event("state", 0)));
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn should_return_503_when_limit_reached() {
+    // given
+    let server = Server::with_limit(2);
+    let (first, _a) = server.connect(&[]).await;
+    let (second, _b) = server.connect(&[]).await;
+
+    // when
+    let (third, body) = server.connect(&[]).await;
+
+    // then
+    assert_eq!(first.status, StatusCode::OK);
+    assert_eq!(second.status, StatusCode::OK);
+    assert_eq!(third.status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(header(&third, "retry-after"), Some("2"));
+    assert_eq!(header(&third, "cache-control"), Some("no-store"));
+    assert_eq!(
+        header(&third, "content-type"),
+        Some("text/plain; charset=utf-8")
+    );
+    assert_eq!(body_text(body).await, "503 Service Unavailable");
+}
+
+#[tokio::test(start_paused = true)]
+async fn should_return_503_when_default_limit_of_64_streams_open() {
+    // given
+    let server = Server::new();
+    let mut open = Vec::new();
+    for _ in 0..64 {
+        let (parts, body) = server.connect(&[]).await;
+        assert_eq!(parts.status, StatusCode::OK);
+        open.push(body);
+    }
+
+    // when
+    let (over, _) = server.connect(&[]).await;
+
+    // then
+    assert_eq!(DEFAULT_MAX_STREAMS, 64);
+    assert_eq!(over.status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(header(&over, "cache-control"), Some("no-store"));
+}
+
+#[tokio::test(start_paused = true)]
+async fn should_release_permit_when_client_disconnects() {
+    // given
+    let server = Server::with_limit(1);
+    let (_, mut body) = server.connect(&[]).await;
+    assert_eq!(next_frame(&mut body).await, Some(server.event("state", 0)));
+    let (refused, _) = server.connect(&[]).await;
+    assert_eq!(refused.status, StatusCode::SERVICE_UNAVAILABLE);
+
+    // when
+    drop(body);
+
+    // then
+    let (parts, mut again) = server.connect(&[]).await;
+    assert_eq!(parts.status, StatusCode::OK);
+    assert_eq!(next_frame(&mut again).await, Some(server.event("state", 0)));
+}
+
+#[tokio::test(start_paused = true)]
+async fn should_release_permit_when_stream_ends_on_shutdown() {
+    // given
+    let server = Server::with_limit(1);
+    let (_, mut body) = server.connect(&[]).await;
+    assert_eq!(next_frame(&mut body).await, Some(server.event("state", 0)));
+
+    // when: the stream ends while the client still holds the body
+    server.shutdown.trigger();
+    assert_eq!(next_frame(&mut body).await, None);
+
+    // then
+    let (parts, _again) = server.connect(&[]).await;
+    assert_eq!(parts.status, StatusCode::OK);
+}
+
+#[tokio::test(start_paused = true)]
+async fn should_answer_head_without_taking_permit_when_limit_reached() {
+    // given: the only permit is held
+    let server = Server::with_limit(1);
+    let (_, _held) = server.connect(&[]).await;
+
+    // when
+    let (parts, body) = server.send(request(Method::HEAD, "127.0.0.1", &[])).await;
+
+    // then
+    assert_eq!(parts.status, StatusCode::OK);
+    assert_eq!(header(&parts, "content-type"), Some("text/event-stream"));
+    assert_eq!(header(&parts, "cache-control"), Some("no-store"));
+    assert_eq!(body_text(body).await, "");
+}
+
+#[tokio::test(start_paused = true)]
+async fn should_reject_with_403_when_head_is_cross_site() {
+    // given
+    let server = Server::with_limit(1);
+    let refused = request(
+        Method::HEAD,
+        "127.0.0.1",
+        &[("sec-fetch-site", text("cross-site"))],
+    );
+
+    // when
+    let (parts, _) = server.send(refused).await;
+
+    // then
+    assert_eq!(parts.status, StatusCode::FORBIDDEN);
 }

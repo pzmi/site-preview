@@ -6,7 +6,9 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use preview_adapter_http::{AppState, DEFAULT_KEEP_ALIVE, Shutdown, build_router};
+use preview_adapter_http::{
+    AppState, DEFAULT_KEEP_ALIVE, DEFAULT_MAX_STREAMS, Shutdown, StreamLimit, build_router,
+};
 use preview_application::ReloadState;
 use preview_domain::{BoundAddr, HostPolicy, InstanceId};
 use tokio::net::TcpListener;
@@ -119,6 +121,7 @@ pub fn run(config: &ServeConfig, out: &mut dyn StartupReporter) -> Result<(), St
             ),
             shutdown: streams.signal(),
             keep_alive: DEFAULT_KEEP_ALIVE,
+            streams: StreamLimit::new(DEFAULT_MAX_STREAMS),
         };
         let url = format!("http://{}/", reachable(local));
         out.ready(&Ready {

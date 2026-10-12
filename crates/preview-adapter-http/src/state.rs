@@ -7,6 +7,7 @@ use preview_application::{ReloadState, SiteContent};
 use preview_domain::HostPolicy;
 
 use crate::shutdown::ShutdownSignal;
+use crate::sse_guard::StreamLimit;
 
 /// What the handlers share: the site's content port, the reload state, the Host policy and
 /// what the event streams need.
@@ -29,4 +30,7 @@ pub struct AppState {
     /// Silence after which an event stream sends a keepalive comment; composition passes
     /// [`crate::DEFAULT_KEEP_ALIVE`].
     pub keep_alive: Duration,
+    /// How many event streams may be open at once; a connection over it gets `503`.
+    /// Composition passes [`crate::DEFAULT_MAX_STREAMS`] (plan.md section 7.4).
+    pub streams: StreamLimit,
 }

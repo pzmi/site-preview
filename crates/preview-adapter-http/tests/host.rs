@@ -7,7 +7,9 @@ use axum::body::Body;
 use axum::http::request::Builder;
 use axum::http::{HeaderValue, Request, Response, StatusCode};
 use http_body_util::BodyExt;
-use preview_adapter_http::{AppState, DEFAULT_KEEP_ALIVE, Shutdown, build_router};
+use preview_adapter_http::{
+    AppState, DEFAULT_KEEP_ALIVE, DEFAULT_MAX_STREAMS, Shutdown, StreamLimit, build_router,
+};
 use preview_application::ReloadState;
 use preview_domain::{BoundAddr, HostPolicy};
 use preview_testkit::{FixedInstanceIds, InMemorySite};
@@ -32,6 +34,7 @@ async fn send_to(
         host: HostPolicy::new(BoundAddr::new(bound, PORT), allow_remote),
         shutdown: Shutdown::new().signal(),
         keep_alive: DEFAULT_KEEP_ALIVE,
+        streams: StreamLimit::new(DEFAULT_MAX_STREAMS),
     });
     let response = app.oneshot(request).await.expect("response");
     let (parts, body) = response.into_parts();
@@ -248,6 +251,42 @@ async fn should_reject_with_421_when_absolute_target_disagrees_with_host() {
         assert_refused(&response, &body, &target);
         assert_eq!(site.open_count(), 0, "{target}");
     }
+}
+
+#[tokio::test]
+async fn should_reject_with_421_when_absolute_target_scheme_is_not_http() {
+    let good = format!("127.0.0.1:{PORT}");
+    for scheme in ["https", "HTTPS", "ftp", "ws", "file"] {
+        // given: the authorities agree, but the request line names another protocol
+        let site = site();
+        let request = get(&format!("{scheme}://{good}/"))
+            .header("host", good.as_str())
+            .body(Body::empty())
+            .expect("request");
+
+        // when
+        let (response, body) = send(&site, request).await;
+
+        // then
+        assert_refused(&response, &body, scheme);
+        assert_eq!(site.open_count(), 0, "{scheme}");
+    }
+}
+
+#[tokio::test]
+async fn should_accept_when_absolute_target_scheme_is_uppercase_http() {
+    // given
+    let site = site();
+    let request = get(&format!("HTTP://127.0.0.1:{PORT}/"))
+        .header("host", format!("127.0.0.1:{PORT}"))
+        .body(Body::empty())
+        .expect("request");
+
+    // when
+    let (response, _) = send(&site, request).await;
+
+    // then
+    assert_eq!(response.status(), StatusCode::OK);
 }
 
 #[tokio::test]

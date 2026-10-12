@@ -19,6 +19,7 @@ pub(crate) fn plain(status: StatusCode) -> Response {
         StatusCode::NOT_FOUND => "404 Not Found",
         StatusCode::METHOD_NOT_ALLOWED => "405 Method Not Allowed",
         StatusCode::MISDIRECTED_REQUEST => "Host not allowed",
+        StatusCode::SERVICE_UNAVAILABLE => "503 Service Unavailable",
         _ => "500 Internal Server Error",
     };
     let mut response = Response::new(Body::from(body));
