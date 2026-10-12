@@ -7,7 +7,7 @@
 //! | Model action | Stimulus |
 //! |:--|:--|
 //! | `init` | a new [`ReloadState`] for a new instance; no connection |
-//! | `publish(kinds, reason)`, `publishHot(kinds)` | [`ReloadState::publish_next`] with a [`ChangeSet`] accumulated from one `Modify` per kind (`a.css`, `a.js`, `a.html`, `a.png`, `a.txt`) and, for `reason`, an `Ambiguous` event on the root (a rescan) |
+//! | `publish(kinds, reason)`, `publishHot(kinds)` | [`ReloadState::publish_next`] (or the [`Publisher`] a negative control gives) with a [`ChangeSet`] accumulated from one `Modify` per kind (`a.css`, `a.js`, `a.html`, `a.png`, `a.txt`) and, for `reason`, an `Ambiguous` event on the root (a rescan) |
 //! | `stopServer` | fire the [`Shutdown`], then poll every open body once: an ended body is a closed connection |
 //! | `startServer` | a new [`ReloadState`], [`Shutdown`] and [`StreamLimit`] for a new instance id |
 //! | `connect(b)` | `GET /__site_preview/events` through the router; the response must be `200`, and its first event is polled at once |
@@ -187,6 +187,20 @@ pub struct ReloadObs {
 /// stand-in behind the same seam (FORMAL-08).
 pub type MakeRouter = fn(AppState) -> Router;
 
+/// Publishes the next revision on the driver's [`ReloadState`]: the real
+/// [`ReloadState::publish_next`], or a test's faulty stand-in behind the same seam
+/// (FORMAL-08, [`ReloadDriver::with_publisher`]). It gets the handle itself, so a stand-in
+/// may replace the channel with one it built from [`ReloadState`]'s public API.
+pub type Publisher = Box<dyn FnMut(&mut ReloadState, ChangeSet) -> Result<(), String>>;
+
+/// The real publish path.
+fn publish_next(reload: &mut ReloadState, changes: ChangeSet) -> Result<(), String> {
+    reload
+        .publish_next(changes)
+        .map(|_| ())
+        .map_err(|e| format!("publish_next: {e}"))
+}
+
 /// One browser's open connection.
 struct Connection {
     body: Body,
@@ -207,6 +221,7 @@ enum Polled {
 pub struct ReloadDriver {
     runtime: Runtime,
     make_router: MakeRouter,
+    publisher: Publisher,
     ids: FixedInstanceIds,
     /// The real instance ids, in creation order.
     instances: Vec<String>,
@@ -255,6 +270,7 @@ impl ReloadDriver {
         Self {
             runtime,
             make_router,
+            publisher: Box::new(publish_next),
             ids,
             instances: vec![first.as_str().to_owned()],
             reload: ReloadState::new(first),
@@ -263,6 +279,14 @@ impl ReloadDriver {
             up: true,
             connections: BTreeMap::new(),
         }
+    }
+
+    /// This driver with its publishes going through `publisher` instead of
+    /// [`ReloadState::publish_next`].
+    #[must_use]
+    pub fn with_publisher(mut self, publisher: Publisher) -> Self {
+        self.publisher = publisher;
+        self
     }
 
     /// The model's `init`: one running instance at revision 0, no connection.
@@ -294,7 +318,7 @@ impl ReloadDriver {
         self.up = false;
     }
 
-    fn publish(&self, kinds: &BTreeSet<Kind>, reason: bool) -> Result<(), DriverError> {
+    fn publish(&mut self, kinds: &BTreeSet<Kind>, reason: bool) -> Result<(), DriverError> {
         let mut changes = ChangeSet::new();
         for kind in kinds {
             let name = Component::new(kind.file())
@@ -311,10 +335,7 @@ impl ReloadDriver {
                 path: RelPath::root(),
             });
         }
-        self.reload
-            .publish_next(changes)
-            .map(|_| ())
-            .map_err(|e| DriverError::Refused(format!("publish_next: {e}")))
+        (self.publisher)(&mut self.reload, changes).map_err(DriverError::Refused)
     }
 
     fn app_state(&self) -> AppState {

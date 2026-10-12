@@ -61,3 +61,4 @@ This directory holds the decisions behind site-preview, one file per decision, i
 | [0056](0056-lifecycle-conformance-driver.md) | Lifecycle conformance driver: composition seams, scripted named traces, a sampling relation | Proposed |
 | [0057](0057-reload-conformance-driver.md) | Reload conformance driver: in-process SSE bodies, the client's choice read from the model | Proposed |
 | [0058](0058-watcher-conformance-driver.md) | Watcher conformance driver: the coordinator in process, the environment from the trace | Proposed |
+| [0059](0059-conformance-negative-controls.md) | Conformance negative controls: faults behind the drivers' seams, a publish seam in the reload driver | Proposed |

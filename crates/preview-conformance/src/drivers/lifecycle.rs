@@ -158,8 +158,9 @@ impl LifecycleDriver {
         self.streams.clear();
     }
 
-    /// The address of the last server that started, stopped or not.
-    fn address(&self) -> Option<SocketAddr> {
+    /// The address of the last server that started, stopped or not: where `listener_owned`
+    /// is probed. A negative control (FORMAL-08) reads it to leak a listener there.
+    pub fn address(&self) -> Option<SocketAddr> {
         match &self.current {
             Current::Started(server) => Some(server.local_addr()),
             Current::Absent | Current::BindFailed => None,
