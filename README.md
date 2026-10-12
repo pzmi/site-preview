@@ -100,6 +100,11 @@ same state:
 whose watcher could not start follows `ready` with a `degraded` event naming
 `registration-failed`. New fields may be added to either event; do not rely on their order.
 
+AI coding agents: [AGENTS.md](AGENTS.md) is a ready-made workflow built on this output (start,
+read `ready`, inspect in a browser, edit, observe the reload, stop), and
+[examples/claude-skill/static-html-preview/](examples/claude-skill/static-html-preview/SKILL.md)
+is the same as an example skill.
+
 ## Warnings
 
 Warnings go to stderr, one per line, as `site-preview: warning[<code>]: <message>`. The
