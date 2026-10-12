@@ -143,6 +143,32 @@ pub fn eligible_dirs(root: &RootDir, start: &RelPath) -> Result<Traversal, Trave
     Ok(found)
 }
 
+/// The eligible real subdirectories directly inside `dir`, one level, judged as
+/// [`eligible_dirs`] judges them. A failure to list `dir` after opening it is in the
+/// [`Traversal::errors`]; `dir` itself is not in [`Traversal::dirs`].
+///
+/// # Errors
+///
+/// A [`TraversalError`] when `dir` cannot be opened. Pinned by
+/// `should_rescan_nearest_existing_parent_when_nested_directories_are_removed`.
+pub(crate) fn eligible_children(
+    root: &RootDir,
+    dir: &RelPath,
+) -> Result<Traversal, TraversalError> {
+    let mut found = Traversal::default();
+    if eligibility::components(dir.components(), ComponentKind::Dir) != Eligibility::Eligible {
+        return Ok(found);
+    }
+    let opened = open_dir(root, dir).map_err(|fault| TraversalError {
+        dir: dir.clone(),
+        fault,
+    })?;
+    let mut children = Vec::new();
+    list_children(&opened, dir, &mut children, &mut found.errors);
+    found.dirs.extend(children);
+    Ok(found)
+}
+
 /// Opens `dir` beneath the root. A link or file found where the listing saw a directory is
 /// reported as `NotFound`: it is gone as a directory, which is not an error of the tree.
 fn open_dir(root: &RootDir, dir: &RelPath) -> Result<OpenedDir, TraversalFault> {

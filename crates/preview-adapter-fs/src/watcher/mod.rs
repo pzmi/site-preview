@@ -9,10 +9,14 @@
 //! ever blocking it. `notify` types stay inside this crate.
 
 mod bridge;
+mod reconcile;
 mod registration;
 mod translate;
 
 pub use bridge::{DEFAULT_CAPACITY, NotifyChangeSource, RuntimeError, StartReport};
+#[cfg(test)]
+pub(crate) use reconcile::ReconcileHint;
+pub use reconcile::ReconcileReport;
 #[cfg(test)]
 pub(crate) use registration::NotifyWatcher;
 pub use registration::{RegistrationError, WatchFault};

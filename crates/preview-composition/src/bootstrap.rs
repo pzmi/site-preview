@@ -7,10 +7,13 @@ use core::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use preview_adapter_fs::{NotifyChangeSource, RootDir, RootError, open_site_root};
-use preview_application::SiteContent;
+use preview_adapter_fs::{
+    NotifyChangeSource, ReconcileReport, RegistrationError, RootDir, RootError, open_site_root,
+};
+use preview_application::{ChangeBatch, ChangeSource, SiteContent};
+use preview_domain::ChangeEvent;
 
-use crate::watch_pipeline::{ReconcileScope, WatchControl};
+use crate::watch_pipeline::{ReconcileScope, Reconciled, WatchControl};
 
 /// How many directories that could not be watched are named one by one at start-up; the rest
 /// are counted in one line, so a reached watch limit cannot flood stderr.
@@ -90,24 +93,9 @@ pub(crate) fn open_root(requested: &Path) -> Result<OpenedRoot, RootRefusal> {
 /// (ADR 0047, ADR 0048).
 pub(crate) fn start_watcher(root: &OpenedRoot) -> (impl WatchControl + use<>, WatchStart) {
     let (source, report) = NotifyChangeSource::start(&root.dir, &root.display_path);
-    let mut problems: Vec<String> = report
-        .errors
-        .iter()
-        .take(NAMED_REGISTRATION_ERRORS)
-        .map(ToString::to_string)
-        .collect();
-    let unnamed = report
-        .errors
-        .len()
-        .saturating_sub(NAMED_REGISTRATION_ERRORS);
-    if unnamed > 0 {
-        problems.push(format!(
-            "{unnamed} more directories cannot be watched for the same kinds of reason"
-        ));
-    }
     let start = WatchStart {
         dirs: report.watching,
-        problems,
+        problems: describe(&report.errors),
         unavailable: match report.unavailable {
             Some(fault) => Some(fault.to_string()),
             None if report.watching == 0 => {
@@ -116,21 +104,134 @@ pub(crate) fn start_watcher(root: &OpenedRoot) -> (impl WatchControl + use<>, Wa
             None => None,
         },
     };
-    (source, start)
+    let watch = FsWatch {
+        source,
+        root: Arc::clone(&root.dir),
+    };
+    (watch, start)
 }
 
-impl WatchControl for NotifyChangeSource {
-    /// The reconcile hook. The adapter cannot re-register yet, so the watch set and the
-    /// health stay as they are; directory create and remove reconciliation (FS-09) fills it.
-    fn reconcile(&mut self, _scope: ReconcileScope) -> Option<usize> {
-        None
+/// One line per directory that could not be walked or watched (the first
+/// [`NAMED_REGISTRATION_ERRORS`]), then one line counting the rest. Relative paths only.
+fn describe(errors: &[RegistrationError]) -> Vec<String> {
+    let mut problems: Vec<String> = errors
+        .iter()
+        .take(NAMED_REGISTRATION_ERRORS)
+        .map(ToString::to_string)
+        .collect();
+    let unnamed = errors.len().saturating_sub(NAMED_REGISTRATION_ERRORS);
+    if unnamed > 0 {
+        problems.push(format!(
+            "{unnamed} more directories cannot be watched for the same kinds of reason"
+        ));
+    }
+    problems
+}
+
+/// What a reconcile report means for the pipeline: readiness only when every eligible
+/// directory is watched (plan.md section 8.1 step 6). Pinned by
+/// `should_report_ready_only_when_reconcile_is_complete`.
+fn reconciled(report: &ReconcileReport) -> Reconciled {
+    Reconciled {
+        ready: (report.complete && report.watching > 0).then_some(report.watching),
+        problems: describe(&report.errors),
+    }
+}
+
+/// The filesystem adapter's change source with the root capability its reconciles walk.
+struct FsWatch {
+    source: NotifyChangeSource,
+    root: Arc<RootDir>,
+}
+
+impl ChangeSource for FsWatch {
+    type Event = ChangeEvent;
+
+    fn next(&mut self) -> impl Future<Output = ChangeBatch<ChangeEvent>> + Send {
+        self.source.next()
+    }
+}
+
+impl WatchControl for FsWatch {
+    /// The adapter's reconcile (ADR 0050): `Changed` covers the directories the delivered
+    /// changes touched, `Full` every eligible directory; both retry what failed before.
+    fn reconcile(&mut self, scope: ReconcileScope) -> Reconciled {
+        let report = match scope {
+            ReconcileScope::Changed => self.source.reconcile_changed(&self.root),
+            ReconcileScope::Full => self.source.reconcile_full(&self.root),
+        };
+        reconciled(&report)
     }
 
     fn failure_detail(&self) -> Option<String> {
-        self.last_failure().map(ToString::to_string)
+        self.source.last_failure().map(ToString::to_string)
     }
 
     fn close(&mut self) {
-        Self::close(self);
+        self.source.close();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use preview_adapter_fs::WatchFault;
+    use preview_domain::{Component, RelPath};
+
+    use super::*;
+
+    fn failure(dir: &str) -> RegistrationError {
+        RegistrationError {
+            dir: RelPath::new(vec![Component::new(dir).expect("valid component")]),
+            fault: WatchFault::PermissionDenied,
+        }
+    }
+
+    #[test]
+    fn should_report_ready_only_when_reconcile_is_complete() {
+        // given
+        let complete = ReconcileReport {
+            watching: 3,
+            errors: Vec::new(),
+            complete: true,
+        };
+        let failing = ReconcileReport {
+            watching: 2,
+            errors: vec![failure("blog")],
+            complete: false,
+        };
+        let still_incomplete = ReconcileReport {
+            watching: 2,
+            errors: Vec::new(),
+            complete: false,
+        };
+
+        // when
+        let answers = [&complete, &failing, &still_incomplete].map(reconciled);
+
+        // then
+        assert_eq!(answers[0].ready, Some(3));
+        assert!(answers[0].problems.is_empty());
+        assert_eq!(answers[1].ready, None);
+        assert_eq!(
+            answers[1].problems,
+            ["cannot watch directory `blog`: permission denied"]
+        );
+        assert_eq!(answers[2], Reconciled::default());
+    }
+
+    #[test]
+    fn should_count_the_rest_when_more_than_ten_directories_fail() {
+        // given
+        let errors: Vec<RegistrationError> = (0..12).map(|n| failure(&format!("d{n}"))).collect();
+
+        // when
+        let problems = describe(&errors);
+
+        // then
+        assert_eq!(problems.len(), NAMED_REGISTRATION_ERRORS + 1);
+        assert_eq!(
+            problems[NAMED_REGISTRATION_ERRORS],
+            "2 more directories cannot be watched for the same kinds of reason"
+        );
     }
 }

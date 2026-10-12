@@ -13,7 +13,7 @@ use preview_domain::{ChangeEvent, ChangeKind, Component, RelPath};
 use preview_testkit::poll::wait_until;
 use tempfile::TempDir;
 
-use crate::watcher::{NotifyWatcher, translate};
+use crate::watcher::{NotifyWatcher, ReconcileHint, translate};
 use crate::{MAX_DEPTH, NotifyChangeSource, SiteRoot, WatchFault, eligible_dirs, open_site_root};
 use preview_application::{ChangeBatch, ChangeSource, SourceFailure};
 
@@ -376,4 +376,396 @@ fn should_return_closed_when_source_is_closed() {
     // then
     assert_eq!(poll_next(&mut source), Some(ChangeBatch::Closed));
     assert_eq!(poll_next(&mut source), Some(ChangeBatch::Closed));
+}
+
+/// Drains every batch available now, as the pipeline would: each batch of changes is
+/// followed by a reconcile of what it touched. Returns the changes and the reconcile
+/// failures seen.
+fn pump(
+    source: &mut NotifyChangeSource,
+    site: &SiteRoot,
+    changes: &mut Vec<ChangeEvent>,
+    failures: &mut Vec<crate::RegistrationError>,
+) {
+    while let Some(batch) = poll_next(source) {
+        match batch {
+            ChangeBatch::Events(batch) => {
+                changes.extend(batch);
+                failures.extend(source.reconcile_changed(&site.dir).errors);
+            }
+            other => panic!("unexpected batch: {other:?}"),
+        }
+    }
+}
+
+/// Pumps until `done` holds; bounded, since native notifications arrive asynchronously.
+fn pump_until(
+    source: &mut NotifyChangeSource,
+    site: &SiteRoot,
+    what: &str,
+    mut done: impl FnMut(&NotifyChangeSource, &[ChangeEvent]) -> bool,
+) -> Vec<crate::RegistrationError> {
+    let mut changes = Vec::new();
+    let mut failures = Vec::new();
+    wait_until(DEADLINE, what, || {
+        pump(source, site, &mut changes, &mut failures);
+        done(source, &changes)
+    })
+    .unwrap_or_else(|_| panic!("{what}: changes {changes:?}, failures {failures:?}"));
+    failures
+}
+
+fn names_path(changes: &[ChangeEvent], path: &str) -> bool {
+    changes.iter().any(|change| change.path == rel(path))
+}
+
+fn watching(source: &NotifyChangeSource, dirs: &[&str]) -> bool {
+    let watched = source.watched();
+    dirs.iter().all(|dir| watched.contains(&rel(dir)))
+}
+
+fn watching_none(source: &NotifyChangeSource, dirs: &[&str]) -> bool {
+    let watched = source.watched();
+    dirs.iter().all(|dir| !watched.contains(&rel(dir)))
+}
+
+#[test]
+fn should_watch_new_nested_directory_with_descendants_when_created() {
+    // given
+    let (_base, root) = site();
+    let site = open_site_root(&root).expect("open root");
+    let (mut source, _report) = NotifyChangeSource::start(&site.dir, &site.display_path);
+
+    // when: the inner directory exists before anything can watch the outer one
+    fs::create_dir_all(site.display_path.join("a/b")).expect("mkdir -p");
+    let failures = pump_until(&mut source, &site, "a and a/b watched", |source, _| {
+        watching(source, &["a", "a/b"])
+    });
+    fs::write(site.display_path.join("a/b/page.css"), b"x").expect("edit inside");
+
+    // then
+    assert!(failures.is_empty(), "{failures:?}");
+    pump_until(
+        &mut source,
+        &site,
+        "the nested edit delivered",
+        |_, changes| names_path(changes, "a/b/page.css"),
+    );
+}
+
+/// Writes a new file in `dir` on every poll until one of them is delivered: a directory whose
+/// watch is not (yet) in place reports nothing, so delivery shows the watch works. Bounded.
+fn probe_until_delivered(source: &mut NotifyChangeSource, site: &SiteRoot, dir: &str) {
+    let mut written = Vec::new();
+    let mut changes = Vec::new();
+    let mut failures = Vec::new();
+    wait_until(DEADLINE, "a probe write delivered", || {
+        let name = format!("{dir}/probe-{}.html", written.len());
+        fs::write(site.display_path.join(&name), b"x").expect("write probe");
+        written.push(rel(&name));
+        pump(source, site, &mut changes, &mut failures);
+        changes.iter().any(|change| written.contains(&change.path))
+    })
+    .unwrap_or_else(|_| panic!("no probe in `{dir}` delivered: {changes:?}"));
+}
+
+/// Writes a file in the root and waits for it: one native queue delivers in order, so every
+/// notification of what happened before has been handled by then.
+fn settle_with_marker(source: &mut NotifyChangeSource, site: &SiteRoot) {
+    fs::write(site.display_path.join("marker.html"), b"x").expect("write marker");
+    let mut changes = Vec::new();
+    wait_until(DEADLINE, "the marker delivered", || {
+        while let Some(batch) = poll_next(source) {
+            if let ChangeBatch::Events(batch) = batch {
+                changes.extend(batch);
+            }
+        }
+        names_path(&changes, "marker.html")
+    })
+    .expect("marker delivered");
+}
+
+#[test]
+fn should_rewatch_directory_when_deleted_and_recreated() {
+    // given
+    let (_base, root) = site();
+    fs::create_dir_all(root.join("docs/inner")).expect("create docs");
+    let site = open_site_root(&root).expect("open root");
+    let (mut source, _report) = NotifyChangeSource::start(&site.dir, &site.display_path);
+    let docs = site.display_path.join("docs");
+
+    // when
+    fs::remove_dir_all(&docs).expect("rm -r docs");
+    fs::create_dir(&docs).expect("mkdir docs");
+
+    // then
+    probe_until_delivered(&mut source, &site, "docs");
+    assert!(watching(&source, &["", "docs"]));
+    assert!(watching_none(&source, &["docs/inner"]));
+}
+
+#[test]
+fn should_drop_stale_watch_when_directory_removed() {
+    // given
+    let (_base, root) = site();
+    fs::create_dir_all(root.join("old/inner/deep")).expect("create old");
+    fs::create_dir(root.join("kept")).expect("create kept");
+    let site = open_site_root(&root).expect("open root");
+    let (mut source, _report) = NotifyChangeSource::start(&site.dir, &site.display_path);
+
+    // when
+    fs::remove_dir_all(site.display_path.join("old")).expect("rm -r old");
+
+    // then
+    pump_until(&mut source, &site, "old forgotten", |source, _| {
+        watching_none(source, &["old", "old/inner", "old/inner/deep"])
+    });
+    assert_eq!(names(source.watched()), ["", "kept"]);
+}
+
+#[test]
+fn should_watch_moved_in_tree_when_directory_is_renamed_into_the_site() {
+    // given
+    let (base, root) = site();
+    let outside = base.path().join("incoming");
+    fs::create_dir_all(outside.join("t/u")).expect("create a tree outside");
+    let site = open_site_root(&root).expect("open root");
+    let (mut source, _report) = NotifyChangeSource::start(&site.dir, &site.display_path);
+
+    // when
+    fs::rename(outside.join("t"), site.display_path.join("t")).expect("move the tree in");
+    pump_until(&mut source, &site, "the moved tree watched", |source, _| {
+        watching(source, &["t", "t/u"])
+    });
+    fs::write(site.display_path.join("t/u/page.html"), b"x").expect("edit inside");
+
+    // then
+    pump_until(
+        &mut source,
+        &site,
+        "the edit in the moved tree",
+        |_, changes| names_path(changes, "t/u/page.html"),
+    );
+}
+
+#[test]
+fn should_move_watches_when_directory_is_renamed_away_and_back() {
+    // given
+    let (base, root) = site();
+    fs::create_dir_all(root.join("blog/posts")).expect("create blog");
+    let away = base.path().join("away");
+    let site = open_site_root(&root).expect("open root");
+    let (mut source, _report) = NotifyChangeSource::start(&site.dir, &site.display_path);
+    let blog = site.display_path.join("blog");
+
+    // when: away, then back
+    fs::rename(&blog, &away).expect("move blog away");
+    pump_until(&mut source, &site, "blog forgotten", |source, _| {
+        watching_none(source, &["blog", "blog/posts"])
+    });
+    fs::write(away.join("posts/elsewhere.html"), b"x").expect("edit while away");
+    fs::rename(&away, &blog).expect("move blog back");
+    pump_until(&mut source, &site, "blog watched again", |source, _| {
+        watching(source, &["blog", "blog/posts"])
+    });
+    fs::write(blog.join("posts/back.html"), b"x").expect("edit after the return");
+
+    // then
+    let mut changes = Vec::new();
+    pump_until(
+        &mut source,
+        &site,
+        "the edit after the return",
+        |_, seen| {
+            changes = seen.to_vec();
+            names_path(seen, "blog/posts/back.html")
+        },
+    );
+    assert!(
+        !changes.iter().any(
+            |change| change.path.components().last().map(Component::as_str)
+                == Some("elsewhere.html")
+        ),
+        "an edit outside the site was delivered: {changes:?}"
+    );
+}
+
+#[test]
+fn should_rename_watches_when_directory_is_renamed_inside_the_site() {
+    // given
+    let (_base, root) = site();
+    fs::create_dir_all(root.join("draft/img")).expect("create draft");
+    let site = open_site_root(&root).expect("open root");
+    let (mut source, _report) = NotifyChangeSource::start(&site.dir, &site.display_path);
+
+    // when
+    fs::rename(
+        site.display_path.join("draft"),
+        site.display_path.join("final"),
+    )
+    .expect("rename draft");
+    pump_until(&mut source, &site, "the watches renamed", |source, _| {
+        watching(source, &["final", "final/img"]) && watching_none(source, &["draft", "draft/img"])
+    });
+    fs::write(site.display_path.join("final/img/a.svg"), b"x").expect("edit inside");
+
+    // then
+    pump_until(
+        &mut source,
+        &site,
+        "the edit under the new name",
+        |_, changes| names_path(changes, "final/img/a.svg"),
+    );
+}
+
+#[test]
+fn should_rewatch_replaced_directory_when_full_reconcile_follows_a_loss() {
+    // given
+    let (_base, root) = site();
+    fs::create_dir(root.join("docs")).expect("create docs");
+    let site = open_site_root(&root).expect("open root");
+    let (mut source, _report) = NotifyChangeSource::start(&site.dir, &site.display_path);
+    let docs = site.display_path.join("docs");
+    fs::remove_dir(&docs).expect("rmdir docs");
+    fs::create_dir(&docs).expect("mkdir docs");
+    // The changes are delivered but not reconciled, as if they had been lost: only the full
+    // walk can notice that `docs` is another directory now.
+    settle_with_marker(&mut source, &site);
+
+    // when
+    let report = source.reconcile_full(&site.dir);
+
+    // then
+    assert!(report.complete, "{report:?}");
+    probe_until_delivered(&mut source, &site, "docs");
+}
+
+#[test]
+fn should_not_watch_ignored_or_linked_directory_when_created() {
+    // given
+    let (base, root) = site();
+    let outside = base.path().join("outside");
+    fs::create_dir(&outside).expect("create outside");
+    let site = open_site_root(&root).expect("open root");
+    let (mut source, _report) = NotifyChangeSource::start(&site.dir, &site.display_path);
+
+    // when
+    for dir in [
+        "node_modules/pkg",
+        ".git/objects",
+        "vendor/lib",
+        "docs/.cache",
+    ] {
+        fs::create_dir_all(site.display_path.join(dir)).expect("create ignored");
+    }
+    std::os::unix::fs::symlink(&outside, site.display_path.join("linked")).expect("link");
+    fs::create_dir(site.display_path.join("marker")).expect("create the marker");
+
+    // then
+    pump_until(&mut source, &site, "the marker watched", |source, _| {
+        watching(source, &["marker", "docs"])
+    });
+    assert_eq!(names(source.watched()), ["", "docs", "marker"]);
+    fs::write(outside.join("through-link.html"), b"x").expect("write through the link");
+    fs::write(site.display_path.join("marker/after.html"), b"x").expect("write the marker");
+    let mut seen = Vec::new();
+    pump_until(&mut source, &site, "the marker edit", |_, changes| {
+        seen = changes.to_vec();
+        names_path(changes, "marker/after.html")
+    });
+    assert!(
+        !names_path(&seen, "linked/through-link.html"),
+        "the link was followed: {seen:?}"
+    );
+}
+
+#[test]
+fn should_report_relative_directory_once_when_new_directory_cannot_be_walked() {
+    // given
+    let (base, root) = site();
+    let staging = base.path().join("staging");
+    fs::create_dir_all(staging.join("new/locked")).expect("create the tree");
+    fs::set_permissions(
+        staging.join("new/locked"),
+        fs::Permissions::from_mode(0o000),
+    )
+    .expect("chmod 000");
+    // Only uid 0 holding its DAC capabilities may list a mode-000 directory; there the denial
+    // cannot be provoked, and the test asserts the directory is then watched instead.
+    let os_allows = fs::read_dir(staging.join("new/locked")).is_ok();
+    let site = open_site_root(&root).expect("open root");
+    let (mut source, _report) = NotifyChangeSource::start(&site.dir, &site.display_path);
+
+    // when
+    fs::rename(staging.join("new"), site.display_path.join("new")).expect("move in");
+    let failures = pump_until(&mut source, &site, "new watched", |source, _| {
+        watching(source, &["new"])
+    });
+    let again = source.reconcile_changed(&site.dir);
+    fs::set_permissions(
+        site.display_path.join("new/locked"),
+        fs::Permissions::from_mode(0o755),
+    )
+    .expect("restore mode");
+    let recovered = source.reconcile_changed(&site.dir);
+
+    // then
+    if os_allows {
+        assert!(failures.is_empty(), "{failures:?}");
+        assert!(again.complete && recovered.complete);
+    } else {
+        assert_eq!(failures.len(), 1, "{failures:?}");
+        assert_eq!(
+            failures[0].to_string(),
+            "cannot watch directory `new/locked`: permission denied"
+        );
+        assert!(!again.complete, "the failure is outstanding");
+        assert!(again.errors.is_empty(), "reported once: {again:?}");
+        assert!(recovered.complete, "retried and watched: {recovered:?}");
+    }
+    assert!(watching(&source, &["new", "new/locked"]));
+}
+
+#[test]
+fn should_rescan_nearest_existing_parent_when_nested_directories_are_removed() {
+    // given
+    let (_base, root) = site();
+    fs::create_dir_all(root.join("a/b/c")).expect("create a/b/c");
+    let site = open_site_root(&root).expect("open root");
+    let (mut watcher, _errors, _notifications) = start(&site);
+    // Only the deepest removal is reported; `a/b` going and `a/x` arriving are not.
+    fs::remove_dir_all(site.display_path.join("a/b")).expect("rm -r a/b");
+    fs::create_dir_all(site.display_path.join("a/x/y")).expect("mkdir -p a/x/y");
+    let hints = std::collections::BTreeSet::from([ReconcileHint::Entry(rel("a/b/c"))]);
+
+    // when
+    let report = watcher.reconcile(&site.dir, &hints);
+
+    // then: `a` is the nearest directory left, and its listing finds the rest
+    assert!(report.complete && report.errors.is_empty(), "{report:?}");
+    assert_eq!(
+        names(watcher.watched().iter().cloned()),
+        ["", "a", "a/x", "a/x/y"]
+    );
+}
+
+#[test]
+fn should_keep_watch_set_when_file_is_created_and_deleted() {
+    // given
+    let (_base, root) = site();
+    fs::create_dir(root.join("docs")).expect("create docs");
+    let site = open_site_root(&root).expect("open root");
+    let (mut watcher, _errors, _notifications) = start(&site);
+    let page = site.display_path.join("docs/page.html");
+    fs::write(&page, b"x").expect("create a file");
+    let created = std::collections::BTreeSet::from([ReconcileHint::Entry(rel("docs/page.html"))]);
+
+    // when
+    let after_create = watcher.reconcile(&site.dir, &created);
+    fs::remove_file(&page).expect("delete the file");
+    let after_delete = watcher.reconcile(&site.dir, &created);
+
+    // then
+    assert!(after_create.complete && after_delete.complete);
+    assert_eq!(names(watcher.watched().iter().cloned()), ["", "docs"]);
 }

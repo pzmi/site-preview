@@ -15,7 +15,9 @@ use core::task::Poll;
 use std::sync::Arc;
 
 use preview_adapter_http::WarningSink;
-use preview_application::{ChangeBatch, ChangeCoordinator, ChangeSource, Clock, Received};
+use preview_application::{
+    ChangeBatch, ChangeCoordinator, ChangeSource, Clock, Received, SourceFailure,
+};
 use preview_domain::{ChangeEvent, DegradeReason, DomainEvent, Tick};
 use tokio::sync::oneshot;
 use tokio::time::{Instant, sleep};
@@ -29,15 +31,25 @@ pub(crate) enum ReconcileScope {
     Full,
 }
 
+/// What a reconcile changed in the watcher's health, in words composition can report.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct Reconciled {
+    /// `Some(dirs)` when every eligible directory is watched afterwards, which the pipeline
+    /// reports as readiness (ADR 0040); `None` otherwise.
+    pub ready: Option<usize>,
+    /// One line per directory that newly cannot be walked or watched (relative paths only,
+    /// at most ten named, the rest counted), each warned as `watch-registration-failed`.
+    pub problems: Vec<String>,
+}
+
 /// The change source as the pipeline drives it: the port plus the controls only the watcher
 /// adapter can carry out. Bootstrap implements it for the filesystem adapter's source, so the
 /// pipeline never names the adapter.
 pub(crate) trait WatchControl: ChangeSource<Event = ChangeEvent> + 'static {
     /// Re-registers the watch set after a directory change or a loss (plan.md section 8.1,
-    /// "New directories"). `Some(dirs)` when every eligible directory is watched afterwards,
-    /// which the pipeline reports as readiness (ADR 0040); `None` when the health is not
-    /// changed by it.
-    fn reconcile(&mut self, scope: ReconcileScope) -> Option<usize>;
+    /// "New directories"; ADR 0050). The source itself knows which directories the changes
+    /// it delivered touched, so `Changed` carries no paths.
+    fn reconcile(&mut self, scope: ReconcileScope) -> Reconciled;
 
     /// The detail of the most recent runtime failure, for its warning: a root-relative path
     /// and a category, never an absolute path or OS text.
@@ -218,13 +230,27 @@ impl<S: WatchControl, C: Clock> WatchPipeline<S, C> {
         }
     }
 
+    /// Reconciles the watch set and reports what changed: each directory that newly cannot
+    /// be watched is warned about and degrades the watcher; a complete set is readiness, so a
+    /// degraded watcher recovers. Pinned by
+    /// `should_warn_and_degrade_when_reconcile_cannot_watch_a_directory` and
+    /// `should_recover_when_reconcile_completes_the_watch_set`.
     fn reconcile(&mut self, scope: ReconcileScope) {
         self.reconciled_fully |= scope == ReconcileScope::Full;
-        if let Some(dirs) = self.source.reconcile(scope) {
+        let reconciled = self.source.reconcile(scope);
+        for problem in &reconciled.problems {
+            self.warnings.warn("watch-registration-failed", problem);
+        }
+        if let Some(dirs) = reconciled.ready {
             // Refused only once the revisions are exhausted, which was already reported.
             if let Ok(events) = self.coordinator.watcher_ready(dirs) {
                 self.report(&events);
             }
+        } else if !reconciled.problems.is_empty() {
+            let events = self
+                .coordinator
+                .watcher_failed(SourceFailure::RegistrationFailed);
+            self.report(&events);
         }
     }
 
@@ -240,11 +266,12 @@ impl<S: WatchControl, C: Clock> WatchPipeline<S, C> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::VecDeque;
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
 
-    use preview_application::{ReloadState, SourceFailure};
+    use preview_application::ReloadState;
     use preview_domain::{ChangeKind, Component, DebounceWindow, InstanceId, RelPath};
     use preview_testkit::{ScriptedChangeSource, ScriptedHandle};
     use tokio::runtime::{Builder, Runtime};
@@ -258,6 +285,8 @@ mod tests {
     struct Log {
         nexts: usize,
         reconciles: Vec<ReconcileScope>,
+        /// What the next reconciles answer, in order; nothing changed once empty.
+        answers: VecDeque<Reconciled>,
         closed: bool,
     }
 
@@ -279,9 +308,10 @@ mod tests {
     }
 
     impl WatchControl for Scripted {
-        fn reconcile(&mut self, scope: ReconcileScope) -> Option<usize> {
-            self.log.lock().expect("unpoisoned").reconciles.push(scope);
-            None
+        fn reconcile(&mut self, scope: ReconcileScope) -> Reconciled {
+            let mut log = self.log.lock().expect("unpoisoned");
+            log.reconciles.push(scope);
+            log.answers.pop_front().unwrap_or_default()
         }
 
         fn failure_detail(&self) -> Option<String> {
@@ -618,6 +648,73 @@ mod tests {
                 ]
             );
             assert_eq!(h.revision(), 3);
+            h.stop().await;
+        });
+    }
+
+    #[test]
+    fn should_warn_and_degrade_when_reconcile_cannot_watch_a_directory() {
+        paused().block_on(async {
+            // given
+            let h = start(Some("file watching failed: permission denied"));
+            h.log
+                .lock()
+                .expect("unpoisoned")
+                .answers
+                .push_back(Reconciled {
+                    ready: None,
+                    problems: vec!["cannot watch directory `new/locked`: permission denied".into()],
+                });
+
+            // when
+            h.handle.push(vec![event(ChangeKind::Create, "new")]);
+            after(WINDOW_MS + 1).await;
+            h.handle.fail(SourceFailure::RuntimeFailure);
+            after(1).await;
+
+            // then: the directory is named once and the change publishes; the watcher is
+            // already degraded, so the later runtime failure is no new degradation to warn of
+            assert_eq!(
+                h.warnings(),
+                [(
+                    "watch-registration-failed".to_owned(),
+                    "cannot watch directory `new/locked`: permission denied".to_owned()
+                )]
+            );
+            assert_eq!(h.revision(), 1);
+            h.stop().await;
+        });
+    }
+
+    #[test]
+    fn should_recover_when_reconcile_completes_the_watch_set() {
+        paused().block_on(async {
+            // given: degraded by a directory that could not be watched
+            let h = start(Some("file watching failed: permission denied"));
+            {
+                let mut log = h.log.lock().expect("unpoisoned");
+                log.answers.push_back(Reconciled {
+                    ready: None,
+                    problems: vec!["cannot watch directory `a`: permission denied".into()],
+                });
+                log.answers.push_back(Reconciled {
+                    ready: Some(4),
+                    problems: Vec::new(),
+                });
+            }
+            h.handle.push(vec![event(ChangeKind::Create, "a")]);
+            after(WINDOW_MS + 1).await;
+
+            // when
+            h.handle.push(vec![event(ChangeKind::Rename, "b")]);
+            after(WINDOW_MS + 1).await;
+            h.handle.fail(SourceFailure::RuntimeFailure);
+            after(1).await;
+
+            // then: watching again, so the runtime failure degrades it anew and is warned of
+            let codes: Vec<String> = h.warnings().into_iter().map(|(code, _)| code).collect();
+            assert_eq!(codes, ["watch-registration-failed", "watch-failed"]);
+            assert_eq!(h.revision(), 2);
             h.stop().await;
         });
     }

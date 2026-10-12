@@ -21,6 +21,7 @@
 //!   directory watched" for reconciliation.
 
 use core::fmt;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -130,8 +131,11 @@ impl From<TraversalError> for RegistrationError {
 /// The native watcher and the directories registered with it. Dropping it removes every watch.
 pub(crate) struct NotifyWatcher {
     inner: RecommendedWatcher,
-    display_root: PathBuf,
-    watched: WatchSet,
+    pub(super) display_root: PathBuf,
+    pub(super) watched: WatchSet,
+    /// Eligible directories that are not watched, and why: the walk or the watch failed.
+    /// Reconciliation retries them; the set is complete only while this is empty.
+    pub(super) failed: BTreeMap<RelPath, WatchFault>,
 }
 
 impl fmt::Debug for NotifyWatcher {
@@ -164,6 +168,7 @@ impl NotifyWatcher {
             Ok(traversal) => watcher.register(root, traversal),
             Err(error) => vec![error.into()],
         };
+        watcher.failed = errors.iter().map(|e| (e.dir.clone(), e.fault)).collect();
         Ok((watcher, errors))
     }
 
@@ -184,6 +189,7 @@ impl NotifyWatcher {
             inner,
             display_root: display_root.to_path_buf(),
             watched: WatchSet::new(),
+            failed: BTreeMap::new(),
         })
     }
 
@@ -247,6 +253,39 @@ impl NotifyWatcher {
             ContentRefusal::Io(kind) => WatchFault::Io(kind),
             ContentRefusal::NotFound | ContentRefusal::Forbidden(_) => WatchFault::NotFound,
         })
+    }
+
+    /// Removes the watches of `dirs` and forgets them. A watch the native watcher already
+    /// dropped with its directory (`notify` removes the watch of a deleted or moved-away
+    /// directory itself) is not an error: the record is what has to change.
+    pub(crate) fn unwatch(&mut self, dirs: BTreeSet<RelPath>) {
+        for dir in &dirs {
+            let path = self.absolute(dir);
+            let _ = self.inner.unwatch(&path);
+        }
+        self.watched.apply(&preview_domain::WatchDiff {
+            add: BTreeSet::new(),
+            remove: dirs,
+        });
+    }
+
+    /// Watches `dir` again where it is already recorded, so the watch follows whatever
+    /// directory stands under the name now: `inotify` watches an inode, and adding a watch for
+    /// the same inode changes nothing, while a directory replaced under the same name gets a
+    /// watch of its own. No watch is removed first, so no notification is missed meanwhile.
+    /// On failure the directory is forgotten.
+    ///
+    /// FSEvents (macOS) watches paths, not inodes, so a replaced directory is still covered
+    /// there, and every `watch` call restarts its stream: nothing is done on macOS.
+    pub(crate) fn refresh(&mut self, root: &RootDir, dir: &RelPath) -> Result<(), WatchFault> {
+        if cfg!(target_os = "macos") {
+            return Ok(());
+        }
+        let refreshed = self.watch_one(root, dir);
+        if refreshed.is_err() {
+            self.unwatch(BTreeSet::from([dir.clone()]));
+        }
+        refreshed
     }
 
     /// The absolute path of `dir`: the only place one is built.

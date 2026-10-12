@@ -22,19 +22,25 @@ use core::future::poll_fn;
 use core::num::NonZeroUsize;
 use core::pin::pin;
 use core::task::Poll;
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use preview_application::{ChangeBatch, ChangeSource, SourceFailure};
-use preview_domain::{ChangeEvent, ChangeKind, RelPath};
+use preview_domain::{ChangeEvent, ChangeKind, Classification, RelPath, classify};
 use tokio::sync::Notify;
 use tokio::sync::mpsc::{self, error::TryRecvError, error::TrySendError};
 
 use super::display_rel;
+use super::reconcile::{ReconcileHint, ReconcileReport};
 use super::registration::{NotifyWatcher, RegistrationError, WatchFault};
 use super::translate::{relative, translate};
 use crate::capability::RootDir;
+
+/// How many distinct reconcile hints the source keeps between two reconciles; past it, the
+/// next reconcile covers every directory instead (one walk beats thousands of small ones).
+const MAX_HINTS: usize = 256;
 
 /// The channel capacity [`NotifyChangeSource::start`] uses, in queued notifications.
 pub const DEFAULT_CAPACITY: NonZeroUsize = NonZeroUsize::new(1024).expect("non-zero");
@@ -172,6 +178,8 @@ pub struct NotifyChangeSource {
     closed: bool,
     drain_limit: usize,
     last_failure: Option<RuntimeError>,
+    /// What the changes delivered since the last reconcile ask to reconcile.
+    hints: BTreeSet<ReconcileHint>,
 }
 
 impl fmt::Debug for NotifyChangeSource {
@@ -243,6 +251,7 @@ impl NotifyChangeSource {
             closed: false,
             drain_limit: capacity.get(),
             last_failure: None,
+            hints: BTreeSet::new(),
         };
         (bridge, source)
     }
@@ -306,12 +315,64 @@ impl NotifyChangeSource {
             }
         }
         if !events.is_empty() {
+            self.note_hints(&events);
             return Some(ChangeBatch::Events(events));
         }
         self.flags
             .overflow
             .swap(false, Ordering::AcqRel)
             .then_some(ChangeBatch::Overflow)
+    }
+
+    /// Records what `events` ask to reconcile (see [`hint_for`]), bounded by [`MAX_HINTS`].
+    fn note_hints(&mut self, events: &[ChangeEvent]) {
+        if self.hints.contains(&ReconcileHint::Full) {
+            return;
+        }
+        self.hints.extend(events.iter().filter_map(hint_for));
+        if self.hints.len() > MAX_HINTS || self.hints.contains(&ReconcileHint::Full) {
+            self.hints = BTreeSet::from([ReconcileHint::Full]);
+        }
+    }
+
+    /// Brings the watches in line with the directories the changes delivered since the last
+    /// reconcile touched, and retries every directory not watched yet (plan.md section 8.1,
+    /// "New directories"; ADR 0050). `root` is the capability the source was started with.
+    ///
+    /// Pinned by `should_watch_new_nested_directory_when_created_then_file_edited`,
+    /// `should_rewatch_directory_when_deleted_and_recreated` and
+    /// `should_drop_stale_watch_when_directory_removed`.
+    pub fn reconcile_changed(&mut self, root: &RootDir) -> ReconcileReport {
+        let hints = core::mem::take(&mut self.hints);
+        self.reconcile_with(root, &hints)
+    }
+
+    /// Walks every eligible directory and brings the watches in line with it, after a loss or
+    /// an event too coarse to attribute. Pinned by
+    /// `should_rewatch_replaced_directory_when_full_reconcile_follows_a_loss`.
+    pub fn reconcile_full(&mut self, root: &RootDir) -> ReconcileReport {
+        self.hints.clear();
+        self.reconcile_with(root, &BTreeSet::from([ReconcileHint::Full]))
+    }
+
+    fn reconcile_with(
+        &mut self,
+        root: &RootDir,
+        hints: &BTreeSet<ReconcileHint>,
+    ) -> ReconcileReport {
+        match &mut self.watcher {
+            Some(watcher) => watcher.reconcile(root, hints),
+            None => ReconcileReport::default(),
+        }
+    }
+
+    /// The directories currently watched, root-relative; empty once closed.
+    #[cfg(test)]
+    pub(crate) fn watched(&self) -> Vec<RelPath> {
+        self.watcher
+            .as_ref()
+            .map(|watcher| watcher.watched().iter().cloned().collect())
+            .unwrap_or_default()
     }
 
     async fn next_batch(&mut self) -> ChangeBatch<ChangeEvent> {
@@ -334,6 +395,22 @@ impl NotifyChangeSource {
             }
         }
     }
+}
+
+/// The reconcile a delivered change asks for: none when the domain says the directory
+/// structure cannot have changed (a file edit, an ignored path); the subtree when the OS did
+/// not attribute the change; the entry itself when it was created, removed or renamed; every
+/// directory when the change names the root.
+fn hint_for(event: &ChangeEvent) -> Option<ReconcileHint> {
+    let classification = classify(event);
+    if !classification.requests_reconcile() {
+        return None;
+    }
+    Some(match classification {
+        _ if event.path.is_root() => ReconcileHint::Full,
+        Classification::Rescan => ReconcileHint::Subtree(event.path.clone()),
+        _ => ReconcileHint::Entry(event.path.clone()),
+    })
 }
 
 impl ChangeSource for NotifyChangeSource {
@@ -764,6 +841,75 @@ mod tests {
             ChangeBatch::Failed(SourceFailure::RegistrationFailed)
         );
         assert_eq!(ready(&mut source), ChangeBatch::Closed);
+    }
+
+    #[test]
+    fn should_note_reconcile_hints_when_changes_may_alter_directories() {
+        // given
+        let (bridge, mut source) = source(16);
+        let raw =
+            |kind: EventKind, name: &str| Ok(Event::new(kind).add_path(Path::new(ROOT).join(name)));
+
+        // when
+        bridge.handle(raw(EventKind::Create(CreateKind::Folder), "docs"));
+        bridge.handle(raw(EventKind::Create(CreateKind::File), "new.css"));
+        bridge.handle(raw(
+            EventKind::Remove(notify::event::RemoveKind::Any),
+            "old",
+        ));
+        bridge.handle(raw(EventKind::Any, "blog/x"));
+        bridge.handle(written("edited.html"));
+        bridge.handle(raw(EventKind::Create(CreateKind::Folder), ".git/objects"));
+        bridge.handle(raw(EventKind::Create(CreateKind::Folder), "node_modules"));
+        bridge.handle(raw(EventKind::Create(CreateKind::File), ".index.html.swp"));
+        let _ = ready(&mut source);
+
+        // then: edits and ignored names ask for nothing
+        assert_eq!(
+            source.hints,
+            BTreeSet::from([
+                ReconcileHint::Entry(rel("docs")),
+                ReconcileHint::Entry(rel("new.css")),
+                ReconcileHint::Entry(rel("old")),
+                ReconcileHint::Subtree(rel("blog/x")),
+            ])
+        );
+    }
+
+    #[test]
+    fn should_widen_to_full_when_hints_overflow_or_name_the_root() {
+        // given
+        let (bridge, mut many) = source(MAX_HINTS * 2);
+        let (root_bridge, mut rooted) = source(4);
+
+        // when
+        for n in 0..=MAX_HINTS {
+            bridge.handle(Ok(Event::new(EventKind::Create(CreateKind::Folder))
+                .add_path(Path::new(ROOT).join(format!("d{n}")))));
+        }
+        let _ = ready(&mut many);
+        root_bridge.handle(Ok(Event::new(EventKind::Any).add_path(PathBuf::from(ROOT))));
+        let _ = ready(&mut rooted);
+
+        // then
+        assert_eq!(many.hints, BTreeSet::from([ReconcileHint::Full]));
+        assert_eq!(rooted.hints, BTreeSet::from([ReconcileHint::Full]));
+    }
+
+    #[test]
+    fn should_report_incomplete_when_reconciling_without_a_watcher() {
+        // given
+        let (_bridge, mut source) = source(4);
+        let base = tempfile::tempdir().expect("temp dir");
+        let site = crate::open_site_root(base.path()).expect("open root");
+
+        // when
+        let changed = source.reconcile_changed(&site.dir);
+        let full = source.reconcile_full(&site.dir);
+
+        // then
+        assert_eq!(changed, ReconcileReport::default());
+        assert!(!full.complete);
     }
 
     #[test]

@@ -48,4 +48,26 @@ mod os_watcher {
         assert!(data.contains(r#""path":"/index.html""#), "{data}");
         assert!(data.contains(r#""full":true"#), "{data}");
     }
+
+    #[test]
+    fn should_watch_new_nested_directory_when_created_then_file_edited() {
+        // given
+        let site = Site::copy();
+        let server = PreviewProcess::serve(&site);
+        let mut stream = server.events(&[]).expect("the stream opens");
+        stream.baseline();
+
+        // when: `mkdir -p`, so the inner directory exists before the outer one is watched
+        fs::create_dir_all(site.path().join("new/nested")).expect("mkdir -p");
+        let created = next_event(&mut stream);
+        fs::write(site.path().join("new/nested/a.css"), "a { color: red }\n")
+            .expect("a file is written inside");
+
+        // then
+        assert_eq!(created.event.as_deref(), Some("reload"), "{created:?}");
+        let edited = next_event(&mut stream);
+        assert_eq!(edited.event.as_deref(), Some("reload"), "{edited:?}");
+        let data = edited.data.join("\n");
+        assert!(data.contains(r#""path":"/new/nested/a.css""#), "{data}");
+    }
 }

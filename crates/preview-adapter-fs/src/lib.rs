@@ -21,5 +21,6 @@ pub use capability::{OpenError, Opened, OpenedDir, OpenedFile, RootDir};
 pub use root::{RootError, SiteRoot, open_site_root};
 pub use traversal::{MAX_DEPTH, Traversal, TraversalError, TraversalFault, eligible_dirs};
 pub use watcher::{
-    DEFAULT_CAPACITY, NotifyChangeSource, RegistrationError, RuntimeError, StartReport, WatchFault,
+    DEFAULT_CAPACITY, NotifyChangeSource, ReconcileReport, RegistrationError, RuntimeError,
+    StartReport, WatchFault,
 };

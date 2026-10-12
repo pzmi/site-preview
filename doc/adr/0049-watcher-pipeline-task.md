@@ -69,7 +69,8 @@ written to within one window would miss the write); a `Box<dyn>` source (the por
 
 - FS-09 implements `WatchControl::reconcile` in `bootstrap.rs` over the adapter's reconcile;
   the hook receives only a scope, so the adapter tracks which subtrees changed itself or the
-  hook grows a parameter there.
+  hook grows a parameter there. (ADR 0050: the adapter keeps the hints, and the hook returns
+  `Reconciled { ready, problems }` instead of `Option<usize>`.)
 - CLI-04 can inject a failing source through the same trait; CLI-06 maps `WatchStatus` and the
   pipeline's domain events (`WatcherDegraded`, `WatcherRecovered`) to JSON events; the pipeline
   currently turns them into warnings only.
