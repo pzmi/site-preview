@@ -55,11 +55,15 @@ type Connection = http1::Connection<TokioIo<TcpStream>, TowerToHyperService<Rout
 
 /// Serves `router` on `listener` until the first message on `stops`, then drains.
 ///
-/// On the first stop the listener is closed (a new connection is refused), every open
-/// connection is asked to finish its response and close, and `on_stop` is called with the
-/// number still open (composition ends the event streams there and tells the user). The run
-/// then ends at the first of: every connection closed ([`Stopped::Drained`]), the drain bound
+/// On the first stop the listener is closed (a new connection is refused; one still in the
+/// kernel's accept queue is reset, never served), every open connection is asked to finish its
+/// response and close, and `on_stop` is called with the number still open (composition ends
+/// the event streams there). `on_waiting` is called once if a connection is still open when
+/// `grace` has passed since then: the drain itself decides, on its own clock, whether it is
+/// really waiting, so how late the caller looks never changes the answer. The run then ends
+/// at the first of: every connection closed ([`Stopped::Drained`]), the drain bound
 /// ([`Stopped::DrainTimedOut`]) or a second stop ([`Stopped::Forced`]). Pinned by
+/// `should_report_waiting_only_when_a_connection_outlasts_the_grace`,
 /// `should_drop_stalled_connection_when_drain_bound_passes`,
 /// `should_stop_at_once_when_second_stop_arrives_during_drain`,
 /// `should_close_connection_when_head_not_sent_within_timeout`,
@@ -71,6 +75,8 @@ pub(crate) async fn serve_connections(
     limits: ServerLimits,
     stops: &mut mpsc::UnboundedReceiver<StopSignal>,
     on_stop: impl FnOnce(usize),
+    grace: Duration,
+    on_waiting: impl FnOnce(),
 ) -> Stopped {
     let mut http = http1::Builder::new();
     // hyper starts the header timer whenever it waits for a request head, so this also
@@ -102,7 +108,7 @@ pub(crate) async fn serve_connections(
     drop(listener);
     closing.send_replace(true);
     on_stop(open.len());
-    drain(open, stops, limits.drain_timeout).await
+    drain(open, stops, limits.drain_timeout, grace, on_waiting).await
 }
 
 enum Event {
@@ -182,13 +188,18 @@ enum Drain {
     Forced(StopSignal),
 }
 
-/// Waits for the open connections, at most `bound`, and gives up at once on a second stop.
+/// Waits for the open connections, at most `bound`, and gives up at once on a second stop;
+/// calls `on_waiting` once if a connection is still open when `grace` has passed.
 async fn drain(
     mut open: JoinSet<()>,
     stops: &mut mpsc::UnboundedReceiver<StopSignal>,
     bound: Duration,
+    grace: Duration,
+    on_waiting: impl FnOnce(),
 ) -> Stopped {
     let mut deadline = pin!(sleep(bound));
+    let mut grace = pin!(sleep(grace));
+    let mut on_waiting = Some(on_waiting);
     let outcome = poll_fn(|cx| {
         // A closed channel cannot deliver a second stop; it is not one.
         if let Poll::Ready(Some(signal)) = stops.poll_recv(cx) {
@@ -200,6 +211,13 @@ async fn drain(
                 Poll::Ready(None) => return Poll::Ready(Drain::Done),
                 Poll::Pending => break,
             }
+        }
+        // Reached only while a connection is still open.
+        if on_waiting.is_some()
+            && grace.as_mut().poll(cx).is_ready()
+            && let Some(waiting) = on_waiting.take()
+        {
+            waiting();
         }
         deadline.as_mut().poll(cx).map(|()| Drain::TimedOut)
     })
@@ -217,6 +235,7 @@ async fn drain(
 mod tests {
     use std::io::{ErrorKind, Read, Write};
     use std::net::{SocketAddr, TcpStream as StdStream};
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     use axum::routing::get;
     use preview_testkit::poll::wait_until;
@@ -232,12 +251,16 @@ mod tests {
     /// A response far larger than the loopback socket buffers, so a client that does not
     /// read it leaves the server blocked mid-write.
     const BIG: usize = 64 << 20;
+    /// How long the drain runs before it reports that it is waiting.
+    const GRACE: Duration = Duration::from_millis(100);
 
     struct Server {
         runtime: Runtime,
         addr: SocketAddr,
         stops: mpsc::UnboundedSender<StopSignal>,
         run: JoinHandle<Stopped>,
+        /// Whether the drain reported that it was waiting.
+        waiting: Arc<AtomicBool>,
     }
 
     fn start(limits: ServerLimits) -> Server {
@@ -253,14 +276,27 @@ mod tests {
         let router = Router::new()
             .route("/", get(|| async { "ok" }))
             .route("/big", get(|| async { vec![b'x'; BIG] }));
+        let waiting = Arc::new(AtomicBool::new(false));
+        let waited = Arc::clone(&waiting);
         let run = runtime.spawn(async move {
-            serve_connections(listener, router, limits, &mut received, |_| {}).await
+            let report = move || waited.store(true, Ordering::SeqCst);
+            serve_connections(
+                listener,
+                router,
+                limits,
+                &mut received,
+                |_| {},
+                GRACE,
+                report,
+            )
+            .await
         });
         Server {
             runtime,
             addr,
             stops,
             run,
+            waiting,
         }
     }
 
@@ -425,6 +461,31 @@ mod tests {
             closed_by_server(&mut stalled),
             "the stalled connection is dropped"
         );
+    }
+
+    #[test]
+    fn should_report_waiting_only_when_a_connection_outlasts_the_grace() {
+        for stalls in [false, true] {
+            // given: a client that stopped reading a large response, or no client at all; the
+            // bound is longer than the grace, so a stalled drain is still running when it ends
+            let mut limits = limits(NEVER, 8);
+            limits.drain_timeout = GRACE * 2;
+            let server = start(limits);
+            let _stalled = stalls.then(|| server.stalled_reader());
+
+            // when
+            server.stop(StopSignal::Interrupt);
+
+            // then: decided on the drain's clock, after the run, however late anyone looks
+            let waiting = Arc::clone(&server.waiting);
+            let expected = if stalls {
+                Stopped::DrainTimedOut
+            } else {
+                Stopped::Drained
+            };
+            assert_eq!(server.finish(), expected, "stalls: {stalls}");
+            assert_eq!(waiting.load(Ordering::SeqCst), stalls, "stalls: {stalls}");
+        }
     }
 
     #[test]

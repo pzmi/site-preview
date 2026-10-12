@@ -43,7 +43,7 @@ use tokio::net::TcpListener;
 use tokio::runtime::{Builder, Runtime};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
-use tokio::time::{Instant, timeout, timeout_at};
+use tokio::time::{Instant, timeout_at};
 
 use crate::bootstrap::{OpenedRoot, WatchStart, open_root};
 use crate::config::{ServeConfig, ServerLimits};
@@ -65,9 +65,10 @@ pub(crate) enum Signals {
     Ignore,
 }
 
-/// How long a shutdown may take before it says it is waiting for connections: longer than
-/// ending event streams and closing idle connections ever takes, far shorter than the drain
-/// bound.
+/// How long a drain may run before the shutdown says it is waiting for connections: longer
+/// than ending event streams and closing idle connections ever takes, far shorter than the
+/// drain bound. Measured by the drain itself from the listener's close, never from when the
+/// caller's thread gets round to joining it.
 const DRAIN_NOTICE_GRACE: Duration = Duration::from_millis(500);
 
 /// Why nothing could be watched when the watcher panicked while starting.
@@ -89,6 +90,9 @@ pub struct Server {
     listener_closed: Option<oneshot::Receiver<usize>>,
     /// When the drain bound ends, from the moment the listener closed.
     drain_ends: Option<Instant>,
+    /// Answers once the drain has run [`DRAIN_NOTICE_GRACE`] with a connection still open; its
+    /// sender is dropped unanswered when the drain ends sooner (or the serve task fails).
+    waiting: Option<oneshot::Receiver<()>>,
     streams: Shutdown,
     stop_watching: Option<oneshot::Sender<()>>,
     serve: Option<JoinHandle<Stopped>>,
@@ -151,6 +155,7 @@ impl Server {
             pipeline: None,
             serve: None,
             listener_closed: None,
+            waiting: None,
             local_url: None,
         };
         let mut lifecycle = Lifecycle::new();
@@ -248,8 +253,8 @@ impl Server {
         };
         // An error means the serve task ended without closing it (a panic): it is gone too. The
         // count is not used: it includes event streams and idle keep-alive connections, which
-        // the shutdown ends at once, so only the grace in `join_tasks` knows whether the drain
-        // waits for anything.
+        // the shutdown ends at once, so only the drain's grace knows whether it waits for
+        // anything.
         let _open = runtime.block_on(closed);
         self.drain_ends = Some(Instant::now() + self.limits.drain_timeout);
     }
@@ -269,16 +274,15 @@ impl Server {
                 // The notice is for a drain that is really waiting: a browser tab's event
                 // stream and idle connections end within the grace, and a notice about
                 // waiting there would be false (`should_not_announce_drain_when_only_a_tab_is_open`).
-                let joined = match runtime
-                    .block_on(async { timeout(DRAIN_NOTICE_GRACE, &mut serve).await })
+                // The drain decides on its own clock, so a thread scheduled late (a loaded
+                // machine) still tells of a drain that waited
+                // (`should_announce_drain_when_joined_after_a_stalled_drain_ended`).
+                if let Some(waiting) = self.waiting.take()
+                    && runtime.block_on(waiting).is_ok()
                 {
-                    Ok(joined) => joined,
-                    Err(_still_open) => {
-                        self.reporter.draining(self.limits.drain_timeout);
-                        runtime.block_on(&mut serve)
-                    }
-                };
-                match joined {
+                    self.reporter.draining(self.limits.drain_timeout);
+                }
+                match runtime.block_on(&mut serve) {
                     Ok(stopped) => stopped,
                     Err(failed) if failed.is_panic() && !std::thread::panicking() => {
                         resume_unwind(failed.into_panic())
@@ -347,6 +351,7 @@ struct Startup<'c, F> {
     pipeline: Option<(JoinHandle<()>, oneshot::Sender<()>)>,
     serve: Option<JoinHandle<Stopped>>,
     listener_closed: Option<oneshot::Receiver<usize>>,
+    waiting: Option<oneshot::Receiver<()>>,
     /// The bound address and the URL reported as ready.
     local_url: Option<(SocketAddr, String)>,
 }
@@ -506,15 +511,27 @@ impl<W: WatchControl, F: FnOnce(&OpenedRoot) -> (W, WatchStart)> Startup<'_, F> 
             return;
         };
         let (closed, listener_closed) = oneshot::channel();
+        let (still_open, waiting) = oneshot::channel();
         let router = wiring.router.clone();
         let limits = self.config.limits;
         self.serve = Some(self.runtime.spawn(async move {
-            serve_connections(listener, router, limits, &mut stop_requests, move |open| {
-                let _ = closed.send(open);
-            })
+            serve_connections(
+                listener,
+                router,
+                limits,
+                &mut stop_requests,
+                move |open| {
+                    let _ = closed.send(open);
+                },
+                DRAIN_NOTICE_GRACE,
+                move || {
+                    let _ = still_open.send(());
+                },
+            )
             .await
         }));
         self.listener_closed = Some(listener_closed);
+        self.waiting = Some(waiting);
         let url = format!("http://{}/", reachable(local));
         let unknown = WatchStart {
             dirs: 0,
@@ -553,6 +570,7 @@ impl<W: WatchControl, F: FnOnce(&OpenedRoot) -> (W, WatchStart)> Startup<'_, F> 
             stops: self.stops,
             listener_closed: Some(listener_closed),
             drain_ends: None,
+            waiting: self.waiting,
             streams: wiring.streams,
             stop_watching,
             serve: Some(serve),
@@ -1038,6 +1056,52 @@ mod tests {
             reports.recorded(),
             ["ready Watching { dirs: 1 }"],
             "the shutdown waited for nothing, so it says nothing"
+        );
+    }
+
+    #[test]
+    fn should_announce_drain_when_joined_after_a_stalled_drain_ended() {
+        // given: a client stuck in its request head, which the server has accepted (the reply
+        // to a later request shows it: the accept loop takes connections in the kernel's order)
+        let root = site();
+        let reports = Reports::default();
+        let mut config = ServeConfig::new(root.path().to_path_buf());
+        config.limits.drain_timeout = DRAIN_NOTICE_GRACE * 2;
+        let closed = Arc::new(AtomicBool::new(false));
+        let mut server = Server::start_with(
+            &config,
+            Box::new(reports.clone()),
+            Arc::new(Warnings::default()),
+            watcher(None, &closed),
+            Signals::Ignore,
+            &SystemOpener,
+        )
+        .expect("a server");
+        let mut stalled = TcpStream::connect(server.local_addr()).expect("the server accepts");
+        stalled
+            .write_all(b"GET / HTTP/1.1\r\nHost:")
+            .expect("half a head is sent");
+        assert_eq!(get_status(server.local_addr()), 200);
+        server
+            .stops
+            .send(StopSignal::Terminate)
+            .expect("the serve task runs");
+        server.await_listener_closed();
+        // Polled: stands in for the stopping thread being scheduled late on a loaded machine,
+        // until the drain, which runs on the runtime's threads, has ended on its bound.
+        wait_until(DEADLINE, "the drain to end", || {
+            server.serve.as_ref().is_some_and(JoinHandle::is_finished)
+        })
+        .expect("the drain ends on its bound");
+
+        // when
+        let stopped = server.stop();
+
+        // then: the drain waited past the grace, so it is told, however late
+        assert_eq!(stopped, Stopped::DrainTimedOut);
+        assert_eq!(
+            reports.recorded(),
+            ["ready Watching { dirs: 1 }", "draining 1s"]
         );
     }
 

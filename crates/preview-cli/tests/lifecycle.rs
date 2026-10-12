@@ -24,13 +24,15 @@ const MARGIN: Duration = Duration::from_secs(5);
 /// server blocked mid-write.
 const BIG: usize = 64 << 20;
 
-/// A connection that sent half a request head and nothing more.
+/// A connection that sent half a request head and nothing more, once the server has accepted
+/// it (so the drain holds it rather than the closing listener resetting it).
 fn half_sent_head(server: &PreviewProcess) -> TcpStream {
     let mut stream = TcpStream::connect(server.authority()).expect("the server accepts");
     let head = format!("GET / HTTP/1.1\r\nHost: {}\r\nAccept:", server.authority());
     stream
         .write_all(head.as_bytes())
         .expect("half a head is sent");
+    server.await_accepted();
     stream
 }
 

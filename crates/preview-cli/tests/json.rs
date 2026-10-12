@@ -111,6 +111,7 @@ fn should_keep_drain_notice_on_stderr_when_json_and_a_client_stalls() {
     stalled
         .write_all(b"GET / HTTP/1.1\r\nHost:")
         .expect("half a head is sent");
+    server.await_accepted();
 
     // when
     server.signal("INT");

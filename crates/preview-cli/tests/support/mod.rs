@@ -318,6 +318,19 @@ impl PreviewProcess {
         &self.stderr
     }
 
+    /// Returns once the server has accepted every connection opened before the call.
+    ///
+    /// `connect` returns when the kernel has queued a connection, not when the server took
+    /// it: a stop signal sent right after it races the accept loop, and a connection still in
+    /// the kernel's accept queue when the listener closes is reset, never drained. A reply on
+    /// a fresh connection proves the earlier ones were taken: the accept loop takes
+    /// connections in the kernel's first-in, first-out order and starts serving each before
+    /// it accepts the next.
+    pub fn await_accepted(&self) {
+        let reply = self.get("/");
+        assert_eq!(reply.status, 200, "the probe after the held connections");
+    }
+
     /// `GET target` with the printed authority as Host.
     pub fn get(&self, target: &str) -> Reply {
         self.request("GET", target, &[])
