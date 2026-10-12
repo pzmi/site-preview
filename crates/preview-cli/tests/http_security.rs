@@ -487,6 +487,7 @@ fn should_leave_tree_unchanged_when_suite_has_run() {
     symlink("styles.css", site.path().join("alias.css")).expect("a symlink");
     let before = tree_hash(site.path());
     let outside_before = tree_hash(&site.outside());
+    let fixture_before = tree_hash(&fixture_site());
     let server = PreviewProcess::serve(&site);
     let targets = [
         "/",
@@ -528,7 +529,7 @@ fn should_leave_tree_unchanged_when_suite_has_run() {
     );
     assert_eq!(
         tree_hash(&fixture_site()),
-        site.pristine_hash(),
-        "the committed fixture differs from its copy"
+        fixture_before,
+        "the committed fixture changed while the suite served its copy"
     );
 }

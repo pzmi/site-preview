@@ -115,10 +115,8 @@ fn should_not_warn_when_loopback_with_allow_remote() {
 
     // then
     assert_eq!(status, 200);
-    assert!(
-        server.stderr().try_recv().is_err(),
-        "no warning on loopback"
-    );
+    let stderr = server.stop_and_stderr();
+    assert!(stderr.is_empty(), "no warning on loopback: {stderr:?}");
 }
 
 #[test]

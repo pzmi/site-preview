@@ -199,7 +199,7 @@ Normalize URL paths in one function used before *any* file open. Rules:
 2. Require relative components beneath the fixed root; reject `.` and `..` components, including encoded equivalents.
 3. Deny any component starting with `.`; this covers `.env`, `.git`, `.well-known`, etc. Document `.well-known` as an intentional P0 limitation.
 4. Deny exact directory components `node_modules`, `vendor`, `.venv`, `__pycache__` and editor/temp names. Match **components**, never substrings (e.g., `my-vendor-artwork` is fine).
-5. Deny editor swap/backup patterns and names ending in `~`; deny non-files and directories lacking `index.html`.
+5. Deny editor swap/backup patterns (`.*.swp`, `.*.swo`, `#*#`, `*.tmp`, `*.bak`, `*.orig`, `*.rej`, `4913`) and names ending in `~`; deny non-files and directories lacking `index.html`.
    Names are compared after a case fold (case-insensitive filesystems), and a component holding a code point HFS+ ignores when comparing names (zero-width characters, directional controls, U+FEFF) is denied outright, so `node\u{200C}_modules` cannot open `node_modules` (the CVE-2014-9390 class).
 6. Never interpolate a URL path into a shell command.
 

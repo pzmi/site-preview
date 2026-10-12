@@ -336,7 +336,7 @@ Each decision is an ADR. Tasks cite the D-id, and D*n* is ADR *n*+1. ADR 0001 is
 - **Depends on:** DOM-01. **Model:** opus. **Size:** S. Parallel with SEC-02.
 - **Read:** plan §5.2 (rules 3–5), plan §8.1 step 2, plan §15 bullets 3–4; D11.
 - **Create/Change:** `crates/preview-domain/src/eligibility.rs`:
-  - `fn component(name, kind: Dir|File, level: Root|Nested) -> Eligibility { Eligible, Denied(DenyReason) }` (the level is needed for the root-only `Reserved` rule) with reasons `Hidden`, `ExcludedDirectory` (exact `node_modules`, `vendor`, `.venv`, `__pycache__`), `EditorArtifact` (`*~`, `.*.swp`, `.*.swo`, `#*#`, `*.tmp`, `4913`) and `Reserved` (`__site_preview` at root).
+  - `fn component(name, kind: Dir|File, level: Root|Nested) -> Eligibility { Eligible, Denied(DenyReason) }` (the level is needed for the root-only `Reserved` rule) with reasons `Hidden`, `ExcludedDirectory` (exact `node_modules`, `vendor`, `.venv`, `__pycache__`), `EditorArtifact` (`*~`, `.*.swp`, `.*.swo`, `#*#`, `*.tmp`, `*.bak`, `*.orig`, `*.rej`, `4913`) and `Reserved` (`__site_preview` at root).
   - `fn path(&SitePath) -> Eligibility`, which applies directory rules to all but the last component.
 
   Serving (APP-03) and watching (FS-05, DOM-05) use this one predicate.

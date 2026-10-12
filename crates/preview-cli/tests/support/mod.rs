@@ -177,6 +177,7 @@ pub struct PreviewProcess {
     child: Child,
     url: String,
     stderr: Receiver<String>,
+    stopped: bool,
 }
 
 impl PreviewProcess {
@@ -204,6 +205,7 @@ impl PreviewProcess {
             child,
             url: String::new(),
             stderr,
+            stopped: false,
         };
         let mut seen = Vec::new();
         // Polled, not slept: the subprocess prints its URL once the listener is bound, and only
@@ -222,6 +224,16 @@ impl PreviewProcess {
             .map(|url| url.trim().to_owned())
             .expect("a Local: line");
         process
+    }
+
+    /// Stops the process and returns every line it wrote to stderr, in order. The reader
+    /// thread ends when the pipe closes with the process, so nothing written before the stop
+    /// can be missed (unlike a `try_recv` right after a request).
+    pub fn stop_and_stderr(mut self) -> Vec<String> {
+        self.stopped = true;
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        self.stderr.iter().collect()
     }
 
     /// The printed URL, e.g. `http://127.0.0.1:49152/`.
@@ -292,6 +304,9 @@ impl PreviewProcess {
 
 impl Drop for PreviewProcess {
     fn drop(&mut self) {
+        if self.stopped {
+            return;
+        }
         let early = self.child.try_wait();
         let _ = self.child.kill();
         let _ = self.child.wait();

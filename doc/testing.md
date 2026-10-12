@@ -16,14 +16,15 @@ is one of its entries, or a planned one it lists as not yet available.
 | Unit | Pure logic and boundary examples | `#[cfg(test)] mod tests` beside the module, e.g. `crates/preview-domain/src/`, `crates/preview-adapter-fs/src/` | `unit-tests` (`cargo nextest run`) | in place |
 | Doctest | Examples in `///` and `//!` compile and pass | Doc comments; e.g. the `wait_until` example in `crates/preview-testkit/src/poll.rs` | `doctests` | in place |
 | Property | Invariants over generated values, with persisted counterexamples | `proptest!` inside `crates/preview-domain/src/` and `crates/preview-application/src/`; black-box properties in `crates/preview-domain/tests/properties.rs` | `unit-tests`; the `ci` profile raises the case count | in place |
-| Component | Real application code over testkit fakes, no external services | `crates/preview-application/tests/`, `crates/preview-adapter-http/tests/` (router and files over `InMemorySite`) | `unit-tests` | in place |
+| Component | Real application code over testkit fakes, no external services | `crates/preview-application/tests/`, `crates/preview-adapter-http/tests/` (router, files, directory, host, client and the SSE stream in `sse.rs` and `stream.rs`, over `InMemorySite`) | `unit-tests` | in place |
 | Contract | Each fake and each real adapter of a port meets one shared harness | `crates/preview-testkit/src/contracts/`; runs in `crates/preview-testkit/tests/site_content_fake.rs` and `crates/preview-adapter-fs/tests/site_content_contract.rs` | `unit-tests` | in place for `SiteContent`; `ChangeSource` planned (TEST-05) |
 | Architecture | Crate, dependency, lint and test-hygiene rules, and each rule's negative control | `tools/xtask/src/architecture/`; fixtures in `tests/architecture-valid/` and `tests/architecture-invalid/`; `tools/xtask/tests/architecture_fixtures.rs` | `architecture` (inside `quick` and `check`) | in place |
 | Security fixtures | The dependency policy, secret scanning and workflow lint reject a seeded bad input | `tools/xtask/tests/security_fixtures.rs` | `unit-tests` | in place |
 | Integration | Real tempdir filesystem, threads, the root capability under a concurrent symlink swap | `crates/preview-adapter-fs/tests/` (`root.rs`, `capability.rs`, `symlink_race.rs`) | `unit-tests` | in place; OS watcher tests planned with the watcher |
-| CLI black box | The built binary's flags, output and exit codes through `assert_cmd` | `crates/preview-cli/tests/cli_meta.rs` | `unit-tests` | partial; the full suite is E2E-01 |
-| E2E | The installed binary's HTTP and security behaviour | planned | | E2E-01 (first M1 suite), E2E-02, E2E-04+ (browser) |
-| Compile-fail | An invalid API use does not compile (`trybuild`) | planned | | ARCH-08 |
+| CLI black box | The built binary's flags, output and exit codes through `assert_cmd` | `crates/preview-cli/tests/cli_meta.rs` (version, help), `serve_slice.rs` (the served slice), `flags.rs` (port, host and `--allow-remote` flags, warnings, exit codes) | `unit-tests` | in place |
+| E2E | The built binary's HTTP and security behaviour over a real socket against a copy of the hostile fixture site, and that serving leaves the tree unchanged | `crates/preview-cli/tests/http_security.rs`, with `crates/preview-cli/tests/support/mod.rs` | `unit-tests` | in place (E2E-01); E2E-02 and E2E-04+ (browser) planned |
+| Compile-fail | An invalid API use does not compile (`trybuild`) | `crates/preview-domain/tests/compile_fail.rs`, `crates/preview-adapter-fs/tests/compile_fail.rs` | `unit-tests` | in place (ARCH-08) |
+| Client JavaScript | The reload client's `node:test` suite, with no npm dependency | `crates/preview-adapter-http/assets/client.test.mjs` | `client-js` (`node --test crates/*/assets/*.test.mjs`) | in place (HTTP-09) |
 | Conformance | Quint model traces replayed against the real code | `crates/preview-conformance` is a placeholder today | `conformance` (not yet available) | FORMAL-01 to FORMAL-09 |
 | Coverage | Line coverage floor and changed-line coverage | planned; targets in [`foundation.md`](foundation.md) 5.3 and [ADR 0018](adr/0018-coverage-gates.md) | `coverage` (not yet available) | TEST-06, TEST-07 |
 | Mutation | Test quality: whether tests fail when code changes | planned; scope per foundation.md 5.3 | `mutation` (not yet available) | TEST-08 |
@@ -161,7 +162,8 @@ cargo xtask check          # the full blocking gate, run before every commit
 ```
 
 `quick` is not `check`. `check` runs the `quick` stages other than the tests, then `test`
-(the `ci` profile and the doctests), then `security`. A stage whose tool is missing is reported as
+(the `ci` profile and the doctests), the `client-js` node tests, then the security stages
+(`deny`, `secrets`, `workflows`, `action-pins`). A stage whose tool is missing is reported as
 `UNAVAILABLE` with the install instruction and a non-success exit; it never counts as passed.
 
 Per level:
@@ -169,11 +171,12 @@ Per level:
 ```bash
 cargo fmt --all --check                                   # fmt-check: formatting
 cargo clippy --locked --workspace --all-targets -- -D warnings   # clippy
-cargo nextest run --locked --workspace                    # unit-tests: the default profile
+cargo nextest run --workspace --locked --profile ci       # unit-tests: the catalog command
 cargo test --locked --workspace --doc                     # doctests (nextest does not run them)
 cargo xtask architecture                                  # rules, fixtures, test hygiene
 cargo xtask test                                          # unit-tests under the ci profile, then doctests
 cargo xtask security                                      # deny, secrets, workflows, action pins
+node --test crates/*/assets/*.test.mjs                    # client-js: the reload client's tests
 cargo xtask fmt                                           # apply rustfmt (developer convenience)
 ```
 
@@ -202,6 +205,6 @@ cargo xtask release-check  # OPS-05
 ## Checks the gate runs
 
 `cargo xtask list-checks` marks the stages `check` runs with `"in_check": true`. Today those are
-`fmt-check`, `clippy`, `unit-tests`, `doctests`, `architecture` (with its `ARCH-*` rules),
-`security`, `secrets`, `workflows` and `action-pins`. `check` runs each stage once; a stage that
+`fmt-check`, `clippy`, `unit-tests`, `doctests`, `client-js`, `architecture` (with its `ARCH-*` rules),
+`deny`, `secrets`, `workflows` and `action-pins`. (`security` is the umbrella command for the last four, not a stage of its own.) `check` runs each stage once; a stage that
 is in the catalog but not yet implemented is absent from the run, not skipped.

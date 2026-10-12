@@ -51,7 +51,7 @@ pub enum DenyReason {
     /// A directory named exactly `node_modules`, `vendor`, `.venv` or `__pycache__`.
     ExcludedDirectory,
     /// An editor swap, backup or temporary name: `*~`, `.*.swp`, `.*.swo`, `#*#`, `*.tmp`,
-    /// or `4913` (the file vim creates to test that a directory is writable).
+    /// `*.bak`, `*.orig`, `*.rej`, or `4913` (the file vim creates to test that a directory is writable).
     EditorArtifact,
     /// `__site_preview` directly in the root, where the internal endpoints live.
     Reserved,
@@ -158,7 +158,9 @@ fn is_editor_artifact(folded: &str) -> bool {
         || swap(".swp")
         || swap(".swo")
         || (folded.len() >= 2 && folded.starts_with('#') && folded.ends_with('#'))
-        || folded.ends_with(".tmp")
+        || [".tmp", ".bak", ".orig", ".rej"]
+            .iter()
+            .any(|suffix| folded.ends_with(suffix))
         || folded == "4913"
 }
 
@@ -383,6 +385,10 @@ mod tests {
             "##",
             "draft.tmp",
             "DRAFT.TMP",
+            "index.html.bak",
+            "styles.css.orig",
+            "merge.rej",
+            "X.BAK",
             "4913",
             "notes~",
         ];
@@ -410,6 +416,9 @@ mod tests {
             "x.swp",
             "tmp",
             "template.tmpl",
+            "bak",
+            "backup.html",
+            "original.css",
             "49130",
             "a~b",
         ];
