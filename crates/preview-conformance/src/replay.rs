@@ -171,6 +171,28 @@ pub trait Driver {
     /// Applies one action with its picked parameters to the real code.
     fn apply(&mut self, action: &str, params: &Params) -> Result<(), DriverError>;
 
+    /// [`Driver::apply`], with the model's state after the step at hand. [`replay`] calls
+    /// this one; the default ignores `model` and calls [`Driver::apply`].
+    ///
+    /// For a step of the environment whose stimulus to the real code is a choice the model
+    /// makes outside the implementation, such as a browser's decision to navigate away and so
+    /// close its event stream (D16: the client is verified elsewhere, never reimplemented in
+    /// Rust). A driver reads only that environmental choice from `model`, never the part of
+    /// the state it observes from the real code, which would make the comparison vacuous.
+    ///
+    /// # Errors
+    ///
+    /// As [`Driver::apply`].
+    fn apply_with_model(
+        &mut self,
+        action: &str,
+        params: &Params,
+        model: &State,
+    ) -> Result<(), DriverError> {
+        let _ = model;
+        self.apply(action, params)
+    }
+
     /// Projects the real code's current state.
     fn observe(&self) -> Self::Obs;
 }
@@ -263,7 +285,7 @@ where
         };
         let params = Params::new(picks);
         let expected = project_expected(state);
-        let applied = driver.apply(action, &params);
+        let applied = driver.apply_with_model(action, &params, state);
         let actual = driver.observe();
         let mut divergence = diverge(step, action, params.to_string(), Cause::Mismatch);
         divergence.actual = Some(format!("{actual:#?}"));

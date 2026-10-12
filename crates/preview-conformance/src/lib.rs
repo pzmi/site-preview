@@ -9,7 +9,8 @@
 //! - [`report`] formats a [`Divergence`]: model, seed, trace, step, action, expected, actual
 //!   and a line diff;
 //! - [`drivers`] holds one driver per model over the real code (the lifecycle driver drives
-//!   the composition's `Server`, FORMAL-05);
+//!   the composition's `Server`, FORMAL-05; the reload driver drives the real `ReloadState`
+//!   and SSE handler in process, FORMAL-07);
 //! - [`generate`] writes seeded random traces with the locked Quint at test time.
 //!
 //! Production crates never depend on this crate (`architecture.toml`, `test_only`).

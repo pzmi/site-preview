@@ -2,3 +2,4 @@
 //! and the projection of that model's state into the driver's observation.
 
 pub mod lifecycle;
+pub mod reload;

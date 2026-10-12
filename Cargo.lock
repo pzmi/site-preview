@@ -987,6 +987,7 @@ dependencies = [
 name = "preview-conformance"
 version = "0.1.0"
 dependencies = [
+ "axum",
  "preview-adapter-fs",
  "preview-adapter-http",
  "preview-application",
@@ -995,6 +996,8 @@ dependencies = [
  "preview-testkit",
  "serde_json",
  "tempfile",
+ "tokio",
+ "tower",
 ]
 
 [[package]]
