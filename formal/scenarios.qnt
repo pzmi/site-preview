@@ -182,3 +182,214 @@ module lifecycleMachineScenarios {
       .then(stopped)
       .expect(allInvariants and state == Stopped)
 }
+
+/// The live-reload protocol (`reload.qnt`, FORMAL-03). The server side of each run (the
+/// committed state and each connection's events) is what FORMAL-07 exports and replays
+/// against the real `ReloadState` and SSE handler; the browser side is pinned by
+/// `reconnect.spec.ts` and `hot.spec.ts`, named on each run.
+module reloadScenarios {
+  import reload.* from "./reload"
+
+  pure val B = "b1"
+  pure def at(instance: int, revision: int): Stamp = { instance: instance, revision: revision }
+  def page: Browser = browsers.get(B)
+  def sent: List[Event] = browsers.get(B).stream
+
+  /// A source edit lands between the HTML fetch and the event stream's connect: the first
+  /// `state` differs from the render-time baseline, so the page reloads once, and the reloaded
+  /// page is quiet (plan.md section 7.3, `reload.spec.ts`).
+  run editDuringFetch =
+    init
+      .then(navigate(B))
+      .expect(allInvariants and page.baseline == at(1, 0))
+      .then(publishWith(Set(Css), false))
+      .then(connect(B))
+      .expect(allInvariants and sent == [stateEvent(at(1, 1))])
+      .then(receiveWith(B, true))
+      .expect(and {
+        allInvariants,
+        page.doc == Navigating,
+        page.reloaded == 1,
+        page.hotApplied == 0,
+        not(page.open),
+      })
+      .then(navigate(B))
+      .then(connect(B))
+      .then(receiveWith(B, true))
+      .expect(and {
+        allInvariants,
+        page.doc == Shown,
+        page.baseline == at(1, 1),
+        page.reloaded == 1,
+      })
+
+  /// The stream drops, a css-only edit is published while it is down, and the stream comes
+  /// back: the change set of the missed revision is gone, so the reconnect's `state` costs one
+  /// full reload, never a hot apply, and an unchanged server none
+  /// (`should_reload_once_when_stream_reconnects_after_an_edit_made_while_it_was_down`,
+  /// `should_not_reload_when_stream_reconnects_to_an_unchanged_server`).
+  run disconnectEditReconnect =
+    init
+      .then(navigate(B))
+      .then(connect(B))
+      .then(receiveWith(B, true))
+      .then(disconnect(B))
+      .then(connect(B))
+      .then(receiveWith(B, true))
+      .expect(allInvariants and page.doc == Shown and page.reloaded == 0)
+      .then(disconnect(B))
+      .expect(allInvariants and not(page.open) and sent == [])
+      .then(publishWith(Set(Css), false))
+      .then(connect(B))
+      .expect(allInvariants and sent == [stateEvent(at(1, 1))])
+      .then(receiveWith(B, true))
+      .expect(and {
+        allInvariants,
+        page.doc == Navigating,
+        page.reloaded == 1,
+        page.hotApplied == 0,
+        page.trigger == at(1, 1),
+      })
+      .then(navigate(B))
+      .then(connect(B))
+      .then(receiveWith(B, true))
+      .expect(allInvariants and page.doc == Shown and page.reloaded == 1)
+
+  /// A clean stop and a new process on the same port with unchanged files: the new instance
+  /// at revision 0 makes the page reload exactly once, and the reloaded page stays
+  /// (`should_reload_once_and_stay_when_server_restarts_on_the_same_port`); the revision
+  /// number alone (0 on both) would not have shown it.
+  run restartSamePort =
+    init
+      .then(navigate(B))
+      .then(connect(B))
+      .then(receiveWith(B, true))
+      .then(stopServer)
+      .expect(allInvariants and not(up) and not(page.open) and page.doc == Shown)
+      .then(startServer)
+      .expect(allInvariants and committed == at(2, 0))
+      .then(connect(B))
+      .expect(allInvariants and sent == [stateEvent(at(2, 0))])
+      .then(receiveWith(B, true))
+      .expect(and {
+        allInvariants,
+        page.doc == Navigating,
+        page.reloaded == 1,
+        page.trigger == at(2, 0),
+      })
+      .then(navigate(B))
+      .then(connect(B))
+      .then(receiveWith(B, true))
+      .expect(and {
+        allInvariants,
+        page.doc == Shown,
+        page.baseline == at(2, 0),
+        page.reloaded == 1,
+        page.open,
+      })
+
+  /// A css-only revision right after the connection's baseline is sent hot and applied in
+  /// place: the baseline moves to it with no navigation
+  /// (`should_swap_stylesheet_without_navigation_when_css_changes`).
+  run cssOnlyHot =
+    init
+      .then(navigate(B))
+      .then(connect(B))
+      .then(receiveWith(B, true))
+      .then(publishWith(Set(Css), false))
+      .then(send(B))
+      .expect(and {
+        allInvariants,
+        sent == [
+          stateEvent(at(1, 0)),
+          { name: ReloadEvent, at: at(1, 1), kinds: Set(Css), full: false },
+        ],
+      })
+      .then(receiveWith(B, true))
+      .expect(and {
+        allInvariants,
+        page.doc == Shown,
+        page.open,
+        page.baseline == at(1, 1),
+        page.hotApplied == 1,
+        page.reloaded == 0,
+      })
+
+  /// A css revision and a js revision published before the connection's `Feed` wakes collapse
+  /// into the newest: the css change set is gone, so the event is `full` with no changes and
+  /// the page reloads once, never hot-applying either
+  /// (`should_reload_once_when_css_and_script_change_in_quick_succession`,
+  /// `should_send_full_when_revisions_coalesced`).
+  run coalescedCssThenJsFull =
+    init
+      .then(navigate(B))
+      .then(connect(B))
+      .then(receiveWith(B, true))
+      .then(publishWith(Set(Css), false))
+      .then(publishWith(Set(Js), false))
+      .then(send(B))
+      .expect(and {
+        allInvariants,
+        sent == [
+          stateEvent(at(1, 0)),
+          { name: ReloadEvent, at: at(1, 2), kinds: Set(), full: true },
+        ],
+      })
+      .then(receiveWith(B, true))
+      .expect(and {
+        allInvariants,
+        page.doc == Navigating,
+        page.reloaded == 1,
+        page.hotApplied == 0,
+      })
+      .then(send(B).fail())
+
+  /// An html change is published full and sent full even on a contiguous connection (the
+  /// path is listed for information only), and the page reloads once
+  /// (`should_navigate_exactly_once_and_stay_stable_when_html_changes`,
+  /// `should_reload_once_when_html_and_css_change_together`).
+  run htmlFull =
+    init
+      .then(navigate(B))
+      .then(connect(B))
+      .then(receiveWith(B, true))
+      .then(publishWith(Set(Html, Css), false))
+      .expect(allInvariants and latest == { kinds: Set(Html, Css), full: true })
+      .then(send(B))
+      .expect(and {
+        allInvariants,
+        sent[1] == { name: ReloadEvent, at: at(1, 1), kinds: Set(Html, Css), full: true },
+      })
+      .then(receiveWith(B, true))
+      .expect(and {
+        allInvariants,
+        page.doc == Navigating,
+        page.reloaded == 1,
+        page.hotApplied == 0,
+      })
+
+  /// A script change the page has not accepted is a hot change set the client cannot apply
+  /// in place: it falls back to one reload with the scroll position kept, and the hot
+  /// counter stays put (`should_reload_once_when_script_change_is_not_accepted`); an
+  /// accepted one is applied with no navigation
+  /// (`should_run_handler_without_navigation_when_page_accepts_script_change`).
+  run scriptNotAcceptedReloads =
+    init
+      .then(navigate(B))
+      .then(connect(B))
+      .then(receiveWith(B, true))
+      .then(publishWith(Set(Js), false))
+      .then(send(B))
+      .then(receiveWith(B, true))
+      .expect(allInvariants and page.hotApplied == 1 and page.baseline == at(1, 1))
+      .then(publishWith(Set(Js), false))
+      .then(send(B))
+      .then(receiveWith(B, false))
+      .expect(and {
+        allInvariants,
+        page.doc == Navigating,
+        page.hotApplied == 1,
+        page.reloaded == 1,
+        page.trigger == at(1, 2),
+      })
+}

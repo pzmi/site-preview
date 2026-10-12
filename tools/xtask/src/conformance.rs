@@ -37,10 +37,16 @@ pub struct Model {
 }
 
 /// The models `formal-simulate` runs. FORMAL-02 and FORMAL-03 add `watcher` and `reload`.
-pub const MODELS: &[Model] = &[Model {
-    file: "lifecycle.qnt",
-    steps: &["step", "serverStep"],
-}];
+pub const MODELS: &[Model] = &[
+    Model {
+        file: "lifecycle.qnt",
+        steps: &["step", "serverStep"],
+    },
+    Model {
+        file: "reload.qnt",
+        steps: &["step"],
+    },
+];
 
 /// The file of named runs, one module per model.
 const SCENARIOS: &str = "scenarios.qnt";
@@ -609,6 +615,30 @@ mod tests {
             assert!(invariants.iter().any(|i| i == name), "{name} missing");
             assert!(text.contains(&format!("val {name} =")), "{name} undefined");
         }
+    }
+
+    #[test]
+    fn should_check_the_task_invariants_when_reload_is_simulated() {
+        // given
+        let text = std::fs::read_to_string(formal_dir().join("reload.qnt")).expect("model");
+
+        // when
+        let invariants = all_invariants(&text).expect("allInvariants block");
+
+        // then
+        for name in [
+            "monotonicRevision",
+            "noUncommittedClaim",
+            "atMostOneReloadPerChange",
+            "noHotApplyAcrossGap",
+            "htmlChangeIsFull",
+            "hotApplyAdvancesBaseline",
+        ] {
+            assert!(invariants.iter().any(|i| i == name), "{name} missing");
+            assert!(text.contains(&format!("val {name} =")), "{name} undefined");
+        }
+        assert!(text.contains("temporal reconnectObservesNewer ="));
+        assert!(MODELS.iter().any(|m| m.file == "reload.qnt"));
     }
 
     #[test]
