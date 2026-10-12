@@ -1,4 +1,5 @@
-//! Running the server: runtime, listener, router and shutdown (plan.md section 9, ADR 0028).
+//! Running the server: runtime, listener, router, watcher pipeline and shutdown (plan.md
+//! section 9, ADR 0028, ADR 0049).
 
 use core::fmt;
 use core::future::poll_fn;
@@ -13,16 +14,18 @@ use preview_adapter_http::{
     AppState, DEFAULT_KEEP_ALIVE, DEFAULT_MAX_STREAMS, Injection, Shutdown, StreamLimit,
     WarningSink, build_router,
 };
-use preview_application::ReloadState;
+use preview_application::{ChangeCoordinator, ReloadState};
 use preview_domain::{BoundAddr, HostPolicy, InstanceId};
 use tokio::net::TcpListener;
 use tokio::runtime::Builder;
 use tokio::signal::unix::{SignalKind, signal};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
+use tokio::time::{Instant, timeout_at};
 
-use crate::bootstrap::{RootRefusal, open_root};
+use crate::bootstrap::{RootRefusal, WatchStart, open_root, start_watcher};
 use crate::config::{BindRefusal, ServeConfig};
 use crate::connections::{StopSignal, Stopped, serve_connections};
+use crate::watch_pipeline::{TokioClock, WatchPipeline};
 
 /// What the server reports once it accepts connections.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,6 +34,41 @@ pub struct Ready<'a> {
     pub root: &'a Path,
     /// The base URL of the bound listener, for example `http://127.0.0.1:49152/`.
     pub url: &'a str,
+    /// What the file watcher covers, so live reload is never claimed when it is off.
+    pub watching: WatchStatus<'a>,
+}
+
+/// What the file watcher covers at start-up (plan.md section 3, "Human startup output";
+/// section 8.1 step 6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WatchStatus<'a> {
+    /// Every eligible directory is watched: live reload works.
+    Watching {
+        /// The number of watched directories; at least one, the root.
+        dirs: usize,
+    },
+    /// Some eligible directories could not be watched (each was warned about): live reload
+    /// misses changes in them.
+    Partial {
+        /// The number of watched directories; at least one.
+        dirs: usize,
+    },
+    /// Nothing is watched: live reload is off, pages are still served.
+    Unavailable {
+        /// Why, in words for a person; never an absolute path.
+        reason: &'a str,
+    },
+}
+
+impl<'a> WatchStatus<'a> {
+    /// Pinned by `should_report_watch_status_when_registration_is_complete_partial_or_absent`.
+    fn of(start: &'a WatchStart) -> Self {
+        match &start.unavailable {
+            Some(reason) => Self::Unavailable { reason },
+            None if start.is_complete() => Self::Watching { dirs: start.dirs },
+            None => Self::Partial { dirs: start.dirs },
+        }
+    }
 }
 
 /// Receives the run's reports; the CLI renders them as human output (or, later, JSON).
@@ -85,16 +123,19 @@ impl core::error::Error for StartupError {}
 /// In order (plan.md section 9): open the root, build a multi-thread runtime, bind the
 /// listener, install the SIGINT and SIGTERM handlers, build the router over a fresh
 /// [`ReloadState`], a [`HostPolicy`] for the address actually bound and `--allow-remote`, and
-/// a [`Shutdown`] for the event streams, report [`Ready`], then serve within
+/// a [`Shutdown`] for the event streams, start the file watcher and its pipeline task (warning
+/// about every directory it cannot watch), report [`Ready`], then serve within
 /// [`crate::ServerLimits`] (ADR 0045). The first signal closes the listener, ends every open
-/// event stream (a browser tab never holds the process) and drains the other connections for
+/// event stream (a browser tab never holds the process), stops the watcher pipeline (joined
+/// within the drain bound) and drains the other connections for
 /// at most the drain bound; a second signal stops at once ([`Stopped::Forced`]). A non-loopback
 /// host without `--allow-remote` is refused before anything opens; an explicit port in use is
 /// [`StartupError::Bind`] (`should_exit_1_when_explicit_port_in_use`). Pinned end to end by
 /// `should_serve_index_when_started_on_fixture`, `should_exit_1_when_directory_does_not_exist`
 /// and the lifecycle tests (`should_exit_0_within_drain_bound_when_clients_stall`,
 /// `should_exit_130_when_second_sigint_arrives_during_drain`). Warnings about served pages
-/// (ADR 0020, ADR 0046) go to `warnings`.
+/// (ADR 0020, ADR 0046) and about the watcher (ADR 0049) go to `warnings`. A watcher that
+/// cannot watch anything is degraded mode, never a start-up failure.
 ///
 /// # Errors
 ///
@@ -120,9 +161,25 @@ pub fn run(
             .map_err(|source| StartupError::Bind { addr, source })?;
         let mut stops = stop_signals().map_err(StartupError::Signal)?;
         let streams = Shutdown::new();
+        let reload = ReloadState::new(instance_id());
+        let (source, watch) = start_watcher(&root);
+        report_watch_problems(&watch, warnings.as_ref());
+        let mut coordinator = ChangeCoordinator::new(config.debounce, reload.clone());
+        if watch.is_complete() && watch.dirs > 0 {
+            // A fresh coordinator accepts any non-zero count; nothing to report.
+            let _ = coordinator.watcher_ready(watch.dirs);
+        }
+        let (stop_watching, watching_stopped) = oneshot::channel();
+        let pipeline = WatchPipeline::new(
+            source,
+            coordinator,
+            TokioClock::start(),
+            Arc::clone(&warnings),
+        );
+        let mut pipeline = tokio::spawn(pipeline.run(watching_stopped));
         let state = AppState {
-            content: root.content,
-            reload: ReloadState::new(instance_id()),
+            content: Arc::clone(&root.content),
+            reload,
             // From the address actually bound: with `--port 0` the request said 0, and a
             // policy over port 0 would refuse every Host.
             host: HostPolicy::new(
@@ -138,24 +195,53 @@ pub fn run(
         out.ready(&Ready {
             root: &root.display_path,
             url: &url,
+            watching: WatchStatus::of(&watch),
         });
         let limits = config.limits;
-        Ok(
+        let mut drain_ends = Instant::now() + limits.drain_timeout;
+        let stopped =
             serve_connections(listener, build_router(state), limits, &mut stops, |open| {
+                drain_ends = Instant::now() + limits.drain_timeout;
                 // A drain waits for open responses, and an event stream never ends on its
                 // own: end them now, or one open tab holds the process for the whole bound.
                 streams.trigger();
+                // The pipeline may already have ended (a panic); nothing is left to stop.
+                let _ = stop_watching.send(());
                 if open > 0 {
                     out.draining(limits.drain_timeout);
                 }
             })
-            .await,
-        )
+            .await;
+        // Cancelled at the first stop, the task has normally ended long before the drain
+        // does. The join shares the drain's bound, so it never extends the promised exit, and
+        // after a second signal it is not waited for at all.
+        if matches!(stopped, Stopped::Forced(_)) {
+            drain_ends = Instant::now();
+        }
+        if timeout_at(drain_ends, &mut pipeline).await.is_err() {
+            pipeline.abort();
+        }
+        Ok(stopped)
     });
     // Neither a dropped connection nor a blocking read still running may delay the exit: the
     // drain bound is the promise.
     runtime.shutdown_background();
     stopped
+}
+
+/// Warns about each directory that could not be watched, or that nothing can be watched
+/// (`watch-registration-failed`, `watch-unavailable`; README "Warnings").
+fn report_watch_problems(watch: &WatchStart, warnings: &dyn WarningSink) {
+    for problem in &watch.problems {
+        warnings.warn("watch-registration-failed", problem);
+    }
+    let Some(reason) = &watch.unavailable else {
+        return;
+    };
+    warnings.warn(
+        "watch-unavailable",
+        &format!("file watching is unavailable: {reason}; live reload is disabled, pages are still served"),
+    );
 }
 
 /// Installs the SIGINT and SIGTERM handlers and forwards every delivery, in order, to the
@@ -231,5 +317,37 @@ mod tests {
             // then
             assert_eq!(shown.to_string(), expected, "{bound}");
         }
+    }
+
+    #[test]
+    fn should_report_watch_status_when_registration_is_complete_partial_or_absent() {
+        // given
+        let start = |dirs, problems: &[&str], unavailable: Option<&str>| WatchStart {
+            dirs,
+            problems: problems.iter().map(|p| (*p).to_owned()).collect(),
+            unavailable: unavailable.map(str::to_owned),
+        };
+        let complete = start(3, &[], None);
+        let partial = start(
+            2,
+            &["cannot watch directory `blog`: permission denied"],
+            None,
+        );
+        let absent = start(0, &[], Some("the native file watcher is unavailable"));
+
+        // when
+        let statuses = [&complete, &partial, &absent].map(WatchStatus::of);
+
+        // then
+        assert_eq!(
+            statuses,
+            [
+                WatchStatus::Watching { dirs: 3 },
+                WatchStatus::Partial { dirs: 2 },
+                WatchStatus::Unavailable {
+                    reason: "the native file watcher is unavailable"
+                },
+            ]
+        );
     }
 }

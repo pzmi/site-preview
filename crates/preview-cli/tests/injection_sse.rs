@@ -1,11 +1,11 @@
 //! Black-box injection and live-reload stream suite (plan.md §12 "HTTP and security
 //! integration tests", the M2 exit gate of §11).
 //!
-//! Every test runs the real binary on a [`Site`] and speaks raw HTTP to it. Deferred, because
-//! the watcher is not wired into the binary yet (CLI-03): a `reload` event after a file
-//! change, the 15 s keepalive on a real clock and the stream ending on shutdown. Their
-//! payloads are pinned at component level in `preview-adapter-http`'s `tests/sse.rs`; the
-//! end-to-end versions belong to E2E-03 (watcher) and E2E-09 (hot reload).
+//! Every test runs the real binary on a [`Site`] and speaks raw HTTP to it. Not here: a
+//! `reload` event after a file change (smoke-tested in `watch_reload.rs`, fully covered by
+//! E2E-03's watcher suite), the 15 s keepalive on a real clock and the stream ending on
+//! shutdown. Their payloads are pinned at component level in `preview-adapter-http`'s
+//! `tests/sse.rs`; the end-to-end versions belong to E2E-03 (watcher) and E2E-09 (hot reload).
 
 pub mod support;
 

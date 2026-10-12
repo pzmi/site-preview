@@ -38,6 +38,10 @@ server keeps serving after each one. Page warnings are printed once per request 
 | `html-not-utf8` | An HTML page that is not UTF-8, or whose `<meta>` charset names another encoding, is served unchanged without live reload. |
 | `html-rewrite-failed` | The reload script could not be inserted safely; the page is served unchanged. |
 | `csp-blocks-live-reload` | The page's `<meta http-equiv="Content-Security-Policy">` would block the reload script or the reload connection: the governing `script-src` or `connect-src` (or their `default-src` fallback) allows none of `'self'`, `*`, `http:` or a host-source (an `https:`-only list warns, since this server speaks plain `http`; `'strict-dynamic'` makes a script list block). The page is still served with the script and its policy untouched, but it will not live reload; edit the policy for development. Only a meta tag is checked; other violations show only in the browser console. |
+| `watch-registration-failed` | A directory could not be watched (named relative to the root, with the reason); changes in it do not live reload. At most ten are named, then the rest are counted. |
+| `watch-unavailable` | Nothing can be watched (the native watcher could not start, or no directory could be registered): live reload is disabled and `Watching:` says so; pages are still served. |
+| `watch-failed` | The native watcher failed while running: live reload may miss changes until site-preview is restarted; pages are still served. Reported once until the watcher recovers. |
+| `reload-exhausted` | The revision counter ran out (after 2^64 - 1 reloads): live reload stops; pages are still served. |
 
 ## Security posture
 

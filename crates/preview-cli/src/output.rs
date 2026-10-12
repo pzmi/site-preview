@@ -5,12 +5,35 @@ use std::io::{self, Write};
 use std::net::IpAddr;
 use std::time::Duration;
 
-use preview_composition::{Ready, StartupReporter, WarningSink};
+use preview_composition::{Ready, StartupReporter, WarningSink, WatchStatus};
 
 /// One warning line in the ADR 0020 format: `site-preview: warning[<code>]: <message>`.
 /// Pinned by `should_format_warning_line_when_rendered`.
 pub fn warning_line(code: &str, message: &str) -> String {
     format!("site-preview: warning[{code}]: {message}")
+}
+
+/// The text after `Watching:` (plan.md section 3): a count of watched directories, never a
+/// claim of live reload the watcher cannot back. Pinned by
+/// `should_render_watching_line_when_watcher_is_live_partial_or_unavailable`.
+pub fn watching_line(status: WatchStatus<'_>) -> String {
+    let count = |dirs: usize| {
+        if dirs == 1 {
+            "1 eligible directory".to_owned()
+        } else {
+            format!("{dirs} eligible directories")
+        }
+    };
+    match status {
+        WatchStatus::Watching { dirs } => count(dirs),
+        WatchStatus::Partial { dirs } => format!(
+            "{} (degraded: some directories cannot be watched; see the warnings above)",
+            count(dirs)
+        ),
+        WatchStatus::Unavailable { reason } => {
+            format!("unavailable ({reason}); live reload disabled")
+        }
+    }
 }
 
 /// Writes each warning as one [`warning_line`] on stderr.
@@ -65,9 +88,10 @@ impl<O: Write, E: Write> StartupReporter for HumanReport<O, E> {
             let _ = self.err.flush();
         }
         let block = format!(
-            "Site Preview\nServing:  {}\nLocal:    {}\nWatching: not yet available\nReady.\n",
+            "Site Preview\nServing:  {}\nLocal:    {}\nWatching: {}\nReady.\n",
             ready.root.display(),
-            ready.url
+            ready.url,
+            watching_line(ready.watching)
         );
         let _ = self.out.write_all(block.as_bytes());
         let _ = self.out.flush();
@@ -95,6 +119,7 @@ mod tests {
         Ready {
             root: Path::new("/srv/site"),
             url: "http://127.0.0.1:49152/",
+            watching: WatchStatus::Watching { dirs: 3 },
         }
     }
 
@@ -127,10 +152,38 @@ mod tests {
             "Site Preview\n\
              Serving:  /srv/site\n\
              Local:    http://127.0.0.1:49152/\n\
-             Watching: not yet available\n\
+             Watching: 3 eligible directories\n\
              Ready.\n"
         );
         assert!(report.err.is_empty());
+    }
+
+    #[test]
+    fn should_render_watching_line_when_watcher_is_live_partial_or_unavailable() {
+        // given
+        let statuses = [
+            WatchStatus::Watching { dirs: 1 },
+            WatchStatus::Watching { dirs: 3 },
+            WatchStatus::Partial { dirs: 2 },
+            WatchStatus::Unavailable {
+                reason: "the native file watcher is unavailable",
+            },
+        ];
+
+        // when
+        let lines = statuses.map(watching_line);
+
+        // then
+        assert_eq!(
+            lines,
+            [
+                "1 eligible directory",
+                "3 eligible directories",
+                "2 eligible directories (degraded: some directories cannot be watched; see the \
+                 warnings above)",
+                "unavailable (the native file watcher is unavailable); live reload disabled",
+            ]
+        );
     }
 
     #[test]
