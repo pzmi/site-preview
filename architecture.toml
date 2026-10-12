@@ -42,6 +42,7 @@ preview-adapter-http = { axum = ["http1", "tokio"], lol_html = [], mime_guess = 
 preview-application = { tokio = ["sync"] }
 preview-composition = { axum = ["http1"], hyper = ["server", "http1"], hyper-util = ["tokio", "service"], tokio = ["rt-multi-thread", "net", "signal", "sync", "time"] }
 preview-cli = { clap = ["default", "derive", "std", "help", "usage", "error-context"], serde_json = ["std"] }
+preview-conformance = { serde_json = ["std"] }
 xtask = { cargo_metadata = ["default"], clap = ["default", "derive"], proc-macro2 = ["span-locations"], serde = ["default", "derive"], syn = ["parsing", "full", "visit", "clone-impls"], toml = ["default"], yaml-rust2 = [] }
 
 [external.dev]

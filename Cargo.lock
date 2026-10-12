@@ -992,6 +992,7 @@ dependencies = [
  "preview-application",
  "preview-domain",
  "preview-testkit",
+ "serde_json",
 ]
 
 [[package]]

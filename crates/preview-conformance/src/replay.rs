@@ -1,0 +1,578 @@
+//! The explicit replay path (foundation.md section 6.3): feed each step of an ITF trace to a
+//! [`Driver`] that applies it to the real code, project the model's state and the driver's
+//! observation into the same type, and compare them after **every** step, the initial state
+//! included. The first difference, refusal or undecodable step stops the replay with a
+//! [`Divergence`].
+//!
+//! This module knows nothing about a particular model or harness library: a driver names the
+//! actions it understands and decodes its own parameters from [`Params`], and the caller
+//! supplies the projection of the model's state (ADR 0053).
+
+use std::collections::BTreeMap;
+use std::fmt;
+
+use crate::itf::{State, Trace, Value};
+
+/// The `nondet` values one step picked, by parameter name: `mbt::nondetPicks` with each
+/// `Some(v)` unwrapped to `v` and every `None` (a parameter the action did not pick) absent.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Params(BTreeMap<String, Value>);
+
+impl Params {
+    /// Parameters from name-value pairs (for drivers' own tests).
+    pub fn new(picks: BTreeMap<String, Value>) -> Self {
+        Self(picks)
+    }
+
+    /// The picked value, if the action picked `name`.
+    pub fn get(&self, name: &str) -> Option<&Value> {
+        self.0.get(name)
+    }
+
+    /// The picked value; [`DriverError::MissingParam`] if the action did not pick `name`.
+    pub fn value(&self, name: &str) -> Result<&Value, DriverError> {
+        self.get(name)
+            .ok_or_else(|| DriverError::MissingParam(name.to_owned()))
+    }
+
+    /// A picked boolean.
+    pub fn bool(&self, name: &str) -> Result<bool, DriverError> {
+        let value = self.value(name)?;
+        value
+            .as_bool()
+            .ok_or_else(|| DriverError::bad_param(name, "a bool", value))
+    }
+
+    /// A picked integer.
+    pub fn int(&self, name: &str) -> Result<i128, DriverError> {
+        let value = self.value(name)?;
+        value
+            .as_int()
+            .ok_or_else(|| DriverError::bad_param(name, "an int", value))
+    }
+
+    /// A picked string.
+    pub fn str(&self, name: &str) -> Result<&str, DriverError> {
+        let value = self.value(name)?;
+        value
+            .as_str()
+            .ok_or_else(|| DriverError::bad_param(name, "a string", value))
+    }
+
+    /// The tag of a picked variant (a model enum such as a file kind).
+    pub fn tag(&self, name: &str) -> Result<&str, DriverError> {
+        let value = self.value(name)?;
+        value
+            .tag()
+            .ok_or_else(|| DriverError::bad_param(name, "a variant", value))
+    }
+
+    /// Whether nothing was picked.
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// The picked parameters, by name.
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &Value)> {
+        self.0.iter().map(|(name, value)| (name.as_str(), value))
+    }
+}
+
+impl fmt::Display for Params {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for (i, (name, value)) in self.iter().enumerate() {
+            if i > 0 {
+                f.write_str(", ")?;
+            }
+            write!(f, "{name} = {value}")?;
+        }
+        Ok(())
+    }
+}
+
+/// Why a driver could not apply a step. Each one is a divergence: the model took the step.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DriverError {
+    /// The driver does not know the action (a model change without a driver change).
+    UnknownAction(String),
+    /// The action needs a parameter the step did not pick.
+    MissingParam(String),
+    /// A picked parameter has the wrong shape.
+    BadParam {
+        /// The parameter's name.
+        name: String,
+        /// What the driver expected, as "a bool".
+        expected: &'static str,
+        /// What the trace held.
+        found: String,
+    },
+    /// The real code refused or failed the stimulus the model accepted.
+    Refused(String),
+}
+
+impl DriverError {
+    /// A parameter of the wrong shape.
+    pub fn bad_param(name: &str, expected: &'static str, found: &Value) -> Self {
+        Self::BadParam {
+            name: name.to_owned(),
+            expected,
+            found: found.to_string(),
+        }
+    }
+}
+
+impl fmt::Display for DriverError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnknownAction(action) => write!(f, "the driver has no action {action:?}"),
+            Self::MissingParam(name) => write!(f, "the step picked no parameter {name:?}"),
+            Self::BadParam {
+                name,
+                expected,
+                found,
+            } => write!(f, "parameter {name:?} is not {expected}: {found}"),
+            Self::Refused(reason) => write!(f, "the implementation refused: {reason}"),
+        }
+    }
+}
+
+impl std::error::Error for DriverError {}
+
+/// Why the model's state could not be projected into an observation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProjectionError(pub String);
+
+impl ProjectionError {
+    /// A variable or field the projection needs is absent or has the wrong shape.
+    pub fn missing(what: &str) -> Self {
+        Self(format!("{what} is missing or has the wrong shape"))
+    }
+}
+
+impl fmt::Display for ProjectionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for ProjectionError {}
+
+/// Applies a model's actions to the real code and observes it.
+///
+/// `apply` is called once per ITF state, in order, starting with the first state's action
+/// `init`, where the driver builds (or resets to) its initial implementation state. After
+/// each call [`replay`] compares [`Driver::observe`] with the projection of the model's state.
+/// The observation must be built from what the real code exposes, never recomputed from the
+/// model (foundation.md section 6.3, step 4).
+pub trait Driver {
+    /// The canonical model-facing observation: the same type the model's state projects to.
+    type Obs: PartialEq + fmt::Debug;
+
+    /// Applies one action with its picked parameters to the real code.
+    fn apply(&mut self, action: &str, params: &Params) -> Result<(), DriverError>;
+
+    /// Projects the real code's current state.
+    fn observe(&self) -> Self::Obs;
+}
+
+/// What went wrong at a step.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Cause {
+    /// The observation differs from the model's state.
+    Mismatch,
+    /// The driver could not apply the step.
+    Driver(DriverError),
+    /// The model's state could not be projected.
+    Projection(ProjectionError),
+    /// The step itself is unusable (no action name, a malformed parameter record, no states).
+    Trace(String),
+}
+
+/// The first step at which the implementation and the model disagree, with everything a
+/// report needs (foundation.md section 6.3, step 6); [`fmt::Display`] is the report.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Divergence {
+    /// The model's source (`#meta.source`), when the trace records it.
+    pub model: Option<String>,
+    /// The seed the trace was generated with, when known.
+    pub seed: Option<String>,
+    /// The trace's id (its file name).
+    pub trace_id: String,
+    /// The index of the state whose step diverged (0 is `init`).
+    pub step: usize,
+    /// That step's action.
+    pub action: String,
+    /// That step's picked parameters, formatted.
+    pub params: String,
+    /// The model's projected state, pretty-printed, when it could be projected.
+    pub expected: Option<String>,
+    /// The implementation's observation, pretty-printed, when the step got that far.
+    pub actual: Option<String>,
+    /// What went wrong.
+    pub cause: Cause,
+}
+
+/// Replays `trace` against `driver`, comparing after every step.
+///
+/// `project_expected` maps a model state to the driver's observation type. The replay stops
+/// at the first divergence; a trace with no states is one (a vacuous replay must not pass).
+/// The error is boxed because a report is large and the success path carries nothing.
+pub fn replay<D, P>(
+    trace: &Trace,
+    driver: &mut D,
+    project_expected: P,
+) -> Result<(), Box<Divergence>>
+where
+    D: Driver,
+    P: Fn(&State) -> Result<D::Obs, ProjectionError>,
+{
+    let diverge = |step: usize, action: &str, params: String, cause: Cause| Divergence {
+        model: trace.source.clone(),
+        seed: trace.seed.clone(),
+        trace_id: trace.id.clone(),
+        step,
+        action: action.to_owned(),
+        params,
+        expected: None,
+        actual: None,
+        cause,
+    };
+    if trace.states.is_empty() {
+        return Err(Box::new(diverge(
+            0,
+            "",
+            String::new(),
+            Cause::Trace("the trace has no states".into()),
+        )));
+    }
+    for state in &trace.states {
+        let step = state.index;
+        let Some(action) = state.action_taken() else {
+            let cause = Cause::Trace(format!(
+                "no {} (generate the trace with --mbt)",
+                crate::itf::ACTION_TAKEN
+            ));
+            return Err(Box::new(diverge(step, "", String::new(), cause)));
+        };
+        let Some(picks) = state.nondet_picks() else {
+            let cause = Cause::Trace(format!(
+                "{} is missing or not a record of options",
+                crate::itf::NONDET_PICKS
+            ));
+            return Err(Box::new(diverge(step, action, String::new(), cause)));
+        };
+        let params = Params::new(picks);
+        let expected = project_expected(state);
+        let applied = driver.apply(action, &params);
+        let actual = driver.observe();
+        let mut divergence = diverge(step, action, params.to_string(), Cause::Mismatch);
+        divergence.actual = Some(format!("{actual:#?}"));
+        match expected {
+            Err(err) => {
+                divergence.cause = Cause::Projection(err);
+                return Err(Box::new(divergence));
+            }
+            Ok(expected) => {
+                divergence.expected = Some(format!("{expected:#?}"));
+                if let Err(err) = applied {
+                    divergence.cause = Cause::Driver(err);
+                    return Err(Box::new(divergence));
+                }
+                if expected != actual {
+                    return Err(Box::new(divergence));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::itf::Trace;
+
+    const SAMPLE: &str =
+        include_str!("../../../formal/traces/regression/itf-decoder-sample.itf.json");
+
+    fn sample() -> Trace {
+        Trace::from_json_str(SAMPLE, "itf-decoder-sample.itf.json")
+            .expect("the sample decodes")
+            .with_seed("11")
+    }
+
+    /// The toy observation: a projection of the lifecycle model's `state`, `res.listeners`
+    /// and `response`.
+    #[derive(Debug, PartialEq, Eq)]
+    struct Obs {
+        state: String,
+        listeners: i128,
+        response: String,
+    }
+
+    fn project(state: &State) -> Result<Obs, ProjectionError> {
+        let tag = |name: &str| {
+            state
+                .var(name)
+                .and_then(Value::tag)
+                .map(str::to_owned)
+                .ok_or_else(|| ProjectionError::missing(name))
+        };
+        Ok(Obs {
+            state: tag("state")?,
+            listeners: state
+                .var("res")
+                .and_then(|res| res.field("listeners"))
+                .and_then(Value::as_int)
+                .ok_or_else(|| ProjectionError::missing("res.listeners"))?,
+            response: tag("response")?,
+        })
+    }
+
+    /// Which deliberate fault the toy driver has.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Fault {
+        None,
+        /// Keeps the listener after a stop.
+        LeakOnStop,
+        /// Leaves the first request after a start unanswered, then behaves.
+        DropFirstRequest,
+        /// Does not know the `request` action.
+        NoRequestAction,
+    }
+
+    /// A toy stand-in for a real driver: it tests the harness, not the server.
+    struct Toy {
+        fault: Fault,
+        state: &'static str,
+        listeners: i128,
+        response: &'static str,
+        dropped: bool,
+    }
+
+    impl Toy {
+        fn new(fault: Fault) -> Self {
+            Self {
+                fault,
+                state: "Stopped",
+                listeners: 0,
+                response: "NoRequest",
+                dropped: false,
+            }
+        }
+    }
+
+    impl Driver for Toy {
+        type Obs = Obs;
+
+        fn apply(&mut self, action: &str, params: &Params) -> Result<(), DriverError> {
+            self.response = "NoRequest";
+            match action {
+                "init" => *self = Self::new(self.fault),
+                "startServer" => {
+                    let bind_ok = params.bool("bindOk")?;
+                    params.bool("watcherOk")?;
+                    if self.state != "Stopped" {
+                        return Err(DriverError::Refused("already started".into()));
+                    }
+                    (self.state, self.listeners) = if bind_ok {
+                        ("Serving", 1)
+                    } else {
+                        ("Failed", 0)
+                    };
+                }
+                "stopServer" if self.state == "Serving" => {
+                    self.state = "Stopped";
+                    if self.fault != Fault::LeakOnStop {
+                        self.listeners = 0;
+                    }
+                }
+                "stopServer" | "refuseStart" => {}
+                "request" if self.fault == Fault::NoRequestAction => {
+                    return Err(DriverError::UnknownAction(action.to_owned()));
+                }
+                "request" | "openStream" => {
+                    let drop_it = self.fault == Fault::DropFirstRequest && !self.dropped;
+                    self.response = if self.state == "Serving" && !drop_it {
+                        "Answered"
+                    } else {
+                        "Unanswered"
+                    };
+                    self.dropped |= drop_it && self.state == "Serving";
+                }
+                other => return Err(DriverError::UnknownAction(other.to_owned())),
+            }
+            Ok(())
+        }
+
+        fn observe(&self) -> Obs {
+            Obs {
+                state: self.state.to_owned(),
+                listeners: self.listeners,
+                response: self.response.to_owned(),
+            }
+        }
+    }
+
+    #[test]
+    fn should_replay_every_step_when_the_driver_matches_the_model() {
+        // given
+        let trace = sample();
+        let mut driver = Toy::new(Fault::None);
+
+        // when
+        let outcome = replay(&trace, &mut driver, project);
+
+        // then
+        assert_eq!(outcome, Ok(()));
+        assert_eq!(driver.state, "Failed");
+    }
+
+    #[test]
+    fn should_report_step_and_diff_when_observation_diverges() {
+        // given
+        let trace = sample();
+        let mut driver = Toy::new(Fault::LeakOnStop);
+
+        // when
+        let divergence = replay(&trace, &mut driver, project).expect_err("the leak is caught");
+
+        // then
+        assert_eq!(divergence.step, 4);
+        assert_eq!(divergence.action, "stopServer");
+        assert_eq!(divergence.cause, Cause::Mismatch);
+        let expected = divergence.expected.as_deref().expect("expected");
+        let actual = divergence.actual.as_deref().expect("actual");
+        assert!(expected.contains("listeners: 0,"), "{expected}");
+        assert!(actual.contains("listeners: 1,"), "{actual}");
+        let report = divergence.to_string();
+        for line in [
+            "model:    formal/lifecycle.qnt",
+            "seed:     11",
+            "trace:    itf-decoder-sample.itf.json",
+            "step:     4",
+            "action:   stopServer",
+            "    -     listeners: 0,",
+            "    +     listeners: 1,",
+        ] {
+            assert!(report.contains(line), "missing {line:?} in:\n{report}");
+        }
+        assert!(
+            !report.contains("-     state:"),
+            "unchanged lines are not diffed:\n{report}"
+        );
+    }
+
+    #[test]
+    fn should_stop_at_the_transient_step_when_a_later_state_agrees_again() {
+        // given
+        let trace = sample();
+        let mut driver = Toy::new(Fault::DropFirstRequest);
+
+        // when
+        let divergence = replay(&trace, &mut driver, project).expect_err("caught mid-trace");
+
+        // then
+        assert_eq!(
+            (divergence.step, divergence.action.as_str()),
+            (2, "request")
+        );
+        assert_eq!(divergence.cause, Cause::Mismatch);
+    }
+
+    #[test]
+    fn should_report_the_driver_error_when_the_driver_lacks_an_action() {
+        // given
+        let trace = sample();
+        let mut driver = Toy::new(Fault::NoRequestAction);
+
+        // when
+        let divergence = replay(&trace, &mut driver, project).expect_err("refused");
+
+        // then
+        assert_eq!(divergence.step, 2);
+        assert_eq!(
+            divergence.cause,
+            Cause::Driver(DriverError::UnknownAction("request".into()))
+        );
+        assert!(
+            divergence
+                .to_string()
+                .contains("the driver has no action \"request\"")
+        );
+    }
+
+    #[test]
+    fn should_report_the_projection_error_when_the_model_state_lacks_a_variable() {
+        // given
+        let trace = sample();
+        let mut driver = Toy::new(Fault::None);
+        let project_missing =
+            |_: &State| -> Result<Obs, ProjectionError> { Err(ProjectionError::missing("absent")) };
+
+        // when
+        let divergence = replay(&trace, &mut driver, project_missing).expect_err("unprojectable");
+
+        // then
+        assert_eq!(divergence.step, 0);
+        assert_eq!(divergence.action, "init");
+        assert!(matches!(divergence.cause, Cause::Projection(_)));
+    }
+
+    #[test]
+    fn should_refuse_a_trace_without_mbt_variables_when_replaying() {
+        // given
+        let trace = Trace::from_json_str(
+            r##"{"vars": ["x"], "states": [{"#meta": {"index": 0}, "x": 1}]}"##,
+            "plain.itf.json",
+        )
+        .expect("decodes");
+        let mut driver = Toy::new(Fault::None);
+
+        // when
+        let divergence = replay(&trace, &mut driver, project).expect_err("no action names");
+
+        // then
+        assert!(matches!(&divergence.cause, Cause::Trace(why) if why.contains("--mbt")));
+    }
+
+    #[test]
+    fn should_refuse_an_empty_trace_when_replaying() {
+        // given
+        let trace = Trace::from_json_str(r#"{"states": []}"#, "empty.itf.json").expect("decodes");
+        let mut driver = Toy::new(Fault::None);
+
+        // when
+        let divergence = replay(&trace, &mut driver, project).expect_err("vacuous");
+
+        // then
+        assert!(matches!(divergence.cause, Cause::Trace(_)));
+    }
+
+    #[test]
+    fn should_name_the_missing_and_misshapen_params_when_decoding_picks() {
+        // given
+        let params = Params::new(BTreeMap::from([
+            ("flag".to_owned(), Value::Bool(true)),
+            ("count".to_owned(), Value::Int(3)),
+        ]));
+
+        // when
+        let results = (
+            params.bool("flag"),
+            params.int("count"),
+            params.bool("count"),
+            params.str("nope"),
+        );
+
+        // then
+        assert_eq!(results.0, Ok(true));
+        assert_eq!(results.1, Ok(3));
+        assert_eq!(
+            results.2,
+            Err(DriverError::bad_param("count", "a bool", &Value::Int(3)))
+        );
+        assert_eq!(results.3, Err(DriverError::MissingParam("nope".into())));
+        assert_eq!(params.to_string(), "count = 3, flag = true");
+    }
+}
