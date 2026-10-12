@@ -1,11 +1,16 @@
 //! A [`ChangeSource`] fed by a test through a handle.
 
+use core::num::NonZeroUsize;
 use core::task::{Poll, Waker};
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::Duration;
 
 use preview_application::{ChangeBatch, ChangeSource, SourceFailure};
-use preview_domain::ChangeEvent;
+use preview_domain::eligibility::{self, ComponentKind, Eligibility};
+use preview_domain::{ChangeEvent, ChangeKind, Component, RelPath};
+
+use crate::contracts::{ChangeSourceFactory, WatchTree};
 
 struct Shared<E> {
     queue: VecDeque<ChangeBatch<E>>,
@@ -115,6 +120,99 @@ impl<E: Send> ChangeSource for ScriptedChangeSource<E> {
             state.waker = Some(cx.waker().clone());
             Poll::Pending
         })
+    }
+}
+
+/// [`ScriptedChangeSource`] as a [`ChangeSourceFactory`]: scripts the batches the native
+/// watcher would deliver for what the contract harness does to the site.
+///
+/// It models the watcher, not just a queue: a write inside a directory the eligibility
+/// predicate excludes is never delivered (the watcher never registers that directory), a
+/// file's first write is a `Create` and later ones `Modify`, an unwatchable directory queues
+/// `Failed(RegistrationFailed)` at start, and a burst larger than the capacity keeps the first
+/// `capacity` changes and reports the rest as one `Overflow`. Stopping drops the handle.
+pub struct ScriptedSite {
+    handle: Option<ScriptedHandle<ChangeEvent>>,
+    written: BTreeSet<String>,
+    capacity: usize,
+}
+
+impl ScriptedSite {
+    /// The change the native watcher would report for a write of `path`, if any.
+    fn change(&mut self, path: &str) -> Option<ChangeEvent> {
+        let components: Vec<Component> = path
+            .split('/')
+            .filter(|part| !part.is_empty())
+            .map(|part| Component::new(part).expect("a harness path is valid"))
+            .collect();
+        let (_, parents) = components.split_last()?;
+        if eligibility::components(parents, ComponentKind::Dir) != Eligibility::Eligible {
+            return None;
+        }
+        let kind = if self.written.insert(path.to_owned()) {
+            ChangeKind::Create
+        } else {
+            ChangeKind::Modify
+        };
+        Some(ChangeEvent {
+            kind,
+            path: RelPath::new(components),
+        })
+    }
+
+    fn push(&self, change: ChangeEvent) {
+        if let Some(handle) = &self.handle {
+            handle.push(vec![change]);
+        }
+    }
+}
+
+impl ChangeSourceFactory for ScriptedSite {
+    type Source = ScriptedChangeSource<ChangeEvent>;
+    type Site = Self;
+
+    const DEADLINE: Duration = Duration::ZERO;
+
+    fn start(tree: &WatchTree, capacity: NonZeroUsize) -> (Self::Source, Self) {
+        let (source, handle) = ScriptedChangeSource::new();
+        if !tree.unwatchable_dirs().is_empty() {
+            handle.fail(SourceFailure::RegistrationFailed);
+        }
+        let site = Self {
+            handle: Some(handle),
+            written: tree.files().iter().cloned().collect(),
+            capacity: capacity.get(),
+        };
+        (source, site)
+    }
+
+    fn write(site: &mut Self, path: &str) {
+        if let Some(change) = site.change(path) {
+            site.push(change);
+        }
+    }
+
+    fn burst(site: &mut Self, paths: &[String]) {
+        let mut kept = 0;
+        let mut lost = false;
+        for path in paths {
+            let Some(change) = site.change(path) else {
+                continue;
+            };
+            if kept < site.capacity {
+                site.push(change);
+                kept += 1;
+            } else {
+                lost = true;
+            }
+        }
+        if lost && let Some(handle) = &site.handle {
+            handle.overflow();
+        }
+    }
+
+    fn stop(site: &mut Self, _source: &mut Self::Source) {
+        site.handle = None;
     }
 }
 

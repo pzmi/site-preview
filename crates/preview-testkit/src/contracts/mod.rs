@@ -7,10 +7,16 @@
 //! and actual outcome, so a negative control can assert *which* clause a broken
 //! implementation breaks rather than merely that something failed.
 
+pub mod change_source;
 pub mod site_content;
 
 use core::fmt;
+use std::panic::{self, AssertUnwindSafe};
 
+pub use change_source::{
+    CHANGE_SOURCE_CASES, ChangeSourceFactory, WatchTree, change_source_contract,
+    check_change_source_contract,
+};
 pub use site_content::{
     LinkTarget, SITE_CONTENT_CASES, SiteContentFactory, SiteEntry, SiteTree,
     check_site_content_contract, site_content_contract,
@@ -89,4 +95,28 @@ impl fmt::Display for ContractReport {
         }
         Ok(())
     }
+}
+
+/// One case of a harness: `Err` carries every failed check, one per line.
+pub(crate) type Case = fn() -> Result<(), String>;
+
+/// Runs `cases` in order; a panic inside a case (in the factory or the implementation) is that
+/// case's failure, so one broken case never hides the others.
+pub(crate) fn run_cases(cases: &[(&'static str, Case)]) -> ContractReport {
+    let mut report = ContractReport::default();
+    for &(name, case) in cases {
+        let outcome = panic::catch_unwind(AssertUnwindSafe(case))
+            .unwrap_or_else(|payload| Err(format!("  panicked: {}", panic_text(&*payload))));
+        report.record(name, outcome);
+    }
+    report
+}
+
+/// The message of a caught panic.
+pub(crate) fn panic_text(payload: &(dyn std::any::Any + Send)) -> String {
+    payload
+        .downcast_ref::<&str>()
+        .map(|text| (*text).to_owned())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "a non-text panic payload".to_owned())
 }

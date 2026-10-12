@@ -13,13 +13,12 @@
 
 use core::fmt;
 use std::io::Read;
-use std::panic::{self, AssertUnwindSafe};
 use std::thread;
 
 use preview_application::{ContentFile, ContentRefusal, ForbiddenReason, Opened, SiteContent};
 use preview_domain::decode_request_path;
 
-use super::ContractReport;
+use super::{Case, ContractReport, panic_text, run_cases};
 
 /// Where a symbolic link in a [`SiteTree`] points.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -176,17 +175,8 @@ pub fn check_site_content_contract<F: SiteContentFactory>() -> ContractReport {
         ("independent_handles", independent_handles::<F>),
         ("concurrent_calls", concurrent_calls::<F>),
     ];
-    let mut report = ContractReport::default();
-    for (name, case) in cases {
-        let outcome = panic::catch_unwind(AssertUnwindSafe(case))
-            .unwrap_or_else(|payload| Err(format!("  panicked: {}", panic_text(&*payload))));
-        report.record(name, outcome);
-    }
-    report
+    run_cases(&cases)
 }
-
-/// One case: `Err` carries every failed check, one per line.
-type Case = fn() -> Result<(), String>;
 
 /// Bytes a link outside the root leads to; seeing them anywhere is a confinement breach.
 const SECRET: &[u8] = b"outside secret";
@@ -310,14 +300,6 @@ fn shorten(raw: &str) -> String {
     }
     let head: String = raw.chars().take(40).collect();
     format!("{head}... ({} bytes)", raw.len())
-}
-
-fn panic_text(payload: &(dyn std::any::Any + Send)) -> String {
-    payload
-        .downcast_ref::<&str>()
-        .map(|text| (*text).to_owned())
-        .or_else(|| payload.downcast_ref::<String>().cloned())
-        .unwrap_or_else(|| "a non-text panic payload".to_owned())
 }
 
 /// A regular file opens as a file and yields its bytes, wherever it sits.
