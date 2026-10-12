@@ -18,7 +18,8 @@ use preview_domain::{
 
 use super::budget::{HtmlBudget, buffered_body, charge};
 use super::charset::{Encoding, classify};
-use super::{Rewrite, ScriptTag, rewrite};
+use super::csp::{CSP_BLOCKS_LIVE_RELOAD, detect};
+use super::{Rewrite, ScriptTag, rewrite_with_csp};
 use crate::errors::plain;
 use crate::mime::html_content_type;
 use crate::stream::stream_body;
@@ -83,6 +84,9 @@ pub(crate) struct HtmlRequest<'a> {
 ///   warned once per path (`html-too-large`) when a navigation GET would have been injected.
 /// - **Not UTF-8**, by its bytes or its `<meta>` declaration: sent unchanged as plain
 ///   `text/html` and warned once per path (`html-not-utf8`).
+/// - **CSP**: an injected page whose `<meta http-equiv="Content-Security-Policy">` would block
+///   the client script or the reload connection is still injected, byte for byte as before, and
+///   warned once per path (`csp-blocks-live-reload`); see [`super::csp`].
 /// - **Rewrite refused**: the original bytes, labeled UTF-8, warned once per path
 ///   (`html-rewrite-failed`).
 ///
@@ -182,17 +186,21 @@ fn prepare(
     };
     let utf8 = input.utf8_ok;
     let (bytes, warning) = match decide(&input) {
-        InjectionDecision::Inject => match rewrite(&bytes, &ScriptTag::from_state(snapshot)) {
-            Rewrite::Injected(rewritten) => (rewritten, None),
-            Rewrite::AlreadyPresent => (bytes, None),
-            Rewrite::Failed(failure) => (
-                bytes,
-                Some((
-                    REWRITE_FAILED,
-                    format!("{failure}; served unchanged without live reload"),
-                )),
-            ),
-        },
+        InjectionDecision::Inject => {
+            match rewrite_with_csp(&bytes, &ScriptTag::from_state(snapshot)) {
+                (Rewrite::Injected(rewritten), policies) => {
+                    (rewritten, detect(&policies).map(csp_warning))
+                }
+                (Rewrite::AlreadyPresent, policies) => (bytes, detect(&policies).map(csp_warning)),
+                (Rewrite::Failed(failure), _) => (
+                    bytes,
+                    Some((
+                        REWRITE_FAILED,
+                        format!("{failure}; served unchanged without live reload"),
+                    )),
+                ),
+            }
+        }
         InjectionDecision::Skip(reason) => {
             let warning = reason.warning().map(|warning| {
                 let mut message = warning.to_string();
@@ -209,6 +217,10 @@ fn prepare(
         utf8,
         warning,
     })
+}
+
+fn csp_warning(warning: super::CspWarning) -> (&'static str, String) {
+    (CSP_BLOCKS_LIVE_RELOAD, warning.to_string())
 }
 
 /// Exactly `len` bytes of `file`: never more if it grew, `UnexpectedEof` if it shrank.

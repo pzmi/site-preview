@@ -161,7 +161,8 @@ reload script is added to the response only; the file on disk never changes.
 | One insertion, before the real `</body>` (not one in a comment, script, attribute or `<template>`), else at the end; never a second copy; a rewriter failure serves the original bytes | `should_insert_before_real_body_end_when_script_contains_fake_body_tag`, `should_insert_before_body_end_when_comment_contains_fake_body_tag`, `should_skip_template_body_end_when_template_holds_body_tags`, `should_insert_once_before_first_body_end_when_body_end_repeats`, `should_not_duplicate_when_client_already_present`, `should_accept_only_single_insertion_when_output_compared` (`src/inject/rewrite.rs`), `should_serve_original_and_warn_once_when_rewrite_fails` (`tests/inject.rs`) |
 | A page is labelled `charset=utf-8` and injected only when its bytes are UTF-8 and its first `<meta>` charset declaration agrees; otherwise it is served unchanged as `text/html` | `should_not_label_utf8_when_meta_names_shift_jis`, `should_serve_unchanged_and_warn_when_html_is_latin1` (`tests/inject.rs`), `should_classify_encoding_when_meta_varies` (`src/inject/charset.rs`) |
 | A page over 8 MiB is streamed unchanged, never read whole | `should_serve_unchanged_and_warn_once_when_html_over_limit` (`tests/inject.rs`) |
-| A page not injected is warned on stderr once per code and request path (`html-too-large`, `html-not-utf8`, `html-rewrite-failed`), the path re-encoded from validated parts so no query string, absolute path or control character is printed; never in an HTTP response | `should_report_once_per_code_and_path_when_repeated`, `should_stop_reporting_when_memo_is_full` (`src/warnings.rs`), `should_show_encoded_path_when_warning_names_page` (`src/inject/response.rs`), `should_warn_on_stderr_once_when_html_is_not_utf8` (`crates/preview-cli/tests/serve_slice.rs`) |
+| A page not injected is warned on stderr once per code and request path (`html-too-large`, `html-not-utf8`, `html-rewrite-failed`, `csp-blocks-live-reload`), the path re-encoded from validated parts so no query string, absolute path or control character is printed; never in an HTTP response | `should_report_once_per_code_and_path_when_repeated`, `should_stop_reporting_when_memo_is_full` (`src/warnings.rs`), `should_show_encoded_path_when_warning_names_page` (`src/inject/response.rs`), `should_warn_on_stderr_once_when_html_is_not_utf8` (`crates/preview-cli/tests/serve_slice.rs`) |
+| A page whose `<meta http-equiv="Content-Security-Policy">` (in the head, any number, comma-separated policies included) would block the client script (`script-src-elem`, else `script-src`, else `default-src`) or the reload connection (`connect-src`, else `default-src`) is still injected and warned once per path as `csp-blocks-live-reload`; the policy is never changed and no header is added. A host-source may match this server, so it is not reported; other violations show only in the browser console | `should_warn_when_script_src_excludes_self`, `should_warn_when_default_src_none_and_no_connect_src`, `should_not_warn_when_self_allowed`, `should_warn_when_any_of_several_policies_blocks` (`src/inject/csp.rs`), `should_collect_head_csp_metas_when_page_has_them` (`src/inject/rewrite.rs`), `should_preserve_meta_csp_bytes_when_injecting`, `should_warn_once_per_path_when_meta_csp_blocks_reload` (`tests/inject.rs`) |
 | Source files are never modified by injection | `should_leave_source_bytes_unchanged_when_injected` (`tests/inject.rs`), `should_leave_source_bytes_unchanged_when_served` (`crates/preview-cli/tests/serve_slice.rs`) |
 
 ## Host and Origin rules
@@ -239,6 +240,20 @@ The Host policy is built from the address actually bound, so the printed URL is 
 accepts, never the wildcard. There is no authentication; the Host gate is not an access
 control for a LAN.
 
+## Connection limits and shutdown drain
+
+A stalled or slow client cannot hold the server open (ADR 0045): a request head not read within
+10 s closes the connection, at most 128 connections are served at once (one accepted beyond the
+cap is closed), and the first SIGINT or SIGTERM ends the event streams and drains for at most
+3 s before exiting 0. A second signal during the drain exits at once with 130 or 143. There is
+no write timeout: a client that stops reading holds its connection until it goes or the server
+stops. Pinned by `should_exit_0_within_drain_bound_when_clients_stall`,
+`should_exit_130_when_second_sigint_arrives_during_drain` and `should_exit_0_when_sigterm_received`
+(`crates/preview-cli/tests/lifecycle.rs`), and `should_close_connection_when_head_not_sent_within_timeout`,
+`should_close_idle_keep_alive_connection_when_timeout_passes`, `should_close_excess_connection_when_cap_reached`,
+`should_drop_stalled_connection_when_drain_bound_passes` and `should_stop_at_once_when_second_stop_arrives_during_drain`
+(`crates/preview-composition/src/connections.rs`).
+
 ## No telemetry, and logging
 
 Site Preview makes no outbound request, collects no analytics and has no remote logging
@@ -296,7 +311,10 @@ These are choices, not bugs (plan.md §15); a report that only restates one is o
 - **Symlinks are refused** everywhere under the root, even those pointing inside it.
 - **Served HTML is rewritten** (the reload script is added to the response; the file on disk
   never changes).
-- **A restrictive Content-Security-Policy** in a page may stop live reload from working.
+- **A restrictive Content-Security-Policy** in a page may stop live reload from working. A
+  policy in a `<meta>` tag is checked and warned about (`csp-blocks-live-reload`); a policy from
+  elsewhere, or a violation only the browser can see (a host-source, a nonce on other scripts),
+  shows only in the browser console.
 - **Not a sandbox** against other processes of the same user; hard links and mount points
   inside the root are served.
 - **Network-mounted directories** may not deliver native change events.
@@ -304,12 +322,7 @@ These are choices, not bugs (plan.md §15); a report that only restates one is o
 
 ## Planned
 
-Not yet enforced; do not rely on them until the task lands.
-
-| Item | Task |
-|:--|:--|
-| Warning when a page's CSP blocks the reload client | HTTP-08 |
-| Graceful shutdown drain and connection timeouts (a stalled or slow client holding the server open) | being fixed after the M1 review |
+Not yet enforced; do not rely on them until the task lands. Nothing is planned at the moment.
 
 ## Fuzzing
 

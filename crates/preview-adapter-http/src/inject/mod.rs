@@ -9,14 +9,16 @@
 
 mod budget;
 mod charset;
+mod csp;
 pub(crate) mod response;
 mod rewrite;
 
 use preview_domain::{InstanceId, Revision, SiteState};
 
 pub use budget::{DEFAULT_HTML_BUDGET_BYTES, HtmlBudget};
+pub use csp::{CspWarning, detect as detect_csp};
 pub use response::Injection;
-pub use rewrite::{Rewrite, RewriteFailure, rewrite};
+pub use rewrite::{Rewrite, RewriteFailure, rewrite, rewrite_with_csp};
 
 /// URL path of the embedded live-reload client script (plan.md §6).
 pub const CLIENT_SCRIPT_PATH: &str = "/__site_preview/client.js";

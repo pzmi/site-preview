@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 /// Receives warnings from the HTTP adapter.
 ///
 /// `code` is a stable warning code (`html-too-large`, `html-not-utf8`,
-/// `html-rewrite-failed`); `message` is one line that starts with the request path as the
+/// `html-rewrite-failed`, `csp-blocks-live-reload`); `message` is one line that starts with the request path as the
 /// site sees it (percent-encoded, never an absolute filesystem path or a query string).
 /// Called from blocking threads, so an implementation may write to a stream directly.
 pub trait WarningSink: Send + Sync {

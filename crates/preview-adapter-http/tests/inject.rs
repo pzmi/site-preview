@@ -355,6 +355,74 @@ async fn should_serve_original_and_warn_once_when_rewrite_fails() {
 }
 
 #[tokio::test]
+async fn should_preserve_meta_csp_bytes_when_injecting() {
+    // given: a restrictive policy, with odd spacing and case that must survive untouched
+    let meta = "<meta  HTTP-EQUIV='Content-Security-Policy' content=\"default-src 'none';  img-src 'self'\" >";
+    let page = format!("<!doctype html><html><head>{meta}</head><body>hi</body></html>");
+    let server = Server::new(InMemorySite::new().with_file("csp.html", page.as_bytes()));
+    let tag = server.tag(&server.reload.current());
+
+    // when
+    let response = server.send("GET", "/csp.html", Some("document")).await;
+    let csp_header = header(&response, "content-security-policy").map(str::to_owned);
+    let served = body(response).await;
+
+    // then: the meta element is byte-identical, no header was added, only the tag was inserted
+    assert_eq!(csp_header, None);
+    assert_eq!(
+        String::from_utf8(served).expect("utf-8"),
+        injected(&page, &tag)
+    );
+    assert_eq!(server.source("/csp.html"), page.as_bytes());
+}
+
+#[tokio::test]
+async fn should_warn_once_per_path_when_meta_csp_blocks_reload() {
+    // given
+    let page = "<html><head><meta http-equiv=\"content-security-policy\" \
+                content=\"default-src 'none'\"></head><body>hi</body></html>";
+    let server = Server::new(InMemorySite::new().with_file("csp.html", page.as_bytes()));
+
+    // when
+    for _ in 0..2 {
+        body(server.send("GET", "/csp.html", Some("document")).await).await;
+    }
+    body(server.send("HEAD", "/csp.html", Some("document")).await).await;
+
+    // then
+    let warnings = server.warnings.warnings();
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert_eq!(warnings[0].0, "csp-blocks-live-reload");
+    assert!(warnings[0].1.starts_with("/csp.html: "), "{warnings:?}");
+    assert!(warnings[0].1.contains("default-src"), "{warnings:?}");
+}
+
+#[tokio::test]
+async fn should_not_warn_when_meta_csp_allows_self_or_is_not_a_head_policy() {
+    // given: self allowed; a policy-looking meta in the body (browsers ignore it); no policy
+    let allowed = "<html><head><meta http-equiv=\"Content-Security-Policy\" \
+                   content=\"script-src 'self'; connect-src 'self'\"></head><body>a</body></html>";
+    let in_body = "<html><head></head><body><meta http-equiv=\"Content-Security-Policy\" \
+                   content=\"default-src 'none'\">b</body></html>";
+    let other = "<html><head><meta http-equiv=\"refresh\" content=\"default-src 'none'\">\
+                 </head><body>c</body></html>";
+    let server = Server::new(
+        InMemorySite::new()
+            .with_file("allowed.html", allowed.as_bytes())
+            .with_file("body.html", in_body.as_bytes())
+            .with_file("other.html", other.as_bytes()),
+    );
+
+    // when
+    for path in ["/allowed.html", "/body.html", "/other.html"] {
+        body(server.send("GET", path, Some("document")).await).await;
+    }
+
+    // then
+    assert!(server.warnings.warnings().is_empty());
+}
+
+#[tokio::test]
 async fn should_hold_budget_until_body_is_consumed_when_html_served() {
     // given: a budget with room for one page of this size at a time
     let page = "<body>".to_owned() + &"x".repeat(256 * 1024) + "</body>";

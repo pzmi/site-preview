@@ -24,7 +24,7 @@
 //! (plan.md §6 step 6; ADR 0043). Only memory is touched; nothing is written back to a source
 //! file.
 
-use core::cell::Cell;
+use core::cell::{Cell, RefCell};
 use core::fmt;
 use std::rc::Rc;
 
@@ -96,22 +96,38 @@ impl From<RewritingError> for RewriteFailure {
 /// and has already decided that the page is UTF-8 HTML to inject.
 #[must_use]
 pub fn rewrite(html: &[u8], tag: &ScriptTag) -> Rewrite {
+    rewrite_with_csp(html, tag).0
+}
+
+/// [`rewrite`], and the `content` of each `<meta http-equiv="Content-Security-Policy">` in the
+/// page's head (before the `<body>` start tag, outside a `<template>`), in document order, for
+/// [`super::csp::detect`]. Read in the same pass; the meta elements are not touched. Empty
+/// when the page could not be tokenized.
+#[must_use]
+pub fn rewrite_with_csp(html: &[u8], tag: &ScriptTag) -> (Rewrite, Vec<String>) {
     rewrite_with_memory_limit(html, tag, usize::MAX)
 }
 
-fn rewrite_with_memory_limit(html: &[u8], tag: &ScriptTag, memory_limit: usize) -> Rewrite {
-    let inserted = match insert(html, tag, memory_limit) {
-        Ok(Inserted::Output(output)) => output,
-        Ok(Inserted::ClientPresent) => return Rewrite::AlreadyPresent,
-        Err(failure) => return Rewrite::Failed(failure),
+fn rewrite_with_memory_limit(
+    html: &[u8],
+    tag: &ScriptTag,
+    memory_limit: usize,
+) -> (Rewrite, Vec<String>) {
+    let (inserted, policies) = match insert(html, tag, memory_limit) {
+        Ok((Inserted::Output(output), policies)) => (output, policies),
+        Ok((Inserted::ClientPresent, policies)) => return (Rewrite::AlreadyPresent, policies),
+        Err(failure) => return (Rewrite::Failed(failure), Vec::new()),
     };
     if !is_single_insertion(html, &inserted, tag.as_str().as_bytes()) {
-        return Rewrite::Failed(RewriteFailure::UnexpectedOutput);
+        return (
+            Rewrite::Failed(RewriteFailure::UnexpectedOutput),
+            Vec::new(),
+        );
     }
     match count_client_scripts(&inserted, memory_limit) {
-        Ok(1) => Rewrite::Injected(inserted),
-        Ok(_) => Rewrite::Failed(RewriteFailure::NotAnElement),
-        Err(failure) => Rewrite::Failed(failure),
+        Ok(1) => (Rewrite::Injected(inserted), policies),
+        Ok(_) => (Rewrite::Failed(RewriteFailure::NotAnElement), Vec::new()),
+        Err(failure) => (Rewrite::Failed(failure), Vec::new()),
     }
 }
 
@@ -135,12 +151,18 @@ fn is_client_script(element: &Element<'_, '_>) -> bool {
     element.get_attribute("src").as_deref() == Some(CLIENT_SCRIPT_PATH)
 }
 
-fn insert(html: &[u8], tag: &ScriptTag, memory_limit: usize) -> Result<Inserted, RewriteFailure> {
+fn insert(
+    html: &[u8],
+    tag: &ScriptTag,
+    memory_limit: usize,
+) -> Result<(Inserted, Vec<String>), RewriteFailure> {
     let markup: Rc<str> = Rc::from(tag.as_str());
     // End-tag handlers must be 'static, so state they share is reference counted.
     let injected = Rc::new(Cell::new(false));
     let template_depth = Rc::new(Cell::new(0_usize));
     let client_present = Cell::new(false);
+    let body_seen = Cell::new(false);
+    let policies = RefCell::new(Vec::new());
     let mut output = Vec::with_capacity(html.len() + markup.len());
 
     let settings = settings_base(memory_limit)
@@ -152,7 +174,19 @@ fn insert(html: &[u8], tag: &ScriptTag, memory_limit: usize) -> Result<Inserted,
                 Ok(())
             }))
         }))
+        .append_element_content_handler(element!("meta[http-equiv]", |el| {
+            let is_csp = el
+                .get_attribute("http-equiv")
+                .is_some_and(|v| v.trim().eq_ignore_ascii_case("content-security-policy"));
+            if is_csp && !body_seen.get() && template_depth.get() == 0 {
+                policies
+                    .borrow_mut()
+                    .push(el.get_attribute("content").unwrap_or_default());
+            }
+            Ok(())
+        }))
         .append_element_content_handler(element!("body", |el| {
+            body_seen.set(true);
             if injected.get() || template_depth.get() > 0 {
                 return Ok(());
             }
@@ -187,10 +221,11 @@ fn insert(html: &[u8], tag: &ScriptTag, memory_limit: usize) -> Result<Inserted,
     rewriter.write(html)?;
     rewriter.end()?;
 
+    let policies = policies.take();
     if client_present.get() {
-        return Ok(Inserted::ClientPresent);
+        return Ok((Inserted::ClientPresent, policies));
     }
-    Ok(Inserted::Output(output))
+    Ok((Inserted::Output(output), policies))
 }
 
 /// Whether `output` is `input` with `tag` inserted at a single offset and nothing else changed.
@@ -442,7 +477,7 @@ mod tests {
 
         // when
         let ambiguous_outcome = rewrite(ambiguous.as_bytes(), &tag());
-        let oversized_outcome = rewrite_with_memory_limit(oversized.as_bytes(), &tag(), 4 * 1024);
+        let oversized_outcome = rewrite_with_memory_limit(oversized.as_bytes(), &tag(), 4 * 1024).0;
 
         // then
         assert_eq!(
@@ -509,5 +544,21 @@ mod tests {
         assert!(inserted);
         assert!(!altered);
         assert!(!longer);
+    }
+
+    #[test]
+    fn should_collect_head_csp_metas_when_page_has_them() {
+        // given
+        let html = "<html><head><META http-equiv=' Content-Security-Policy ' content=\"a\">\
+                    <meta http-equiv=\"refresh\" content=\"b\">\
+                    <template><meta http-equiv=\"Content-Security-Policy\" content=\"t\"></template>\
+                    <meta http-equiv=\"Content-Security-Policy\" content=\"c\"></head>\
+                    <body><meta http-equiv=\"Content-Security-Policy\" content=\"d\"></body></html>";
+
+        // when
+        let (_, policies) = rewrite_with_csp(html.as_bytes(), &tag());
+
+        // then
+        assert_eq!(policies, ["a", "c"]);
     }
 }

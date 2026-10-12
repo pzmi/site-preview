@@ -578,7 +578,7 @@ Each decision is an ADR. Tasks cite the D-id, and D*n* is ADR *n*+1. ADR 0001 is
 ### HTTP-08: CSP restriction warning
 - **Depends on:** HTTP-07. **Model:** sonnet. **Size:** S. Parallel with HTTP-10.
 - **Read:** plan §6 step 8, plan §15 bullet 1.
-- **Create/Change:** `crates/preview-adapter-http/src/inject/csp.rs` has `detect(html_head_meta: Option<&str>) -> Option<CspWarning>`, which parses a `<meta http-equiv="Content-Security-Policy">` captured by the rewriter's element handler. It warns `csp-blocks-live-reload` once per path when `script-src` (or `default-src` fallback) lacks `'self'`, or when `connect-src` (or the fallback) lacks `'self'`. It never alters CSP and never adds headers.
+- **Create/Change:** `crates/preview-adapter-http/src/inject/csp.rs` has `detect(policies: &[impl AsRef<str>]) -> Option<CspWarning>`, which parses the `content` of every `<meta http-equiv="Content-Security-Policy">` in the head, captured by the rewriter's element handler (several metas and comma-separated policies are all enforced, so a slice, not an `Option`). It warns `csp-blocks-live-reload` once per path when `script-src` (or `default-src` fallback) lacks `'self'`, or when `connect-src` (or the fallback) lacks `'self'`. It never alters CSP and never adds headers.
 - **Accept:** `should_warn_when_script_src_excludes_self`, `should_warn_when_default_src_none_and_no_connect_src`, `should_not_warn_when_self_allowed`, and `should_preserve_meta_csp_bytes_when_injecting`.
 - **Impact:** none.
 

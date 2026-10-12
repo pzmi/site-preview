@@ -37,6 +37,7 @@ server keeps serving after each one. Page warnings are printed once per request 
 | `html-too-large` | An HTML page over 8 MiB is served unchanged, without live reload. |
 | `html-not-utf8` | An HTML page that is not UTF-8, or whose `<meta>` charset names another encoding, is served unchanged without live reload. |
 | `html-rewrite-failed` | The reload script could not be inserted safely; the page is served unchanged. |
+| `csp-blocks-live-reload` | The page's `<meta http-equiv="Content-Security-Policy">` would block the reload script or the reload connection (`script-src`, `connect-src` or their `default-src` fallback lacks `'self'`). The page is still served with the script and its policy untouched, but it will not live reload; edit the policy for development. Only a meta tag is checked; other violations show only in the browser console. |
 
 ## Security posture (planned)
 
