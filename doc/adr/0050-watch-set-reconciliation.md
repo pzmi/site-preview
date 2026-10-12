@@ -42,10 +42,16 @@ inode and birth time cannot tell a replaced directory from the original.
 - **Diffs refresh in place.** `Subtree` and `Full` apply the domain's `WatchSet::reconcile`
   diff and watch every kept directory again: for the same inode that is a no-op, and a
   directory replaced while its events were lost gets its own watch, with no moment unwatched.
-  A directory the walk could not list keeps its watched descendants.
+  Each kept directory is then listed again, as each new one is after its watch (ADR 0047), so
+  a child created in a replaced directory before its new watch existed is found. A directory
+  the walk could not list keeps its watched descendants.
 - **Failures and retries.** The watcher keeps the eligible directories it could not walk or
-  watch, with the reason. Each reconcile tries each of them once more (never a nesting that is
-  too deep; no loop, no timer). A failure is reported once, when it appears or its reason
+  watch, with the reason. A changes-only reconcile (one per batch that may change the
+  directory structure, so one per atomic save) retries at most 16 of them, round robin; a full
+  reconcile retries all. Never a nesting that is too deep; no loop, no timer. Once the watch
+  limit is reached nothing is retried until one of the watcher's own watches is removed or a
+  full reconcile probes the limit again, so a site far over the limit does not pay a walk and
+  a failing `inotify_add_watch` per outstanding directory on every save. A failure is reported once, when it appears or its reason
   changes; a directory that vanished before it could be watched is not a failure, since its
   removal is a change of its own. A reconcile is complete only when nothing is outstanding.
 - **Composition reports it.** `WatchControl::reconcile` returns `Reconciled { ready, problems }`.
@@ -62,8 +68,11 @@ reconcile (a gap in which edits are missed); retrying failed directories on a ti
 ## Consequences
 
 - A reconcile runs synchronously on the pipeline task. A full one walks every eligible
-  directory and, where watches follow inodes (inotify; kqueue), watches each again; it runs
-  only after a loss or an unattributed change. FSEvents (macOS) watches paths and restarts
+  directory and, where watches follow inodes (inotify; kqueue), watches and lists each again;
+  it runs only after a loss or an unattributed change. A changes-only one costs at most 16
+  retry walks beyond its hints.
+- A watch limit freed by another process on the system is noticed at the next removal of one
+  of this watcher's watches or the next full reconcile, not before. FSEvents (macOS) watches paths and restarts
   its stream on every `watch` call, so the in-place refresh is skipped there.
 - Rename and delete of a watched directory, recreation under the same name, trees moved in
   from outside the root and `mkdir -p` are covered by real-OS tests in the adapter and one

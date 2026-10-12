@@ -336,8 +336,9 @@ impl NotifyChangeSource {
     }
 
     /// Brings the watches in line with the directories the changes delivered since the last
-    /// reconcile touched, and retries every directory not watched yet (plan.md section 8.1,
-    /// "New directories"; ADR 0050). `root` is the capability the source was started with.
+    /// reconcile touched, and retries a bounded number of directories not watched yet
+    /// (plan.md section 8.1, "New directories"; ADR 0050). `root` is the capability the
+    /// source was started with.
     ///
     /// Pinned by `should_watch_new_nested_directory_when_created_then_file_edited`,
     /// `should_rewatch_directory_when_deleted_and_recreated` and

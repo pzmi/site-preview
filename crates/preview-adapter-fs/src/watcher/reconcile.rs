@@ -27,15 +27,21 @@
 //!   with no moment unwatched. (Comparing inode numbers cannot tell: a file system reuses a
 //!   freed inode at once, within one timestamp tick.) A directory the walk could not list
 //!   keeps its watched descendants, since nothing says they are gone.
+//!   A directory kept is listed again after its refresh, as a new one is after its watch
+//!   (`NotifyWatcher::register_relisting`): the walk listed a replaced directory before it had
+//!   a watch of its own.
 //! - **Links and ignored names.** Every walk is [`eligible_dirs`] through the root capability,
 //!   and every registration goes through `NotifyWatcher::register`, which reopens the directory
 //!   with `O_NOFOLLOW` after watching it: a link swapped in after the listing is withdrawn and
 //!   never followed.
 //! - **Bounded retries.** A directory that could not be walked or watched stays in the failed
-//!   record and is tried once more on each later reconcile (no loop, no timer); the set is
-//!   complete only when that record is empty. A failure is reported once, when it first appears
-//!   or changes reason. A directory that vanished before it could be watched is not a failure:
-//!   its removal is a change of its own.
+//!   record. A changes-only reconcile (one per batch that may have changed the directory
+//!   structure, so one per atomic save) retries at most [`RETRY_BUDGET`] of them, round robin
+//!   (no loop, no timer); a full reconcile retries every one. While the system's watch limit
+//!   is reached nothing is retried until one of this watcher's watches is removed, or a full
+//!   reconcile probes again. The set is complete only when that record is empty. A failure is
+//!   reported once, when it first appears or changes reason. A directory that vanished before
+//!   it could be watched is not a failure: its removal is a change of its own.
 
 use std::collections::BTreeSet;
 
@@ -44,6 +50,10 @@ use preview_domain::{RelPath, WatchSet};
 use super::registration::{NotifyWatcher, RegistrationError, WatchFault};
 use crate::capability::RootDir;
 use crate::traversal::{MAX_DEPTH, Traversal, eligible_children, eligible_dirs};
+
+/// How many failed directories a changes-only reconcile retries at most: each retry is a walk
+/// of the directory's subtree, and such a reconcile follows every atomic save.
+pub(crate) const RETRY_BUDGET: usize = 16;
 
 /// What part of the tree to bring back in line with the watch set.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -83,8 +93,11 @@ struct Work {
 }
 
 impl NotifyWatcher {
-    /// Brings the watch set in line with the tree for `hints`, retrying every directory that
-    /// failed before. Pinned by the `os_watcher` tests, among them
+    /// Brings the watch set in line with the tree for `hints`, retrying directories that
+    /// failed before within the bounds of the module documentation. Pinned by the
+    /// `os_watcher` tests, among them
+    /// `should_retry_at_most_the_budget_when_many_directories_failed`,
+    /// `should_retry_nothing_until_a_watch_is_freed_when_watch_limit_is_reached`,
     /// `should_rewatch_directory_when_deleted_and_recreated`,
     /// `should_drop_stale_watch_when_directory_removed`,
     /// `should_rescan_nearest_existing_parent_when_nested_directories_are_removed` and
@@ -106,6 +119,7 @@ impl NotifyWatcher {
                 self.rescan_children(root, parent, &mut errors);
             }
         }
+        self.repair(root, &mut errors);
         for error in &errors {
             self.failed.insert(error.dir.clone(), error.fault);
         }
@@ -128,7 +142,10 @@ impl NotifyWatcher {
             ReconcileHint::Entry(path) | ReconcileHint::Subtree(path) => path.is_root(),
         });
         if full {
+            // The walk covers every failed directory; it also probes the watch limit again,
+            // which watches freed elsewhere on the system may have lifted.
             work.rescans.insert(RelPath::root());
+            self.limit_reached = false;
         }
         for hint in hints {
             match hint {
@@ -145,18 +162,41 @@ impl NotifyWatcher {
                 _ => {}
             }
         }
-        // One more try for each directory that failed before; a nesting too deep stays so.
-        let retry: Vec<RelPath> = self
+        if !full {
+            for dir in self.retries() {
+                self.failed.remove(&dir);
+                work.rescans.insert(dir);
+            }
+        }
+        work
+    }
+
+    /// The failed directories to try once more: none while the watch limit is reached, never a
+    /// nesting too deep, and at most [`RETRY_BUDGET`], continuing after the last one tried.
+    fn retries(&mut self) -> Vec<RelPath> {
+        if self.limit_reached {
+            return Vec::new();
+        }
+        let candidates: Vec<&RelPath> = self
             .failed
             .iter()
             .filter(|(_, fault)| **fault != WatchFault::TooDeep)
-            .map(|(dir, _)| dir.clone())
+            .map(|(dir, _)| dir)
             .collect();
-        for dir in retry {
-            self.failed.remove(&dir);
-            work.rescans.insert(dir);
+        let split = self
+            .retry_cursor
+            .as_ref()
+            .map_or(0, |cursor| candidates.partition_point(|dir| *dir <= cursor));
+        let chosen: Vec<RelPath> = candidates[split..]
+            .iter()
+            .chain(&candidates[..split])
+            .take(RETRY_BUDGET)
+            .map(|dir| (*dir).clone())
+            .collect();
+        if let Some(last) = chosen.last() {
+            self.retry_cursor = Some(last.clone());
         }
-        work
+        chosen
     }
 
     /// The nearest strict ancestor of `path` that still exists as a directory. The watch set
@@ -207,18 +247,23 @@ impl NotifyWatcher {
             .collect();
         self.unwatch(stale);
         let kept = traversal.dirs.iter().filter(|dir| current.contains(dir));
+        let mut refreshed = Vec::new();
         for dir in kept.cloned().collect::<Vec<_>>() {
-            if let Err(fault) = self.refresh(root, &dir)
-                && fault != WatchFault::NotFound
-            {
-                errors.push(RegistrationError { dir, fault });
+            match self.refresh(root, &dir) {
+                Ok(()) => refreshed.push(dir),
+                Err(WatchFault::NotFound) => {}
+                Err(fault) => errors.push(RegistrationError { dir, fault }),
             }
+        }
+        // FSEvents keeps a path's watch, so the listing of a kept directory is current there.
+        if cfg!(target_os = "macos") {
+            refreshed.clear();
         }
         let added = Traversal {
             dirs: diff.add,
             errors: traversal.errors,
         };
-        self.register_quietly(root, added, errors);
+        self.register_quietly(root, added, refreshed, errors);
     }
 
     /// Lists `parent` one level deep: registers each eligible child that is not watched with
@@ -256,19 +301,18 @@ impl NotifyWatcher {
         errors.extend(listing.errors.into_iter().map(RegistrationError::from));
     }
 
-    /// Registers `traversal`, keeping its failures except a directory that vanished first.
+    /// Registers `traversal` (listing `relist` again first), keeping its failures except a
+    /// directory that vanished first.
     fn register_quietly(
         &mut self,
         root: &RootDir,
         traversal: Traversal,
+        relist: Vec<RelPath>,
         errors: &mut Vec<RegistrationError>,
     ) {
-        let attempted: Vec<RelPath> = traversal.dirs.iter().cloned().collect();
-        let failures = self.register(root, traversal);
-        for dir in attempted {
-            if self.watched.contains(&dir) {
-                self.failed.remove(&dir);
-            }
+        let (failures, added) = self.register_relisting(root, traversal, relist);
+        for dir in added {
+            self.failed.remove(&dir);
         }
         errors.extend(
             failures

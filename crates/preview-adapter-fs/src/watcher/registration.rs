@@ -5,23 +5,32 @@
 //!   [`eligible_dirs`] and calls `watch(dir, NonRecursive)` for each directory it returns, the
 //!   root included, parents before children. A directory the walk prunes is never named to the
 //!   operating system.
+//! - **Watch, then list.** The walk lists a directory before its watch exists, so a child
+//!   created in between would be neither listed nor notified. Each directory newly watched is
+//!   therefore listed once more after its watch is in place, and every eligible child that the
+//!   walk did not see is registered the same way, until nothing new appears: a child created
+//!   before the second listing is in it, one created after it is notified.
 //! - **Absolute paths only here.** The path handed to `notify` is `display_root` joined with
 //!   the directory's validated components; it is built in [`NotifyWatcher::absolute`] and goes
 //!   nowhere else. Errors name the relative directory.
 //! - **Partial failure.** A directory that cannot be walked or watched becomes a
 //!   [`RegistrationError`] and the rest is still registered. Once the system's watch limit is
-//!   reached no further watch is attempted (each would fail the same way); the remaining
-//!   directories are reported with [`WatchFault::WatchLimitReached`].
+//!   reached no further watch is attempted (each would fail the same way) until one of this
+//!   watcher's watches is removed or a full reconcile probes again; the remaining directories
+//!   are reported with [`WatchFault::WatchLimitReached`].
 //! - **No link registration.** `notify` registers by path and follows a symbolic link, so after
 //!   each watch the directory is reopened through the root capability (`O_NOFOLLOW` per
 //!   component). If it is no longer a real directory there (a link swapped in after the walk),
-//!   the watch is removed and the directory reported. A swap in the instant between the watch
-//!   and that check, then back, is not detected; ADR 0047 records the residual window.
+//!   the watch is removed and the directory reported. `inotify_add_watch` follows the link, so
+//!   for a link to a directory already watched it hands back that directory's watch, and the
+//!   withdrawal removes it; after any withdrawal every recorded directory is therefore watched
+//!   again in place (on Linux). A swap in the instant between the watch and that check, then
+//!   back, is not detected; ADR 0047 records the residual window.
 //! - **Record.** Successful registrations are kept in a [`WatchSet`], the answer to "is this
 //!   directory watched" for reconciliation.
 
 use core::fmt;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -31,7 +40,13 @@ use preview_domain::{RelPath, WatchSet};
 
 use super::display_rel;
 use crate::capability::RootDir;
-use crate::traversal::{Traversal, TraversalError, TraversalFault, eligible_dirs};
+use crate::traversal::{
+    MAX_DEPTH, Traversal, TraversalError, TraversalFault, eligible_children, eligible_dirs,
+};
+
+/// How many rounds of re-watching after a withdrawal one call runs at most; a round only
+/// repeats when a link was swapped in again meanwhile, and the next call carries on.
+const MAX_REPAIR_ROUNDS: usize = 4;
 
 /// Why a directory is not watched. A category only: the OS error text and the absolute path
 /// never leave the adapter.
@@ -44,6 +59,9 @@ pub enum WatchFault {
     NotFound,
     /// The system's limit on watches is reached (Linux `fs.inotify.max_user_watches`).
     WatchLimitReached,
+    /// The native watcher could not be created: the limit on watcher instances (Linux
+    /// `fs.inotify.max_user_instances`) or on open files is reached.
+    InstanceLimitReached,
     /// The directory lies deeper than [`crate::MAX_DEPTH`].
     TooDeep,
     /// Any other operating-system failure, by kind.
@@ -59,6 +77,9 @@ impl fmt::Display for WatchFault {
             Self::NotFound => f.write_str("not found or no longer a directory"),
             Self::WatchLimitReached => f.write_str(
                 "the system's file watch limit is reached (on Linux raise fs.inotify.max_user_watches)",
+            ),
+            Self::InstanceLimitReached => f.write_str(
+                "the system's limit on file watcher instances or open files is reached (on Linux raise fs.inotify.max_user_instances)",
             ),
             Self::TooDeep => write!(f, "nested more than {} levels deep", crate::MAX_DEPTH),
             Self::Io(kind) => write!(f, "{kind}"),
@@ -95,6 +116,22 @@ impl From<&notify::Error> for WatchFault {
     }
 }
 
+impl WatchFault {
+    /// The fault of the native watcher failing to start. `inotify_init1` fails with `EMFILE`
+    /// when the per-user instance limit or the process's descriptor limit is reached, and with
+    /// `ENFILE` at the system's file limit; both are named rather than left as an
+    /// uncategorized error. Pinned by `should_name_instance_limit_when_watcher_cannot_start`.
+    fn starting(error: &notify::Error) -> Self {
+        if let notify::ErrorKind::Io(e) = &error.kind
+            && let Some(errno) = rustix::io::Errno::from_io_error(e)
+            && (errno == rustix::io::Errno::MFILE || errno == rustix::io::Errno::NFILE)
+        {
+            return Self::InstanceLimitReached;
+        }
+        Self::from(error)
+    }
+}
+
 /// A directory that is not watched, and why (plan.md section 8.1 step 6).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct RegistrationError {
@@ -128,6 +165,10 @@ impl From<TraversalError> for RegistrationError {
     }
 }
 
+/// A test's hook into the window between listing a directory and watching it.
+#[cfg(test)]
+pub(crate) type WatchHook = Box<dyn FnMut(&RelPath) + Send>;
+
 /// The native watcher and the directories registered with it. Dropping it removes every watch.
 pub(crate) struct NotifyWatcher {
     inner: RecommendedWatcher,
@@ -135,7 +176,19 @@ pub(crate) struct NotifyWatcher {
     pub(super) watched: WatchSet,
     /// Eligible directories that are not watched, and why: the walk or the watch failed.
     /// Reconciliation retries them; the set is complete only while this is empty.
-    pub(super) failed: BTreeMap<RelPath, WatchFault>,
+    pub(crate) failed: BTreeMap<RelPath, WatchFault>,
+    /// Set when a watch failed for the system's watch limit: no watch is attempted while it
+    /// holds. Cleared when one of this watcher's watches is removed, or by a full reconcile.
+    pub(crate) limit_reached: bool,
+    /// Where the round-robin retry of [`Self::failed`] stopped last (ADR 0050).
+    pub(super) retry_cursor: Option<RelPath>,
+    /// Set when a watch was withdrawn: its removal may have taken the watch of another
+    /// recorded directory with it (a link to it), so the recorded set is watched again.
+    withdrawn: bool,
+    /// Called with each directory just before it is watched: the window between a listing and
+    /// a watch, which tests use to create a directory in it.
+    #[cfg(test)]
+    pub(crate) before_watch: Option<WatchHook>,
 }
 
 impl fmt::Debug for NotifyWatcher {
@@ -157,7 +210,8 @@ impl NotifyWatcher {
     /// # Errors
     ///
     /// The [`WatchFault`] of the native watcher itself failing to start (on Linux, the
-    /// `inotify` instance limit); nothing is watched then.
+    /// `inotify` instance limit: [`WatchFault::InstanceLimitReached`]); nothing is watched
+    /// then.
     pub fn start<H: EventHandler>(
         root: &RootDir,
         display_root: &Path,
@@ -184,54 +238,115 @@ impl NotifyWatcher {
             return Err(WatchFault::Unavailable);
         }
         let inner = RecommendedWatcher::new(handler, Config::default())
-            .map_err(|error| WatchFault::from(&error))?;
+            .map_err(|error| WatchFault::starting(&error))?;
         Ok(Self {
             inner,
             display_root: display_root.to_path_buf(),
             watched: WatchSet::new(),
             failed: BTreeMap::new(),
+            limit_reached: false,
+            retry_cursor: None,
+            withdrawn: false,
+            #[cfg(test)]
+            before_watch: None,
         })
     }
 
     /// Registers the directories of `traversal` not yet watched and reports its walk errors
-    /// beside the registration failures, in that order.
+    /// beside the registration failures, in that order. Pinned by
+    /// `should_watch_directory_created_between_listing_and_watch_when_registering`.
     pub(crate) fn register(
         &mut self,
         root: &RootDir,
         traversal: Traversal,
     ) -> Vec<RegistrationError> {
-        let mut errors: Vec<RegistrationError> = traversal
-            .errors
-            .into_iter()
-            .map(RegistrationError::from)
-            .collect();
+        self.register_relisting(root, traversal, Vec::new()).0
+    }
+
+    /// [`register`](Self::register), listing `relist` again first: directories already
+    /// recorded whose watch was renewed after the walk listed them.
+    ///
+    /// Each directory is listed once more after its watch is in place, and an eligible child
+    /// the walk did not see is registered the same way, until nothing new appears. Returns the
+    /// failures and the directories newly watched.
+    pub(crate) fn register_relisting(
+        &mut self,
+        root: &RootDir,
+        traversal: Traversal,
+        relist: Vec<RelPath>,
+    ) -> (Vec<RegistrationError>, Vec<RelPath>) {
+        let mut walk = Walk {
+            known: traversal.errors.iter().map(|e| e.dir.clone()).collect(),
+            reported: traversal.errors.iter().map(|e| e.dir.clone()).collect(),
+            errors: traversal
+                .errors
+                .into_iter()
+                .map(RegistrationError::from)
+                .collect(),
+            queue: VecDeque::new(),
+        };
+        walk.known.extend(traversal.dirs.iter().cloned());
+        walk.queue.extend(traversal.dirs);
+        for dir in relist {
+            walk.adopt_children(root, &dir);
+        }
+        let mut failures = Vec::new();
         let mut added = Vec::new();
-        let mut limit_reached = false;
-        for dir in traversal.dirs {
+        while let Some(dir) = walk.queue.pop_front() {
             if self.watched.contains(&dir) {
                 continue;
             }
-            if limit_reached {
-                errors.push(RegistrationError {
+            if self.limit_reached {
+                failures.push(RegistrationError {
                     dir,
                     fault: WatchFault::WatchLimitReached,
                 });
                 continue;
             }
+            #[cfg(test)]
+            if let Some(hook) = self.before_watch.as_mut() {
+                hook(&dir);
+            }
             match self.watch_one(root, &dir) {
-                Ok(()) => added.push(dir),
+                Ok(()) => {
+                    self.watched.apply(&preview_domain::WatchDiff {
+                        add: BTreeSet::from([dir.clone()]),
+                        remove: BTreeSet::new(),
+                    });
+                    walk.adopt_children(root, &dir);
+                    added.push(dir);
+                }
                 Err(fault) => {
-                    limit_reached = fault == WatchFault::WatchLimitReached;
+                    self.limit_reached |= fault == WatchFault::WatchLimitReached;
+                    failures.push(RegistrationError { dir, fault });
+                }
+            }
+        }
+        self.repair(root, &mut failures);
+        walk.errors.extend(failures);
+        (walk.errors, added)
+    }
+
+    /// After a withdrawal, watches every recorded directory again in place, so a watch the
+    /// withdrawal took from another directory (`inotify` hands back the existing watch for a
+    /// link to a watched directory) is restored. Bounded by [`MAX_REPAIR_ROUNDS`]; what is
+    /// left waits for the next call. Pinned by
+    /// `should_keep_watching_link_target_when_link_is_withdrawn`.
+    pub(crate) fn repair(&mut self, root: &RootDir, errors: &mut Vec<RegistrationError>) {
+        for _ in 0..MAX_REPAIR_ROUNDS {
+            if !core::mem::take(&mut self.withdrawn) {
+                return;
+            }
+            let recorded: Vec<RelPath> = self.watched.iter().cloned().collect();
+            for dir in recorded {
+                if self.watched.contains(&dir)
+                    && let Err(fault) = self.refresh(root, &dir)
+                    && fault != WatchFault::NotFound
+                {
                     errors.push(RegistrationError { dir, fault });
                 }
             }
         }
-        let diff = preview_domain::WatchDiff {
-            add: added.into_iter().collect(),
-            remove: Default::default(),
-        };
-        self.watched.apply(&diff);
-        errors
     }
 
     /// Watches one directory, then confirms through the capability that a real directory
@@ -244,8 +359,10 @@ impl NotifyWatcher {
         let Err(refusal) = root.open_dir(dir) else {
             return Ok(());
         };
-        // The watch may already be gone with its inode; nothing else to undo.
+        // The watch may already be gone with its inode. If a link stood there, the watch was
+        // its target's, which may be recorded under its own name: `repair` restores it.
         let _ = self.inner.unwatch(&path);
+        self.withdrawn |= !cfg!(target_os = "macos");
         Err(match refusal {
             ContentRefusal::Forbidden(ForbiddenReason::PermissionDenied) => {
                 WatchFault::PermissionDenied
@@ -258,10 +375,13 @@ impl NotifyWatcher {
     /// Removes the watches of `dirs` and forgets them. A watch the native watcher already
     /// dropped with its directory (`notify` removes the watch of a deleted or moved-away
     /// directory itself) is not an error: the record is what has to change.
+    ///
+    /// A removed watch frees one of the system's watches, so the watch limit is tried again.
     pub(crate) fn unwatch(&mut self, dirs: BTreeSet<RelPath>) {
         for dir in &dirs {
             let path = self.absolute(dir);
             let _ = self.inner.unwatch(&path);
+            self.limit_reached &= !self.watched.contains(dir);
         }
         self.watched.apply(&preview_domain::WatchDiff {
             add: BTreeSet::new(),
@@ -299,6 +419,54 @@ impl NotifyWatcher {
     #[must_use]
     pub fn watched(&self) -> &WatchSet {
         &self.watched
+    }
+}
+
+/// The listing side of one registration: what the walk and the second listings found.
+struct Walk {
+    /// Every directory seen so far, watched or not, so none is queued twice.
+    known: BTreeSet<RelPath>,
+    /// Directories already reported as not walkable, so none is reported twice.
+    reported: BTreeSet<RelPath>,
+    errors: Vec<RegistrationError>,
+    queue: VecDeque<RelPath>,
+}
+
+impl Walk {
+    /// Lists `dir`, whose watch is in place now, and queues each eligible child not seen
+    /// before; a child nested too deep is reported instead. A directory that vanished meanwhile
+    /// is skipped: its removal is a change of its own.
+    fn adopt_children(&mut self, root: &RootDir, dir: &RelPath) {
+        let listing = match eligible_children(root, dir) {
+            Ok(listing) => listing,
+            Err(error) if error.fault == TraversalFault::Io(io::ErrorKind::NotFound) => return,
+            Err(error) => {
+                self.report(error);
+                return;
+            }
+        };
+        for error in listing.errors {
+            self.report(error);
+        }
+        for child in listing.dirs {
+            if !self.known.insert(child.clone()) {
+                continue;
+            }
+            if child.components().len() > MAX_DEPTH {
+                self.report(TraversalError {
+                    dir: child,
+                    fault: TraversalFault::TooDeep,
+                });
+            } else {
+                self.queue.push_back(child);
+            }
+        }
+    }
+
+    fn report(&mut self, error: TraversalError) {
+        if self.reported.insert(error.dir.clone()) {
+            self.errors.push(error.into());
+        }
     }
 }
 
@@ -369,6 +537,42 @@ mod tests {
                 WatchFault::Io(io::ErrorKind::OutOfMemory),
                 WatchFault::Unavailable,
             ]
+        );
+    }
+
+    #[test]
+    fn should_name_instance_limit_when_watcher_cannot_start() {
+        // given
+        let errno = |e: rustix::io::Errno| io::Error::from_raw_os_error(e.raw_os_error());
+        let errors = [
+            notify::Error::io(errno(rustix::io::Errno::MFILE)),
+            notify::Error::io(errno(rustix::io::Errno::NFILE)),
+            notify::Error::io(errno(rustix::io::Errno::NOMEM)),
+            notify::Error::new(notify::ErrorKind::MaxFilesWatch),
+        ];
+
+        // when
+        let faults = errors.each_ref().map(WatchFault::starting);
+
+        // then
+        assert_eq!(
+            faults,
+            [
+                WatchFault::InstanceLimitReached,
+                WatchFault::InstanceLimitReached,
+                WatchFault::Io(io::ErrorKind::OutOfMemory),
+                WatchFault::WatchLimitReached,
+            ]
+        );
+        assert!(
+            WatchFault::InstanceLimitReached
+                .to_string()
+                .contains("fs.inotify.max_user_instances")
+        );
+        assert!(
+            WatchFault::WatchLimitReached
+                .to_string()
+                .contains("fs.inotify.max_user_watches")
         );
     }
 

@@ -13,7 +13,7 @@ use preview_domain::{ChangeEvent, ChangeKind, Component, RelPath};
 use preview_testkit::poll::wait_until;
 use tempfile::TempDir;
 
-use crate::watcher::{NotifyWatcher, ReconcileHint, translate};
+use crate::watcher::{NotifyWatcher, RETRY_BUDGET, ReconcileHint, translate};
 use crate::{MAX_DEPTH, NotifyChangeSource, SiteRoot, WatchFault, eligible_dirs, open_site_root};
 use preview_application::{ChangeBatch, ChangeSource, SourceFailure};
 
@@ -767,5 +767,197 @@ fn should_keep_watch_set_when_file_is_created_and_deleted() {
 
     // then
     assert!(after_create.complete && after_delete.complete);
+    assert_eq!(names(watcher.watched().iter().cloned()), ["", "docs"]);
+}
+
+#[test]
+fn should_watch_directory_created_between_listing_and_watch_when_registering() {
+    // given: `a` is listed, then `a/late/deeper` appears before `a` is watched
+    let (_base, root) = site();
+    fs::create_dir(root.join("a")).expect("create a");
+    let site = open_site_root(&root).expect("open root");
+    let traversal = eligible_dirs(&site.dir, &RelPath::root()).expect("traverse");
+    let (sender, _notifications) = channel();
+    let mut watcher = NotifyWatcher::new(&site.display_path, sender).expect("create watcher");
+    let late = site.display_path.join("a/late/deeper");
+    watcher.before_watch = Some(Box::new(move |dir: &RelPath| {
+        if *dir == rel("a") {
+            fs::create_dir_all(&late).expect("create in the window");
+        }
+    }));
+
+    // when
+    let errors = watcher.register(&site.dir, traversal);
+
+    // then
+    assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+    let now = eligible_dirs(&site.dir, &RelPath::root()).expect("traverse again");
+    assert_eq!(
+        names(watcher.watched().iter().cloned()),
+        names(now.dirs.clone())
+    );
+    assert_eq!(names(now.dirs), ["", "a", "a/late", "a/late/deeper"]);
+}
+
+/// Drains every batch available now, reconciling as the pipeline does: a loss walks
+/// everything, a batch of changes what it touched.
+fn pump_reconciling(source: &mut NotifyChangeSource, site: &SiteRoot) {
+    while let Some(batch) = poll_next(source) {
+        match batch {
+            ChangeBatch::Events(_) => {
+                let _ = source.reconcile_changed(&site.dir);
+            }
+            ChangeBatch::Overflow => {
+                let _ = source.reconcile_full(&site.dir);
+            }
+            other => panic!("unexpected batch: {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn should_watch_every_eligible_directory_when_nested_directories_burst_during_start_and_reconcile()
+{
+    // given: a burst of nested mkdirs racing the start-up walk and the reconciles after it
+    let (_base, root) = site();
+    let site = open_site_root(&root).expect("open root");
+    let display = site.display_path.clone();
+    let burst = std::thread::spawn(move || {
+        for tree in 0..40 {
+            let mut at = display.join(format!("t{tree}"));
+            for level in 0..6 {
+                at = at.join(format!("d{level}"));
+                fs::create_dir_all(&at).expect("mkdir -p");
+                fs::create_dir(at.with_extension("side")).expect("mkdir beside");
+            }
+        }
+    });
+
+    // when
+    let (mut source, _report) = NotifyChangeSource::start(&site.dir, &site.display_path);
+    burst.join().expect("burst thread");
+
+    // then: every directory is eventually watched; a missed one is never notified
+    let mut last = Vec::new();
+    wait_until(
+        DEADLINE,
+        "the watch set equal to the eligible directories",
+        || {
+            pump_reconciling(&mut source, &site);
+            let eligible = eligible_dirs(&site.dir, &RelPath::root()).expect("traverse");
+            last = names(eligible.dirs);
+            names(source.watched()) == last
+        },
+    )
+    .unwrap_or_else(|_| {
+        let watched = names(source.watched());
+        let missing: Vec<_> = last.iter().filter(|dir| !watched.contains(dir)).collect();
+        panic!("never watched: {missing:?}")
+    });
+}
+
+#[test]
+fn should_keep_watching_link_target_when_link_is_withdrawn() {
+    // given: `x` is listed as a directory, then replaced by a link to the watched `b`
+    let (_base, root) = site();
+    fs::create_dir(root.join("b")).expect("create b");
+    fs::create_dir(root.join("x")).expect("create x");
+    let site = open_site_root(&root).expect("open root");
+    let traversal = eligible_dirs(&site.dir, &RelPath::root()).expect("traverse");
+    let x = site.display_path.join("x");
+    fs::remove_dir(&x).expect("remove x");
+    std::os::unix::fs::symlink("b", &x).expect("swap in a link to b");
+    let (sender, notifications) = channel();
+    let mut watcher = NotifyWatcher::new(&site.display_path, sender).expect("create watcher");
+
+    // when: watching `x` follows the link to `b`'s watch, and withdrawing it removes that
+    let errors = watcher.register(&site.dir, traversal);
+    let target = site.display_path.join("b/page.html");
+    fs::write(&target, b"x").expect("edit inside b");
+
+    // then
+    assert_eq!(names(errors.iter().map(|e| e.dir.clone())), ["x"]);
+    assert_eq!(names(watcher.watched().iter().cloned()), ["", "b"]);
+    wait_for_path(&notifications, &target, &mut Vec::new());
+}
+
+#[test]
+fn should_retry_at_most_the_budget_when_many_directories_failed() {
+    // given: three budgets of failed directories (gone by now, so each retry settles one)
+    let (_base, root) = site();
+    let site = open_site_root(&root).expect("open root");
+    let (mut watcher, _errors, _notifications) = start(&site);
+    for n in 0..RETRY_BUDGET * 3 {
+        watcher
+            .failed
+            .insert(rel(&format!("gone-{n:03}")), WatchFault::PermissionDenied);
+    }
+    let none = std::collections::BTreeSet::new();
+
+    // when
+    let left: Vec<usize> = (0..3)
+        .map(|_| {
+            watcher.reconcile(&site.dir, &none);
+            watcher.failed.len()
+        })
+        .collect();
+
+    // then: one budget per changes-only reconcile, round robin, until none is left
+    assert_eq!(left, [RETRY_BUDGET * 2, RETRY_BUDGET, 0]);
+}
+
+#[test]
+fn should_retry_nothing_until_a_watch_is_freed_when_watch_limit_is_reached() {
+    // given: the watch limit was hit, leaving directories outstanding
+    let (_base, root) = site();
+    fs::create_dir(root.join("docs")).expect("create docs");
+    let site = open_site_root(&root).expect("open root");
+    let (mut watcher, _errors, _notifications) = start(&site);
+    for n in 0..4 {
+        watcher
+            .failed
+            .insert(rel(&format!("gone-{n}")), WatchFault::WatchLimitReached);
+    }
+    watcher.limit_reached = true;
+    let none = std::collections::BTreeSet::new();
+
+    // when
+    let blocked = watcher.reconcile(&site.dir, &none);
+    let still_blocked = watcher.failed.len();
+    watcher.unwatch(std::collections::BTreeSet::from([rel("docs")]));
+    let freed = watcher.reconcile(&site.dir, &none);
+
+    // then
+    assert!(!blocked.complete);
+    assert_eq!(still_blocked, 4, "retried while the limit held");
+    assert!(freed.complete, "retried once a watch was freed: {freed:?}");
+    assert!(watcher.failed.is_empty());
+}
+
+#[test]
+fn should_probe_the_watch_limit_again_when_reconciling_fully() {
+    // given
+    let (_base, root) = site();
+    fs::create_dir(root.join("docs")).expect("create docs");
+    let site = open_site_root(&root).expect("open root");
+    let (sender, _notifications) = channel();
+    let mut watcher = NotifyWatcher::new(&site.display_path, sender).expect("create watcher");
+    watcher.limit_reached = true;
+    let traversal = eligible_dirs(&site.dir, &RelPath::root()).expect("traverse");
+    let refused = watcher.register(&site.dir, traversal);
+
+    // when
+    let full = std::collections::BTreeSet::from([ReconcileHint::Full]);
+    let report = watcher.reconcile(&site.dir, &full);
+
+    // then
+    assert!(
+        refused
+            .iter()
+            .all(|e| e.fault == WatchFault::WatchLimitReached),
+        "{refused:?}"
+    );
+    assert_eq!(refused.len(), 2, "{refused:?}");
+    assert!(report.complete, "{report:?}");
     assert_eq!(names(watcher.watched().iter().cloned()), ["", "docs"]);
 }

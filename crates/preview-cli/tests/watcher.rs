@@ -2,7 +2,7 @@
 //! binary watches a copy of the fixture site and an open event stream reports what changed.
 //!
 //! No case asserts a latency: every wait is bounded by the harness deadline, and "nothing was
-//! published" is a bounded silence of twice the default debounce window followed by a positive
+//! published" is a bounded silence of twice the debounce window in use followed by a positive
 //! control edit whose revision proves that nothing was published before it.
 //!
 //! Not forced through the binary, because there is no production test knob:
@@ -22,13 +22,18 @@ pub mod support;
 
 /// In the `os-watcher` nextest group: real watches share the system's inotify budget.
 mod os_watcher {
+    use std::collections::BTreeSet;
+    use std::ffi::OsStr;
     use std::fs;
+    use std::path::Path;
     use std::time::Duration;
 
-    use super::support::{EventStream, PreviewProcess, Reload, Site};
+    use preview_testkit::poll::wait_until;
+
+    use super::support::{DEADLINE, EventStream, PreviewProcess, Reload, Site};
 
     /// Twice the default 150 ms debounce window: how long silence must last to count as
-    /// "no revision".
+    /// "no revision" (a case with a longer `--debounce` waits twice that instead).
     const QUIET: Duration = Duration::from_millis(300);
 
     /// A started server on a fresh copy of the site, with its stream past the baseline.
@@ -39,8 +44,15 @@ mod os_watcher {
     }
 
     fn watch() -> Watched {
+        watch_with(&[])
+    }
+
+    /// [`watch`] with extra `serve` options.
+    fn watch_with(options: &[&str]) -> Watched {
         let site = Site::copy();
-        let server = PreviewProcess::serve(&site);
+        let mut args = vec![OsStr::new("serve"), site.path().as_os_str()];
+        args.extend(options.iter().map(OsStr::new));
+        let server = PreviewProcess::start(args);
         let mut stream = server.events(&[]).expect("the stream opens");
         stream.baseline();
         Watched {
@@ -287,8 +299,8 @@ mod os_watcher {
 
     #[test]
     fn should_publish_one_revision_when_twenty_edits_burst() {
-        // given
-        let mut watched = watch();
+        // given: a window far longer than the burst, so a scheduler stall cannot split it
+        let mut watched = watch_with(&["--debounce", "1s"]);
 
         // when
         for round in 0..20 {
@@ -299,7 +311,8 @@ mod os_watcher {
         // then
         assert_eq!(burst.revision, 1, "{burst:?}");
         assert_reload(&burst, "/styles.css", "css", false);
-        watched.assert_quiet("the burst settled into one revision");
+        let silent = watched.stream.next_event_within(Duration::from_secs(2));
+        assert_eq!(silent, None, "the burst settled into one revision");
         let control = watched.edit("app.js");
         assert_eq!(control.revision, 2, "{control:?}");
     }
@@ -327,5 +340,99 @@ mod os_watcher {
         assert_eq!(silent, None, "an excluded change published");
         assert_eq!(control.revision, 1, "{control:?}");
         assert_eq!(control.paths(), ["/index.html"], "{control:?}");
+    }
+
+    /// Copies `source` into `target` one entry at a time, as `cp -r` does: each directory is
+    /// created, its files copied, then its subdirectories, while the server watches. Nothing
+    /// is created in a directory after its last subdirectory, so no later change there can
+    /// make up for a subdirectory the watcher missed.
+    fn copy_in(source: &Path, target: &Path, dirs: &mut Vec<String>, relative: &str) {
+        fs::create_dir(target).expect("a copied directory");
+        dirs.push(relative.to_owned());
+        let mut entries: Vec<_> = fs::read_dir(source)
+            .expect("a readable staging directory")
+            .map(|entry| entry.expect("a readable entry"))
+            .collect();
+        entries.sort_by_key(|entry| (entry.path().is_dir(), entry.file_name()));
+        for entry in entries {
+            let name = entry.file_name().into_string().expect("a UTF-8 name");
+            let destination = target.join(&name);
+            if entry.file_type().expect("a file type").is_dir() {
+                copy_in(
+                    &entry.path(),
+                    &destination,
+                    dirs,
+                    &format!("{relative}/{name}"),
+                );
+            } else {
+                fs::copy(entry.path(), &destination).expect("a copied file");
+            }
+        }
+    }
+
+    #[test]
+    fn should_reload_edits_in_every_directory_when_a_tree_is_copied_in() {
+        // given: a tree of 210 directories outside the root, each with a page
+        let mut watched = watch();
+        let staging = watched.site.outside().join("staging");
+        for top in 0..10 {
+            for middle in 0..4 {
+                for leaf in 0..4 {
+                    let dir = staging.join(format!("t{top}/m{middle}/l{leaf}"));
+                    fs::create_dir_all(&dir).expect("a staging directory");
+                    fs::write(dir.join("index.html"), "<p>leaf</p>\n").expect("a page");
+                }
+                let middle = staging.join(format!("t{top}/m{middle}"));
+                fs::write(middle.join("index.html"), "<p>middle</p>\n").expect("a page");
+            }
+            let top = staging.join(format!("t{top}"));
+            fs::write(top.join("index.html"), "<p>top</p>\n").expect("a page");
+        }
+
+        // when: copied in while watched
+        let mut dirs = Vec::new();
+        for top in 0..10 {
+            let name = format!("t{top}");
+            copy_in(
+                &staging.join(&name),
+                &watched.site.path().join(&name),
+                &mut dirs,
+                &name,
+            );
+        }
+
+        // then: an edit of the page in each copied directory eventually reloads. A page is
+        // edited again until a reload lists it: a watch still being registered may miss an
+        // edit, a directory that is never watched misses them all. Edits, not new files, so
+        // the probes themselves ask for no reconcile that could find a missed directory.
+        assert_eq!(dirs.len(), 210);
+        let mut pending: BTreeSet<String> = dirs.into_iter().collect();
+        let mut round = 0;
+        let reloaded = wait_until(DEADLINE, "an edit reloaded in every directory", || {
+            for dir in &pending {
+                watched.write(
+                    &format!("{dir}/index.html"),
+                    &format!("<p>edit {round}</p>\n"),
+                );
+            }
+            while let Some(frame) = watched.stream.next_event_within(Duration::from_secs(1)) {
+                if frame.event.as_deref() != Some("reload") {
+                    continue;
+                }
+                let reload = Reload::parse(&frame.data.join("\n"));
+                pending.retain(|dir| {
+                    !reload
+                        .paths()
+                        .contains(&format!("/{dir}/index.html").as_str())
+                });
+            }
+            round += 1;
+            pending.is_empty()
+        });
+        assert!(
+            reloaded.is_ok(),
+            "edits never reloaded in {} directories: {pending:?}",
+            pending.len()
+        );
     }
 }
