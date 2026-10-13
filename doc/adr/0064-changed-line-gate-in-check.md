@@ -41,7 +41,9 @@ changed line affects the changed-code gate".
 ## Consequences
 
 - An untested line in a crate fails `check` locally before commit and in CI after the push
-  (CI checks out with `fetch-depth: 0`, so `HEAD~1` exists).
+  (CI checks out with `fetch-depth: 0`, so `HEAD~1` exists, and installs `cargo-llvm-cov` with
+  the other pinned tools). On a runner without `cargo-llvm-cov`, `coverage` is `UNAVAILABLE` and
+  `changed-lines` fails on the missing report: the job is red, never green without the gate.
 - When `origin/main` equals `HEAD`, `check` gates the last commit together with any
   uncommitted edits, a superset of the change; a lane branched from an unpushed local `main`
   also carries those commits until `main` is pushed.

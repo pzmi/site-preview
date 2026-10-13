@@ -4,7 +4,8 @@ Date: 2026-10-12
 
 ## Status
 
-Proposed (planner default — owner may override)
+Proposed (planner default — owner may override). Amended by 0066: the overall floor counts
+`crates/` only, and `xtask` is reported without a floor.
 
 ## Context
 

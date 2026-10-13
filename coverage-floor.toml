@@ -1,10 +1,15 @@
-# Line-coverage floors enforced by `cargo xtask coverage` (ADR 0018, ADR 0062). Each value is
-# a whole percent of instrumented lines (LCOV `DA:` records) that tests must reach. A floor
-# starts at the measured value rounded down, never below 90, and is only ratcheted up here;
-# lowering one needs owner review.
+# Line-coverage floors enforced by `cargo xtask coverage` (ADR 0018, ADR 0062, ADR 0066). Each
+# value is a whole percent of instrumented lines (LCOV `DA:` records) that tests must reach. A
+# floor starts at the measured value rounded down, never below 90, and is only ratcheted up
+# here; lowering one needs owner review.
 
-# Every instrumented line of the workspace, tools/xtask included.
-overall_line = 92
+# Every instrumented line under crates/ (product and test-support crates). tools/xtask is
+# measured and reported on its own row but never floored, and an `xtask` key here is refused:
+# its tool-probe tests take different branches on machines with different tools installed
+# (ADR 0066). Calibrated with java, cargo-fuzz, cargo-mutants and the nightly toolchain
+# hidden, as on the CI runner: 95.61% (12215 of 12776 lines) on 2026-10-13. This is the
+# first floor of the crates-only figure, not a change to the old workspace-wide one (92).
+overall_line = 95
 
 # Per-crate floors, keyed by crate directory name under crates/.
 [crate]

@@ -21,6 +21,11 @@ jobs:
     name: Check
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    env:
+      # The pinned tools the gate needs (tools/versions.toml); coverage and changed-lines need
+      # cargo-llvm-cov. The list is part of the cache key, so changing it saves a new
+      # ~/.cargo/bin instead of reusing one cached without the new tool.
+      DEV_TOOLS: cargo-nextest cargo-deny cargo-llvm-cov
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -39,7 +44,7 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             target
-          key: check-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'tools/versions.toml') }}
+          key: check-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'tools/versions.toml') }}-${{ env.DEV_TOOLS }}
           restore-keys: |
             check-${{ runner.os }}-
 
@@ -47,7 +52,7 @@ jobs:
         uses: ./.github/actions/install-scanners
 
       - name: Install pinned dev tools
-        run: cargo xtask install-tools cargo-nextest cargo-deny
+        run: cargo xtask install-tools ${{ env.DEV_TOOLS }}
 
       # The browser stage never downloads a browser itself (D9); CI provides Chromium here.
       - name: Install Chromium for Playwright

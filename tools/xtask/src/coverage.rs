@@ -1,5 +1,5 @@
 //! `cargo xtask coverage`: LLVM line coverage of every in-process suite and the floors that
-//! gate it (foundation.md section 5.3, ADR 0018, ADR 0062).
+//! gate it (foundation.md section 5.3, ADR 0018, ADR 0062, ADR 0066).
 //!
 //! What is measured: `cargo llvm-cov nextest --workspace` under the `ci` profile, so every
 //! unit, component, contract, integration, CLI black-box and conformance test of every
@@ -17,6 +17,11 @@
 //!
 //! The report is `target/coverage/lcov.info`. Floors live in `coverage-floor.toml`; the
 //! evaluator works on integer line counts, so there is no rounding at the boundary.
+//!
+//! The floored overall figure covers `crates/` only, the product and test-support crates
+//! (ADR 0066). `tools/xtask` is measured and printed on its own row, report only: its tool-probe
+//! tests take different branches on machines with different tools installed, so a floor over it
+//! would depend on the machine, not on the code.
 //!
 //! Beside the report, a successful measurement writes `target/coverage/lcov.stamp`: the
 //! fingerprint of the source tree it measured (`changed_lines::tree_fingerprint`, taken before
@@ -45,7 +50,7 @@ const STAMP_PATH: &str = "target/coverage/lcov.stamp";
 /// No floor may be set below this (ADR 0018).
 const MIN_FLOOR: u32 = 90;
 
-/// The key under which files of `tools/xtask` are counted.
+/// The key under which files of `tools/xtask` are counted; report only, never floored (ADR 0066).
 const XTASK: &str = "xtask";
 
 /// The `coverage` stage, as `check` registers it.
@@ -62,9 +67,9 @@ pub fn stage() -> Stage {
 #[derive(Debug, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Floors {
-    /// Percent of all instrumented lines.
+    /// Percent of the instrumented lines under `crates/` (ADR 0066).
     pub overall_line: u32,
-    /// Percent per crate directory name.
+    /// Percent per crate directory name under `crates/`.
     #[serde(default)]
     pub crate_floors: BTreeMap<String, u32>,
 }
@@ -78,10 +83,16 @@ struct FloorFile {
     crates: BTreeMap<String, u32>,
 }
 
-/// Parses the floors file and refuses a floor outside `MIN_FLOOR..=100`.
+/// Parses the floors file and refuses a floor outside `MIN_FLOOR..=100`, and a floor on
+/// `xtask`, which is report only (ADR 0066).
 pub fn parse_floors(text: &str) -> Result<Floors, String> {
     let file: FloorFile =
         toml::from_str(text).map_err(|e| format!("{FLOOR_FILE} does not parse: {e}"))?;
+    if file.crates.contains_key(XTASK) {
+        return Err(format!(
+            "{FLOOR_FILE}: {XTASK} is reported, never floored (ADR 0066)"
+        ));
+    }
     let all = std::iter::once(("overall_line", file.overall_line))
         .chain(file.crates.iter().map(|(k, v)| (k.as_str(), *v)));
     for (name, value) in all {
@@ -124,7 +135,7 @@ impl Counts {
 /// Line counts of one LCOV report, overall and per crate.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Measured {
-    /// Every file.
+    /// Every file under `crates/`; `xtask` and files outside both are left out (ADR 0066).
     pub overall: Counts,
     /// Per crate directory name (`preview-domain`, `xtask`, ...).
     pub per_crate: BTreeMap<String, Counts>,
@@ -168,14 +179,16 @@ pub fn parse_lcov(text: &str) -> Result<Measured, String> {
                 counts.instrumented += 1;
                 counts.covered += u64::from(hits > 0);
             };
-            add(&mut measured.overall);
             if let Some(name) = &current {
+                if name != XTASK {
+                    add(&mut measured.overall);
+                }
                 add(measured.per_crate.entry(name.clone()).or_default());
             }
         }
     }
     if measured.overall.instrumented == 0 {
-        return Err("the LCOV report has no instrumented line".to_owned());
+        return Err("the LCOV report has no instrumented line under crates/".to_owned());
     }
     Ok(measured)
 }
@@ -252,6 +265,7 @@ pub fn evaluate(measured: &Measured, floors: &Floors) -> (String, bool) {
     let mut ok = true;
     let mut row = |name: &str, counts: Counts, floor: Option<u32>| {
         let verdict = match floor {
+            None if name == XTASK => "report only (ADR 0066)".to_owned(),
             None => "no floor".to_owned(),
             Some(f) if counts.meets(f) => format!("floor {f}%: ok"),
             Some(f) => {
@@ -271,7 +285,11 @@ pub fn evaluate(measured: &Measured, floors: &Floors) -> (String, bool) {
             counts.instrumented
         );
     };
-    row("overall", measured.overall, Some(floors.overall_line));
+    row(
+        "overall (crates/)",
+        measured.overall,
+        Some(floors.overall_line),
+    );
     for (name, counts) in &measured.per_crate {
         row(name, *counts, floors.crate_floors.get(name).copied());
     }
@@ -385,6 +403,9 @@ SF:/r/tools/xtask/src/b.rs
 DA:1,0
 DA:2,5
 end_of_record
+SF:/r/examples/c.rs
+DA:1,0
+end_of_record
 ";
 
     fn floors(overall: u32, domain: u32) -> Floors {
@@ -395,8 +416,8 @@ end_of_record
     }
 
     #[test]
-    fn should_count_lines_per_crate_when_lcov_is_parsed() {
-        // given
+    fn should_count_only_crates_in_the_overall_figure_when_lcov_is_parsed() {
+        // given: xtask and a file outside crates/ each have an uncovered line
         let text = LCOV;
 
         // when
@@ -406,8 +427,8 @@ end_of_record
         assert_eq!(
             measured.overall,
             Counts {
-                instrumented: 5,
-                covered: 3
+                instrumented: 3,
+                covered: 2
             }
         );
         assert_eq!(
@@ -444,9 +465,48 @@ end_of_record
         // then
         assert!(!ok);
         assert!(
-            report.contains("BELOW floor 100%") && report.contains("2 uncovered lines"),
+            report.contains("BELOW floor 100%") && report.contains("1 uncovered lines"),
             "{report}"
         );
+    }
+
+    #[test]
+    fn should_report_xtask_without_a_floor_when_its_coverage_is_low() {
+        // given: xtask covers 1 of 2 lines, far below any floor
+        let measured = parse_lcov(LCOV).unwrap();
+
+        // when
+        let (report, ok) = evaluate(&measured, &floors(66, 66));
+
+        // then
+        assert!(ok, "{report}");
+        let row = report.lines().find(|l| l.starts_with(XTASK)).unwrap();
+        assert!(row.contains("report only (ADR 0066)"), "{report}");
+        assert!(report.contains("overall (crates/)"), "{report}");
+    }
+
+    #[test]
+    fn should_refuse_an_xtask_floor_when_floors_are_parsed() {
+        // given
+        let text = "overall_line = 90\n[crate]\nxtask = 90\n";
+
+        // when
+        let err = parse_floors(text).unwrap_err();
+
+        // then
+        assert!(err.contains("ADR 0066"), "{err}");
+    }
+
+    #[test]
+    fn should_reject_a_report_with_no_crate_line_when_lcov_is_parsed() {
+        // given: only xtask lines
+        let text = "SF:/r/tools/xtask/src/b.rs\nDA:1,1\nend_of_record\n";
+
+        // when
+        let err = parse_lcov(text).unwrap_err();
+
+        // then
+        assert!(err.contains("under crates/"), "{err}");
     }
 
     #[test]
