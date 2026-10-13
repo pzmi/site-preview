@@ -31,7 +31,7 @@ is one of its entries, or a planned one it lists as not yet available.
 | Mutation | Test quality: whether tests fail when code changes | planned; scope per foundation.md 5.3 | `mutation` (not yet available) | TEST-08 |
 | Fuzz | Adversarial parsing and change sequences | `fuzz/` (own workspace, pinned nightly, `fuzz_only`; [ADR 0026](adr/0026-nightly-fuzz-miri-and-concurrency-proof-scope.md), [ADR 0063](adr/0063-fuzz-crate-and-architecture-fuzz-only.md), [ADR 0065](adr/0065-fuzz-targets-beyond-the-domain-and-fuzz-lockfile-audit.md)): targets `decode_path`, `rewrite_html`, `host_header` and `change_sequence` (`fuzz/fuzz_targets/`), each with committed seeds in `fuzz/seeds/<target>/`; properties and triage in [`security.md`](security.md#fuzzing) | `fuzz` (`cargo xtask fuzz <target> --time 60`; not in `check`); nightly in `.github/workflows/fuzz.yml`; `fuzz/Cargo.lock` audited by the `deny-fuzz` stage | in place (SEC-04, SEC-05) |
 | Miri and concurrency proofs | Undefined behaviour and synchronisation schedules | planned; scope in [ADR 0026](adr/0026-nightly-fuzz-miri-and-concurrency-proof-scope.md) | | TEST-09 |
-| Formal verify | Apalache on the Quint invariants (scheduled lane) | planned | `formal-verify` (not yet available) | FORMAL-10 |
+| Formal verify | Apalache bounded verification of the Quint invariants and a multi-seed simulation (scheduled lane, not in `check`) | `formal/*.qnt`; Apalache 0.62.1 pinned in `tools/versions.toml`, JVM 17 or newer, [ADR 0061](adr/0061-apalache-formal-verify-scheduled-lane.md) | `formal-verify-bounded`, `formal-verify-simulate` (`cargo xtask formal-verify`; `formal.yml` job `formal-verify`) | in place (FORMAL-10); baseline in [`formal-models.md`](formal-models.md) |
 
 Each `xtask` subcommand that is not yet available prints `not available yet` and names the task
 that introduces it.
@@ -231,12 +231,14 @@ signatures), which stay out of the ratio. It reuses `target/coverage/lcov.info` 
 measures again otherwise. In `check`, the `changed-lines` stage reads the report the `coverage`
 stage just wrote and fails rather than measure twice if it no longer matches
 ([ADR 0064](adr/0064-changed-line-gate-in-check.md)).
+`cargo xtask formal-verify` is the scheduled lane (not in `check`; `formal.yml`, nightly): it needs
+Node and Quint, a JVM 17 or newer, and the pinned Apalache release, and fails with the fix when one
+is missing ([ADR 0061](adr/0061-apalache-formal-verify-scheduled-lane.md)).
 
 Planned, printing `not available yet` until their task lands:
 
 ```bash
 cargo xtask mutation       # TEST-08
-cargo xtask formal-verify  # FORMAL-10
 cargo xtask release-check  # OPS-05
 ```
 

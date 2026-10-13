@@ -17,3 +17,4 @@ lcov.info
 .vscode/
 node_modules/
 tests/e2e/browser/test-results/
+_apalache-out/

@@ -307,10 +307,15 @@ module lifecycle {
     { state: s, res: r, inputs: [], effects: [], latest: [], ok: true }
 
   /// `Server::start_with` from `s`: `InStart`, then the outcomes until none is pending. Three
-  /// turns cover the longest start-up (bind, then watcher, then nothing).
+  /// turns cover the longest start-up (bind, then watcher, then nothing). The turns are
+  /// bound one by one, not nested as arguments: Apalache inlines a pure definition by
+  /// substituting its argument at every use, so three nested turns grow exponentially and
+  /// run it out of memory in `quint verify` (`cargo xtask formal-verify`, FORMAL-10).
   pure def startRun(s: LifecycleState, r: Resources, bindOk: bool, watcherOk: bool): Run = {
     val m0 = feedRun(runFrom(s, r), InStart)
-    startTurn(startTurn(startTurn(m0, bindOk, watcherOk), bindOk, watcherOk), bindOk, watcherOk)
+    val m1 = startTurn(m0, bindOk, watcherOk)
+    val m2 = startTurn(m1, bindOk, watcherOk)
+    startTurn(m2, bindOk, watcherOk)
   }
 
   /// `Server::stop`: `InStop` and its effects, then `InStopped` once nothing is awaited.

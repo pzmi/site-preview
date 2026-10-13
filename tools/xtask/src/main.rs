@@ -9,6 +9,7 @@ mod check;
 mod cli;
 mod conformance;
 mod coverage;
+mod formal_verify;
 mod fuzz;
 mod process;
 mod quick;
@@ -36,6 +37,7 @@ fn main() -> ExitCode {
             None => coverage::command(),
             Some(rev) => changed_lines::command(rev.as_deref()),
         },
+        Command::FormalVerify => formal_verify::run(),
         Command::Security => security::run(),
         Command::Fmt => run_fmt(),
         Command::Architecture { manifest_path } => architecture::run(manifest_path.as_deref()),

@@ -79,7 +79,7 @@ pub const SAMPLES: u32 = 1000;
 pub const MAX_STEPS: u32 = 25;
 
 /// The evaluator that comes from the lockfile (ADR 0052).
-const BACKEND: [&str; 2] = ["--backend", "typescript"];
+pub(crate) const BACKEND: [&str; 2] = ["--backend", "typescript"];
 
 /// One family of generated traces: a model sampled under one step relation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -227,13 +227,13 @@ pub fn run(typecheck_only: bool) -> i32 {
 }
 
 /// `formal/` in the repository.
-fn formal_dir() -> PathBuf {
+pub(crate) fn formal_dir() -> PathBuf {
     repo::root().join("formal")
 }
 
 /// The locally installed Quint, never one fetched from the registry: `--no` refuses to
 /// install, and `--` keeps npx from taking Quint's own flags (`--version`) as its own.
-fn quint(formal: &Path) -> Command {
+pub(crate) fn quint(formal: &Path) -> Command {
     let mut command = Command::new("npx");
     command
         .arg("--prefix")
@@ -244,7 +244,7 @@ fn quint(formal: &Path) -> Command {
 }
 
 /// The pinned Quint version from `tools/versions.toml`.
-fn pinned_quint() -> Result<String, String> {
+pub(crate) fn pinned_quint() -> Result<String, String> {
     tools::manifest()?
         .into_iter()
         .find(|t| t.name == "quint")
@@ -282,7 +282,7 @@ fn classify(probe: Option<(bool, &str)>, version: &str) -> Result<(), String> {
 }
 
 /// Fails with the D9 hint unless `formal/node_modules` holds the pinned Quint.
-fn require_quint(formal: &Path) -> Result<(), String> {
+pub(crate) fn require_quint(formal: &Path) -> Result<(), String> {
     let version = pinned_quint()?;
     let probe = quint(formal).arg("--version").output().ok().map(|o| {
         (
@@ -294,14 +294,14 @@ fn require_quint(formal: &Path) -> Result<(), String> {
 }
 
 /// Prints a finished command's output and returns whether it exited 0.
-fn echo(output: &Output) -> bool {
+pub(crate) fn echo(output: &Output) -> bool {
     print!("{}", String::from_utf8_lossy(&output.stdout));
     eprint!("{}", String::from_utf8_lossy(&output.stderr));
     output.status.success()
 }
 
 /// Runs `command`, reporting a failure to start it as a failed stage.
-fn output_of(mut command: Command, label: &str) -> Option<Output> {
+pub(crate) fn output_of(mut command: Command, label: &str) -> Option<Output> {
     match command.output() {
         Ok(output) => Some(output),
         Err(err) => {
@@ -327,7 +327,7 @@ fn models_in(dir: &Path) -> Result<Vec<String>, String> {
 }
 
 /// Prints `err` and returns the stage's failure code.
-fn fail(err: &str) -> i32 {
+pub(crate) fn fail(err: &str) -> i32 {
     eprintln!("xtask: {err}");
     1
 }
@@ -453,7 +453,7 @@ fn scenarios() -> i32 {
 
 /// The run's seed, for simulation and generation alike: `QUINT_SEED` when set (to repeat a
 /// run), else a fresh one, chosen once per process.
-fn seed() -> &'static str {
+pub(crate) fn seed() -> &'static str {
     static SEED: OnceLock<String> = OnceLock::new();
     SEED.get_or_init(|| {
         std::env::var("QUINT_SEED")
@@ -548,9 +548,19 @@ fn simulate() -> i32 {
 /// Runs `work` over `items` on as many threads as the machine has cores (each Quint run is
 /// one Node process, mostly single-threaded), each thread taking the next item when it is
 /// free, and returns the results in item order.
-fn in_parallel<T: Sync, R: Send>(items: &[T], work: impl Fn(&T) -> R + Sync) -> Vec<R> {
+pub(crate) fn in_parallel<T: Sync, R: Send>(items: &[T], work: impl Fn(&T) -> R + Sync) -> Vec<R> {
+    in_parallel_up_to(usize::MAX, items, work)
+}
+
+/// [`in_parallel`] on at most `limit` threads (a JVM run is memory-bound, not core-bound).
+pub(crate) fn in_parallel_up_to<T: Sync, R: Send>(
+    limit: usize,
+    items: &[T],
+    work: impl Fn(&T) -> R + Sync,
+) -> Vec<R> {
     let width = std::thread::available_parallelism()
         .map_or(1, std::num::NonZeroUsize::get)
+        .min(limit.max(1))
         .min(items.len().max(1));
     let next = AtomicUsize::new(0);
     let done: Mutex<Vec<(usize, R)>> = Mutex::new(Vec::with_capacity(items.len()));
@@ -990,7 +1000,7 @@ fn generate() -> i32 {
 }
 
 /// The names in a model's `val allInvariants = and { ... }` block.
-fn all_invariants(text: &str) -> Option<Vec<String>> {
+pub(crate) fn all_invariants(text: &str) -> Option<Vec<String>> {
     let start = text.find("val allInvariants = and {")?;
     let body = &text[start..];
     let body = &body[body.find('{')? + 1..body.find('}')?];

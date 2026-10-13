@@ -217,6 +217,20 @@ pub const CATALOG: &[Check] = &[
         false,
     ),
     row(
+        "formal-verify-bounded",
+        "formal-scheduled",
+        "npx --prefix formal --no -- quint verify --step <relation> --invariants <all> --max-steps <depth> --apalache-version <pinned> formal/<model>.qnt",
+        "FORMAL-10",
+        false,
+    ),
+    row(
+        "formal-verify-simulate",
+        "formal-scheduled",
+        "npx --prefix formal --no -- quint run --backend typescript --step <relation> --invariants <all> --max-samples 5000 --max-steps 50 --seed <seed 1..3> formal/<model>.qnt",
+        "FORMAL-10",
+        false,
+    ),
+    row(
         "release-check",
         "release",
         "cargo xtask release-check",

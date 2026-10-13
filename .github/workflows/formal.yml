@@ -74,14 +74,58 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
-  # Placeholder for the scheduled deep lane: FORMAL-10 adds `cargo xtask formal-verify`
-  # (Apalache, counterexamples uploaded) and TEST-09 adds a Miri job. Until then the nightly
-  # run is the `conformance` job above with a fresh seed; this job checks nothing.
-  scheduled:
-    name: Scheduled formal lane (placeholder)
+  # The scheduled deep lane (foundation.md section 6.4, FORMAL-10): `quint verify` through the
+  # Apalache release pinned in tools/versions.toml (bounded model checking of every model's
+  # invariants) and a multi-seed simulation far larger than the pull-request one. It is not part
+  # of `cargo xtask check`. The hosted runner's default JDK (17 or newer) runs Apalache; Quint
+  # downloads the pinned release into ~/.quint on first use, which the cache below keeps. TEST-09
+  # adds its Miri job beside this one.
+  formal-verify:
+    name: Formal verification (Apalache)
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 120
     steps:
-      - name: Report what is not scheduled yet
-        run: echo "::notice::formal-verify (FORMAL-10) and Miri (TEST-09) are not scheduled yet; this job checks nothing"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install toolchain from rust-toolchain.toml
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - name: Cache cargo registry, build output and the Apalache release
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            ~/.quint
+            target
+          key: formal-verify-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'tools/versions.toml') }}
+          restore-keys: |
+            formal-verify-${{ runner.os }}-
+
+      # Quint is locked by formal/package-lock.json; npx never fetches it (ADR 0052).
+      - name: Install Quint
+        run: npm ci --prefix formal
+
+      - name: Show the JVM
+        run: java -version
+
+      # The base seed of the simulation is printed; QUINT_SEED=<seed> cargo xtask formal-verify
+      # repeats it. A missing JVM or Apalache fails here with what to install, never a skip.
+      - name: Verify
+        run: cargo xtask formal-verify
+
+      # The log of every run, Apalache's run directories with a counterexample as ITF and
+      # TLA+ when it found one, and the ITF trace of a failing simulation. Promote a useful one
+      # to formal/traces/regression/ (doc/formal-models.md, "Promoting a counterexample").
+      - name: Keep the counterexamples of a failed run
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: formal-verify-${{ github.run_id }}-${{ github.run_attempt }}
+          path: target/formal-verify/
+          if-no-files-found: warn
+          retention-days: 30

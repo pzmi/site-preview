@@ -87,8 +87,8 @@ Everything is read from the real code and projected into the model's terms:
 | reload | `drainedClientIsCurrent` | A client that handled every event is at the last state its connection announced |
 
 The reload model states its liveness separately: `reconnectObservesNewer` under `fairness`
-and `channelAvailable` (`liveness`). Simulation does not check it. FORMAL-10's `quint verify`
-lane is where it belongs.
+and `channelAvailable` (`liveness`). Simulation does not check it, and neither does the
+scheduled lane: see "Verification baseline" for what was tried.
 
 ### Scope: what is not modelled
 
@@ -135,6 +135,89 @@ Quint 0.33.0 is locked in `formal/package-lock.json` and runs with `--backend ty
 printed; `QUINT_SEED=<seed> cargo xtask conformance` repeats it. `.github/workflows/formal.yml`
 runs the same command on every push to `main` and every pull request, and nightly with a fresh seed. A
 failed run keeps `formal/traces/generated/` as an artifact.
+
+## The scheduled lane: `formal-verify`
+
+`cargo xtask formal-verify` is not part of `check` ([ADR 0061](adr/0061-apalache-formal-verify-scheduled-lane.md));
+the `formal-verify` job of `.github/workflows/formal.yml` runs it on the nightly schedule and on
+demand, and keeps `target/formal-verify/` (every run's log, Apalache's run directories with a
+counterexample as ITF and TLA+, and the ITF of a failing simulation) when it fails.
+
+| Stage | What it does |
+|:--|:--|
+| `formal-verify-bounded` | `quint verify` through Apalache 0.62.1 (the pin in `tools/versions.toml`) of every conjunct of `allInvariants`, per model and step relation, to the depth in `BOUNDED` |
+| `formal-verify-simulate` | `quint run` of the same invariants: 3 seeds derived from one printed base seed, 5000 traces of 50 steps per relation (the pull-request run samples 1000 of 25) |
+
+It needs Node and Quint as `conformance` does, a JVM of version 17 or newer and the Apalache
+release, which Quint downloads into `~/.quint/apalache-dist-0.62.1` on first use. A missing JVM
+or an Apalache that cannot be downloaded fails with the fix; a failure is a counterexample only
+when Quint prints `[violation]`, otherwise it is a tooling failure that verified nothing.
+`QUINT_SEED=<base> cargo xtask formal-verify` repeats the simulation. A counterexample is promoted
+as described below.
+
+## Verification baseline
+
+Measured with `cargo xtask formal-verify` on a shared 4-core, 16 GB sandbox that other jobs
+were loading (load average 9 to 16), Java OpenJDK 21.0.12, Quint 0.33.0, Apalache 0.62.1, base
+seed `0xf10`. Durations are Quint's own report and are an upper bound for a quiet machine.
+
+| Model | Step relation | Depth | Result | Duration |
+|:--|:--|--:|:--|--:|
+| lifecycle | `step` | 4 | no violation | 292 s |
+| lifecycle | `serverStep` | 2 | no violation | 228 s |
+| reload | `step` | 4 | no violation | 303 s |
+| watcher | `step` | 2 | no violation | 386 s |
+
+Every conjunct of the model's `allInvariants` held in every state reachable within the depth,
+for every choice of every nondeterministic value (the conjuncts of `allInvariants`: lifecycle 6,
+reload 7, watcher 5; Apalache splits the nested `and`s further). The whole bounded stage took 695 s with two runs at a time. The multi-seed
+simulation (seeds `0xf10`, `0x9e3779b97f4a8b25`, `0x3c6ef372fe95073a`; 5000 traces of 50 steps
+each, all five relations) found no violation either: 106 to 251 s per run, 638 s for the stage.
+No counterexample was found, so none was promoted.
+
+The depths are shallow on purpose: Apalache's search grows about tenfold per step on these
+models (reload: 24 s at 3 steps, 246 s at 4; watcher: 227 s at 1 step, 483 s at 2, over 600 s
+at 3; lifecycle `serverStep`: 6 minutes at 2 steps, over 10 at 3, because one step is a whole
+start-up of up to four machine transitions). The simulation is what reaches depth. A bound is
+raised only after its duration is measured here.
+
+What was found on the way, all in the tooling or the model's form and none in a property:
+
+- **Download.** Quint's fetch of the Apalache release from GitHub worked through the sandbox
+  proxy (the Rust evaluator's, which ADR 0052 avoids, was not tried). No mirror was needed.
+- **Stack.** On `lifecycle.qnt` Apalache stopped after its parser pass with an empty `error:`.
+  The cause is a JVM stack overflow in the translation of the nested `match` of `transition`;
+  `JVM_ARGS=-Xss64m` fixes it, and the xtask sets it.
+- **Inlining.** `startRun` passed three nested `startTurn` calls as arguments; Apalache
+  substitutes an argument at every use, so the term grew exponentially and ran a 3 GB heap
+  out of memory (about 8 minutes in). `lifecycle.qnt` now binds the turns with `val`, which
+  changes no behaviour (`formal-freshness` agrees with every committed trace).
+- **Search mode.** Checking the invariants once after each step
+  (`search.invariant.mode = after`, set by the xtask) took about a third of the default's time
+  at the same depth.
+- **`serverStepMostlyBound`** is not verified: it lists the bound start three more times to
+  re-weight sampling and reaches the same states as `serverStep`, but Apalache tries every
+  copy, and depth 2 had not finished after 33 minutes. It is simulated.
+- **Parallel runs** each need their own server port (the xtask picks a free one); two runs on
+  Quint's default port 8822 share or fight over one server.
+
+### Liveness: attempted, no result
+
+- `quint verify --temporal liveness` (Apalache): refused, `error: Handling fairness is not
+  supported yet!` (`weakFair` in `fairness`).
+- `--temporal reconnectObservesNewer` alone (Apalache), which is false without the fairness and
+  environment assumptions anyway: `error: Input error (see the manual): SubstRule: Variable
+  b_1671$1 is not assigned a value`, from the quantifier over browsers in the temporal formula.
+- `--backend tlc --temporal liveness` ran (the TLC bundled in the Apalache release) but its
+  state space does not close: the `stream` and history lists grow without bound, so after 6
+  breadth-first levels it held 2.4 million distinct states and was still growing (a first
+  attempt was killed by the memory limit after 3.6 minutes). It gave no verdict.
+
+So `reconnectObservesNewer` stays stated and argued in `reload.qnt` (its safety half,
+`drainedClientIsCurrent`, is an invariant and verified above), and is not checked by any
+lane. Checking it needs a bounded variant of the model (capped streams and history) and a
+fairness encoding Apalache accepts, or TLC on that variant; that is a model change for its own
+task.
 
 ## Promoting a counterexample
 

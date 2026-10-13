@@ -65,7 +65,7 @@ pub enum Command {
         #[arg(long, value_name = "ARTIFACT")]
         reproduce: Option<PathBuf>,
     },
-    /// Apalache and Kani deep lane.
+    /// Apalache bounded verification and multi-seed simulation of the Quint models.
     FormalVerify,
     /// Clean packaged artifact tests.
     ReleaseCheck,

@@ -63,7 +63,8 @@ This directory holds the decisions behind site-preview, one file per decision, i
 | [0058](0058-watcher-conformance-driver.md) | Watcher conformance driver: the coordinator in process, the environment from the trace | Proposed |
 | [0059](0059-conformance-negative-controls.md) | Conformance negative controls: faults behind the drivers' seams, a publish seam in the reload driver | Proposed |
 | [0060](0060-conformance-stage-and-trace-corpus.md) | The `conformance` stage in `check`: regression manifest and freshness, a generated-trace manifest, replay once per gate, `formal.yml` | Proposed |
-| [0063](0063-fuzz-crate-and-architecture-fuzz-only.md) | The fuzz crate: a separate workspace, a `fuzz_only` category and the `xtask fuzz` command | Proposed |
+| [0061](0061-apalache-formal-verify-scheduled-lane.md) | Apalache in a scheduled `formal-verify` lane: pinned release, raised JVM stack, invariants checked after each step, shallow bounded depths | Proposed |
 | [0062](0062-coverage-stage-scope-and-floors.md) | The `coverage` stage: workspace-wide LLVM line coverage including conformance and xtask, floors in `coverage-floor.toml` | Proposed |
+| [0063](0063-fuzz-crate-and-architecture-fuzz-only.md) | The fuzz crate: a separate workspace, a `fuzz_only` category and the `xtask fuzz` command | Proposed |
 | [0064](0064-changed-line-gate-in-check.md) | The changed-line gate: merge-base with `origin/main` else `HEAD~1`, a stamped LCOV report, the `changed-lines` stage in `check` | Proposed |
 | [0065](0065-fuzz-targets-beyond-the-domain-and-fuzz-lockfile-audit.md) | Fuzz targets beyond the domain (application, HTTP adapter) and the `deny-fuzz` audit of `fuzz/Cargo.lock` | Proposed |
