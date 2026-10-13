@@ -301,23 +301,49 @@ fn shipped_crates(root: &Path, target: &str) -> Result<BTreeSet<(String, String)
     Ok(shipped)
 }
 
+/// The arguments of the one network step before the notices: every crate of `Cargo.lock`.
+///
+/// `cargo metadata`, which `cargo about` runs, resolves the whole lockfile, while the release
+/// build downloads only the target's normal graph; on a cold registry cache `--offline` then
+/// fails. Fetching first keeps the generator offline and deterministic, and this is the only step
+/// that touches the network (`should_fetch_the_lockfile_before_generating_offline_when_notices_are_made`).
+fn fetch_args() -> Vec<&'static str> {
+    vec!["fetch", "--locked"]
+}
+
+/// The arguments of `cargo about generate` for `target`.
+fn generate_args(target: &str) -> Vec<&str> {
+    vec![
+        "about",
+        "generate",
+        "--locked",
+        "--fail",
+        "--offline",
+        "--manifest-path",
+        "crates/preview-cli/Cargo.toml",
+        "--config",
+        "about.toml",
+        "--target",
+        target,
+        "about.hbs",
+    ]
+}
+
 /// The notices `cargo about` generates for `target`, from `about.toml` and `about.hbs`.
 fn generate_notices(root: &Path, target: &str) -> Result<String, String> {
+    let fetched = Command::new("cargo")
+        .args(fetch_args())
+        .current_dir(root)
+        .output()
+        .map_err(|e| format!("cannot run cargo fetch: {e}"))?;
+    if !fetched.status.success() {
+        return Err(format!(
+            "cargo fetch failed: {}",
+            String::from_utf8_lossy(&fetched.stderr).trim()
+        ));
+    }
     let output = Command::new("cargo")
-        .args([
-            "about",
-            "generate",
-            "--locked",
-            "--fail",
-            "--offline",
-            "--manifest-path",
-            "crates/preview-cli/Cargo.toml",
-            "--config",
-            "about.toml",
-            "--target",
-            target,
-            "about.hbs",
-        ])
+        .args(generate_args(target))
         .current_dir(root)
         .output()
         .map_err(|e| format!("cannot run cargo about: {e}"))?;
@@ -777,6 +803,20 @@ fn parse_response(response: &[u8]) -> Result<(u16, Vec<u8>), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn should_fetch_the_lockfile_before_generating_offline_when_notices_are_made() {
+        // given
+        let fetch = fetch_args();
+
+        // when
+        let generate = generate_args("x86_64-unknown-linux-musl");
+
+        // then
+        assert_eq!(fetch, ["fetch", "--locked"]);
+        assert!(generate.contains(&"--offline") && generate.contains(&"--locked"));
+        assert_eq!(&generate[..2], ["about", "generate"]);
+    }
 
     fn set(items: &[(&str, &str)]) -> BTreeSet<(String, String)> {
         items
