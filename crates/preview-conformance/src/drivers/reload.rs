@@ -13,7 +13,7 @@
 //! | `connect(b)` | `GET /__site_preview/events` through the router; the response must be `200`, and its first event is polled at once |
 //! | `send(b)` | poll `b`'s body once, without waiting: the event it yields, if any |
 //! | `disconnect(b)`, `userReload(b)` | drop `b`'s body |
-//! | `receive(b, applied)` | the client's (D16): drop `b`'s body when the model's client reloads (its page is `Navigating` after the step), else nothing |
+//! | `receive(b, applied)` | the client's (D16): drop `b`'s body when the model's client reloads (its page is `Navigating` after the step, the one model path the driver reads, [`ReloadDriver::MODEL_READS`]), else nothing |
 //! | `navigate(b)` | the client's: nothing reaches the server (a navigating page has no stream) |
 //!
 //! A body is polled only at the model's `connect`, `send` and `stopServer`, never between
@@ -29,7 +29,9 @@
 //!   the value a new subscription reads ([`preview_application::StateSubscription::initial`]).
 //! - `streams`: per open connection, every event its body yielded, parsed from the wire
 //!   (`event:`, `id:` and the JSON `data:`): name, instance, revision, the set of the
-//!   `changes` kinds and `full`. A connection whose body ended or was dropped is absent.
+//!   `changes` kinds and `full`; a frame holding more than one event is malformed. A
+//!   connection whose body ended or was dropped is absent; a body that fails is a
+//!   [`DriverError::Refused`], never an ended connection.
 //!
 //! Instances are compared by their order of creation: the real ids are opaque strings, the
 //! model numbers them 1, 2, ... (an id the driver never created observes as instance 0).
@@ -61,7 +63,7 @@ use tokio::runtime::{Builder, Runtime};
 use tower::ServiceExt;
 
 use crate::itf::{State, Value};
-use crate::replay::{Driver, DriverError, Params, ProjectionError};
+use crate::replay::{Driver, DriverError, ModelView, Params, ProjectionError};
 
 /// The event stream's path (plan.md section 7.2).
 const EVENTS: &str = "/__site_preview/events";
@@ -213,8 +215,10 @@ enum Polled {
     Event(String),
     /// Nothing is ready.
     Pending,
-    /// The stream ended (or failed).
+    /// The stream ended.
     Ended,
+    /// The body failed: an error, not an end.
+    Failed(String),
 }
 
 /// Drives the real [`ReloadState`] and SSE handler from the reload model's `step` actions.
@@ -309,13 +313,14 @@ impl ReloadDriver {
 
     /// Fires the shutdown switch, then polls every open body once: a body that ends is a
     /// closed connection; one that yields an event or nothing stays open, as observed.
-    fn stop(&mut self) {
+    fn stop(&mut self) -> Result<(), DriverError> {
         self.shutdown.trigger();
+        self.up = false;
         let names: Vec<String> = self.connections.keys().cloned().collect();
         for name in names {
-            self.poll_into(&name);
+            self.poll_into(&name)?;
         }
-        self.up = false;
+        Ok(())
     }
 
     fn publish(&mut self, kinds: &BTreeSet<Kind>, reason: bool) -> Result<(), DriverError> {
@@ -376,15 +381,19 @@ impl ReloadDriver {
                 received: Vec::new(),
             },
         );
-        self.poll_into(browser);
-        Ok(())
+        self.poll_into(browser)
     }
 
     /// Polls `browser`'s body once and records what it gave: an event is appended, an ended
     /// body closes the connection, nothing ready changes nothing.
-    fn poll_into(&mut self, browser: &str) {
+    ///
+    /// # Errors
+    ///
+    /// [`DriverError::Refused`] when the body fails: the real handler's stream never errors,
+    /// and a failure is not the clean end the model's close is.
+    fn poll_into(&mut self, browser: &str) -> Result<(), DriverError> {
         let Some(connection) = self.connections.get_mut(browser) else {
-            return;
+            return Ok(());
         };
         match poll_once(&self.runtime, &mut connection.body) {
             Polled::Event(text) => {
@@ -395,7 +404,13 @@ impl ReloadDriver {
             Polled::Ended => {
                 self.connections.remove(browser);
             }
+            Polled::Failed(error) => {
+                return Err(DriverError::Refused(format!(
+                    "{browser}'s event stream failed: {error}"
+                )));
+            }
         }
+        Ok(())
     }
 
     fn send(&mut self, browser: &str) -> Result<(), DriverError> {
@@ -404,8 +419,7 @@ impl ReloadDriver {
                 "{browser} has no open stream"
             )));
         }
-        self.poll_into(browser);
-        Ok(())
+        self.poll_into(browser)
     }
 
     /// The instance's position in creation order, from 1; 0 for an unknown id.
@@ -426,6 +440,9 @@ impl Default for ReloadDriver {
 impl Driver for ReloadDriver {
     type Obs = ReloadObs;
 
+    /// Only each browser's page: whether its client reloaded (D16, ADR 0070).
+    const MODEL_READS: &'static [&'static str] = &["browsers.*.doc"];
+
     fn apply(&mut self, action: &str, params: &Params) -> Result<(), DriverError> {
         match action {
             "init" => self.reset(),
@@ -436,7 +453,7 @@ impl Driver for ReloadDriver {
                 };
                 self.publish(&kinds(params)?, reason)?;
             }
-            "stopServer" => self.stop(),
+            "stopServer" => self.stop()?,
             "startServer" => self.start(),
             "connect" => self.connect(params.str("b")?)?,
             "send" => self.send(params.str("b")?)?,
@@ -459,7 +476,7 @@ impl Driver for ReloadDriver {
         &mut self,
         action: &str,
         params: &Params,
-        model: &State,
+        model: &ModelView,
     ) -> Result<(), DriverError> {
         self.apply(action, params)?;
         if action == "receive" {
@@ -521,21 +538,12 @@ fn kinds(params: &Params) -> Result<BTreeSet<Kind>, DriverError> {
 }
 
 /// Whether the model's client for `browser` is navigating after the step: it reloaded.
-fn client_navigated(model: &State, browser: &str) -> Result<bool, DriverError> {
-    let doc = model
-        .var("browsers")
-        .and_then(|browsers| map_get(browsers, browser))
-        .and_then(|b| b.field("doc"))
-        .and_then(Value::tag)
-        .ok_or_else(|| DriverError::Refused(format!("the model has no browsers[{browser}].doc")))?;
-    Ok(doc == "Navigating")
-}
-
-fn map_get<'v>(map: &'v Value, key: &str) -> Option<&'v Value> {
-    match map {
-        Value::Map(entries) => entries.get(&Value::Str(key.to_owned())),
-        _ => None,
-    }
+fn client_navigated(model: &ModelView, browser: &str) -> Result<bool, DriverError> {
+    let doc = model.read(&["browsers", browser, "doc"])?;
+    let tag = doc.tag().ok_or_else(|| {
+        DriverError::Refused(format!("the model's browsers.{browser}.doc is {doc}"))
+    })?;
+    Ok(tag == "Navigating")
 }
 
 /// Polls `body` once inside `runtime`, without waiting, skipping keepalive comments.
@@ -544,7 +552,8 @@ fn poll_once(runtime: &Runtime, body: &mut Body) -> Polled {
         loop {
             let polled = match Pin::new(&mut *body).poll_frame(cx) {
                 Poll::Pending => Polled::Pending,
-                Poll::Ready(None | Some(Err(_))) => Polled::Ended,
+                Poll::Ready(None) => Polled::Ended,
+                Poll::Ready(Some(Err(error))) => Polled::Failed(error.to_string()),
                 Poll::Ready(Some(Ok(frame))) => {
                     let Ok(data) = frame.into_data() else {
                         continue;
@@ -566,7 +575,9 @@ fn poll_once(runtime: &Runtime, body: &mut Body) -> Polled {
 
 /// Reads one SSE frame: `event:`, `id:` and a JSON `data:` with `instance_id`, `revision` and,
 /// for a `reload`, `changes` (each with a `kind`) and `full`. Anything else is
-/// [`EventName::Malformed`], so the comparison fails with the frame in the report.
+/// [`EventName::Malformed`], so the comparison fails with the frame in the report; so is a
+/// frame that holds more than one event (blocks separated by a blank line), which a handler
+/// coalescing events into one write would send, and reading only its first would hide.
 fn parse(text: &str, instances: &[String]) -> Event {
     let malformed = || Event {
         name: EventName::Malformed(text.to_owned()),
@@ -577,6 +588,17 @@ fn parse(text: &str, instances: &[String]) -> Event {
         kinds: BTreeSet::new(),
         full: false,
     };
+    let events = text
+        .split("\n\n")
+        .filter(|block| {
+            block
+                .lines()
+                .any(|line| !line.is_empty() && !line.starts_with(':'))
+        })
+        .count();
+    if events != 1 {
+        return malformed();
+    }
     let field = |name: &str| {
         text.lines()
             .find_map(|line| line.strip_prefix(name)?.strip_prefix(": "))
@@ -733,4 +755,87 @@ fn model_event(value: &Value) -> Result<Event, ProjectionError> {
             .and_then(Value::as_bool)
             .ok_or_else(|| ProjectionError::missing("event.full"))?,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::routing::get;
+    use futures_util::stream;
+
+    use super::*;
+
+    const ID: &str = "instance-7-1";
+
+    fn frame(revision: u64) -> String {
+        format!(
+            "event: state\nid: {revision}\ndata: {{\"instance_id\":\"{ID}\",\"revision\":{revision}}}\n\n"
+        )
+    }
+
+    #[test]
+    fn should_read_the_event_when_frame_holds_one() {
+        // given
+        let text = frame(3);
+
+        // when
+        let event = parse(&text, &[ID.to_owned()]);
+
+        // then
+        assert_eq!(event.name, EventName::State);
+        assert_eq!(
+            event.at,
+            Stamp {
+                instance: 1,
+                revision: 3
+            }
+        );
+    }
+
+    #[test]
+    fn should_refuse_the_frame_when_it_holds_more_than_one_event() {
+        // given: two events coalesced into one write, a keepalive comment between them
+        let text = format!("{}: keepalive\n\n{}", frame(1), frame(2));
+
+        // when
+        let event = parse(&text, &[ID.to_owned()]);
+
+        // then
+        assert_eq!(event.name, EventName::Malformed(text));
+    }
+
+    /// A router whose event stream sends one frame, then fails.
+    fn failing_router(state: AppState) -> Router {
+        Router::new()
+            .route(
+                EVENTS,
+                get(|| async {
+                    let frames = stream::iter([
+                        Ok::<_, std::io::Error>(frame(0)),
+                        Err(std::io::Error::other("the stream broke")),
+                    ]);
+                    Body::from_stream(frames)
+                }),
+            )
+            .with_state(state)
+    }
+
+    #[test]
+    fn should_refuse_the_stop_when_an_open_body_fails() {
+        // given: b1 connected and read the baseline
+        let mut driver = ReloadDriver::with_router(failing_router);
+        driver.apply("init", &Params::default()).expect("init");
+        let b1 = Params::new(BTreeMap::from([("b".to_owned(), Value::Str("b1".into()))]));
+        driver.apply("connect", &b1).expect("connected");
+
+        // when
+        let stopped = driver.apply("stopServer", &Params::default());
+
+        // then: a failure, not the clean end of a closed connection
+        assert_eq!(
+            stopped,
+            Err(DriverError::Refused(
+                "b1's event stream failed: the stream broke".to_owned()
+            ))
+        );
+    }
 }

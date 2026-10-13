@@ -1015,6 +1015,8 @@ pub(crate) fn all_invariants(text: &str) -> Option<Vec<String>> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
 
     #[test]
@@ -1625,5 +1627,199 @@ mod tests {
 
         // then
         assert_eq!(results, (0..20).map(|n| n * 2).collect::<Vec<_>>());
+    }
+
+    /// The text inside the parenthesis that opens at byte `open` of `text`, and the byte after
+    /// its close.
+    fn parenthesised(text: &str, open: usize) -> (&str, usize) {
+        let mut depth = 0_usize;
+        for (i, c) in text[open..].char_indices() {
+            match c {
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return (&text[open + 1..open + i], open + i + 1);
+                    }
+                }
+                _ => {}
+            }
+        }
+        panic!("unbalanced parentheses in {}", &text[open..]);
+    }
+
+    /// `text` without `//` comments and without any whitespace.
+    fn squeezed(text: &str) -> String {
+        text.lines()
+            .map(|line| line.split("//").next().unwrap_or(""))
+            .collect::<String>()
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect()
+    }
+
+    /// The steps of each `run` of a scenarios file, by `module::run`: its initial action, then
+    /// the argument of each `.then(...)` but a `.fail()` one (a step the model must refuse,
+    /// which takes no state), without whitespace.
+    fn run_steps(text: &str) -> BTreeMap<String, (String, Vec<String>)> {
+        let mut runs = BTreeMap::new();
+        let mut module = String::new();
+        let mut current: Option<(String, String)> = None;
+        let mut finish = |current: &mut Option<(String, String)>| {
+            if let Some((name, body)) = current.take() {
+                let body = squeezed(&body);
+                let first = body.find(".then(").unwrap_or(body.len());
+                let mut steps = Vec::new();
+                let mut at = first;
+                while let Some(found) = body[at..].find(".then(").map(|i| at + i) {
+                    let (step, next) = parenthesised(&body, found + ".then".len());
+                    if !step.ends_with(".fail()") {
+                        steps.push(step.to_owned());
+                    }
+                    at = next;
+                    // `.expect(...)` between steps is skipped whole.
+                    while body[at..].starts_with(".expect(") {
+                        at = parenthesised(&body, at + ".expect".len()).1;
+                    }
+                }
+                runs.insert(name, (body[..first].to_owned(), steps));
+            }
+        };
+        for line in text.lines() {
+            let trimmed = line.trim_start();
+            if let Some(rest) = trimmed.strip_prefix("module ") {
+                finish(&mut current);
+                module = rest.split_whitespace().next().unwrap_or("").to_owned();
+            } else if let Some(rest) = trimmed.strip_prefix("run ") {
+                finish(&mut current);
+                let (name, body) = rest.split_once('=').expect("run <name> =");
+                current = Some((format!("{module}::{}", name.trim()), body.to_owned()));
+            } else if line.starts_with('}')
+                || ["pure ", "def ", "val ", "action ", "var "]
+                    .iter()
+                    .any(|k| trimmed.starts_with(k))
+            {
+                finish(&mut current);
+            } else if let Some((_, body)) = current.as_mut() {
+                body.push_str(line);
+                body.push('\n');
+            }
+        }
+        finish(&mut current);
+        runs
+    }
+
+    /// The steps of each script of a `*_traces.qnt` file, by the `module::run` its doc comment
+    /// names: the action of each `at(k, ...)` in order, without whitespace, in the run's terms
+    /// (the model's qualifier dropped, and each wrapper that records picks named after the
+    /// action it wraps).
+    fn script_steps(file: &str, text: &str) -> BTreeMap<String, Vec<String>> {
+        let renames: &[(&str, &str)] = match file {
+            "lifecycle_traces.qnt" => &[("startServer(", "startServerWith(")],
+            "reload_traces.qnt" => &[("publish(", "publishWith("), ("receive(", "receiveWith(")],
+            _ => &[],
+        };
+        let mut scripts = BTreeMap::new();
+        let lines: Vec<&str> = text.lines().collect();
+        for (i, line) in lines.iter().enumerate() {
+            if !line.trim().starts_with("action ") || !line.trim().ends_with(" = any {") {
+                continue;
+            }
+            let Some(run) = lines[i - 1].split('`').nth(1) else {
+                continue;
+            };
+            let end = lines[i..]
+                .iter()
+                .position(|l| l.trim() == "}")
+                .map_or(lines.len(), |n| i + n);
+            let body = squeezed(&lines[i + 1..end].join("\n"));
+            let mut steps = Vec::new();
+            let mut at = 0;
+            while let Some(found) = body[at..].find("at(").map(|n| at + n) {
+                let (inside, next) = parenthesised(&body, found + "at".len());
+                let (_, action) = inside.split_once(',').expect("at(k, action)");
+                let mut action = action
+                    .replace("L::", "")
+                    .replace("R::", "")
+                    .replace("W::", "");
+                for (from, to) in renames {
+                    if action.starts_with(from) {
+                        action = action.replacen(from, to, 1);
+                    }
+                }
+                steps.push(action);
+                at = next;
+            }
+            scripts.insert(run.to_owned(), steps);
+        }
+        scripts
+    }
+
+    #[test]
+    fn should_take_each_runs_steps_in_order_when_its_script_is_read() {
+        // given
+        let formal = formal_dir();
+        let scenarios = std::fs::read_to_string(formal.join(SCENARIOS)).expect("scenarios");
+        let runs = run_steps(&scenarios);
+
+        // when: every script of every `*_traces.qnt` file, by the run it restates
+        let mut scripts = BTreeMap::new();
+        for file in models_in(&formal).expect("models") {
+            if file.ends_with("_traces.qnt") {
+                let text = std::fs::read_to_string(formal.join(&file)).expect("the scripts");
+                scripts.extend(script_steps(&file, &text));
+            }
+        }
+
+        // then: the same actions with the same arguments, in the same order
+        assert!(scripts.len() >= 24, "{scripts:?}");
+        for (run, steps) in &scripts {
+            let (initial, expected) = runs
+                .get(run)
+                .unwrap_or_else(|| panic!("{run} has no run in {SCENARIOS}"));
+            assert_eq!(steps, expected, "{run} (from {initial})");
+        }
+    }
+
+    #[test]
+    fn should_skip_expectations_and_refused_steps_when_runs_are_read() {
+        // given
+        let text = "module m {\n  run r =\n    initWith(false) // start\n      .then(a(1, f(2)))\n      .expect(and { x, y.then(z) })\n      .then(b.fail())\n      .then(c)\n  pure def d = 1\n}\n";
+
+        // when
+        let runs = run_steps(text);
+
+        // then
+        assert_eq!(
+            runs,
+            BTreeMap::from([(
+                "m::r".to_owned(),
+                (
+                    "initWith(false)".to_owned(),
+                    vec!["a(1,f(2))".to_owned(), "c".to_owned()]
+                )
+            )])
+        );
+    }
+
+    #[test]
+    fn should_name_scripts_steps_in_the_runs_terms_when_scripts_are_read() {
+        // given
+        let text = "  /// `reloadScenarios::x`: 2 steps.\n  action x = any {\n    at(0, publish(Set(R::Css), false)),\n    at(1, receive(B, true)),\n  }\n";
+
+        // when
+        let scripts = script_steps("reload_traces.qnt", text);
+
+        // then
+        assert_eq!(
+            scripts,
+            BTreeMap::from([(
+                "reloadScenarios::x".to_owned(),
+                vec![
+                    "publishWith(Set(Css),false)".to_owned(),
+                    "receiveWith(B,true)".to_owned()
+                ]
+            )])
+        );
     }
 }

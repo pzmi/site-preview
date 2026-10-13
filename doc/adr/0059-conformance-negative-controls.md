@@ -4,7 +4,10 @@ Date: 2026-10-12
 
 ## Status
 
-Proposed (planner default — owner may override)
+Proposed (planner default — owner may override). Amended by ADR 0060 (the controls run in
+the `conformance-controls` stage, not in `unit-tests`) and by ADR 0070 (three lifecycle
+controls and a shutdown control; the claim narrowed to the faulted fields, with every projected
+field held by `field_sensitivity.rs`).
 
 ## Context
 
@@ -58,11 +61,17 @@ ADR 0056 to ADR 0058 already have seams for two of them (`ReloadDriver::with_rou
 | dropped overflow | `watcher-overflowRescan` | 5 | `receive` | not dirty, no reconcile |
 | no rescan flag | `watcher-overflowRescan` | 9 | `settle` | `published.rescan` false |
 | unmarked recovery | `watcher-recoveryAfterWatchLimit` | 14 | `settle` | `published.full` false |
+| `StreamOutlivesShutdown` (ADR 0070) | `lifecycle-doubleStop` | 3 | `stopServer` | `stopped` `DrainTimedOut` |
+| `TaskOutlivesStop` (ADR 0070) | `lifecycle-doubleStop` | 3 | `stopServer` | `tasks_alive` true |
+| `AnswersAfterStop` (ADR 0070) | `lifecycle-startServeStop` | 5 | `request` | `response` `Answered` |
+| shutdown ignored (ADR 0070) | `reload-restartSamePort` | 4 | `stopServer` | `b1`'s stream still open |
 
 ## Consequences
 
-- A driver that stops comparing (a constant `observe`, a projection that drops a field)
-  fails a control, in the `unit-tests` stage.
+- A driver that stops comparing a field a control faults (a constant `observe`, a projection
+  that drops the field) fails that control, in the `conformance-controls` stage (ADR 0060).
+  The controls do not fault every field; ADR 0070's `field_sensitivity.rs` holds each
+  projected field to the comparison from the model's side.
 - `NonMonotonicReloadState` swaps the channel, so connections opened before the swap watch
   the old one; the control's catch is at the publish step, before any stream is polled.
 - A change to a named trace that moves a catch point changes this table and the control in

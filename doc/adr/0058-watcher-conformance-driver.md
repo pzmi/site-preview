@@ -4,7 +4,10 @@ Date: 2026-10-12
 
 ## Status
 
-Proposed (planner default — owner may override)
+Proposed (planner default — owner may override). Amended by ADR 0070: the driver runs
+composition's `WatchDecisions`, the pipeline's own synchronous decision step, instead of
+restating it; a refused readiness is a divergence; the claim that the lifecycle driver covers
+the pipeline is withdrawn.
 
 ## Context
 
@@ -29,11 +32,12 @@ and its reconcile (ADR 0050), and the pipeline task between them (ADR 0049).
   `ChangeCoordinator` (its `Debouncer`, `classify`, `ChangeSet` and `WatcherHealth`)
   publishing to a real `ReloadState`, on a `FakeClock` where one model tick is 75 ms (the
   model's window is two ticks, the debounce window 150 ms). The driver plays the pipeline's
-  part as `WatchPipeline` does it: a batch to `receive`, a due deadline to `settle`, a
-  reconcile when the outcome asks for it (`Full` for an overflow), a full reconcile after a
-  rescan revision unless one ran since the previous revision, and the reconcile's outcome as
-  `watcher_reconciled(dirs, now)` (readiness) or `watcher_failed(RegistrationFailed)` (a new
-  problem). The start-up report is `watcher_ready`.
+  part through the pipeline's own decision step (`WatchDecisions`, ADR 0070): a batch to
+  `receive`, a due deadline to `settle`, a reconcile when the outcome asks for it (`Full` for
+  an overflow), a full reconcile after a rescan revision unless one ran since the previous
+  revision, and the reconcile's outcome as `watcher_reconciled(dirs, now)` (readiness) or
+  `watcher_failed(RegistrationFailed)` (a new problem). The start-up report is
+  `watcher_ready`.
 - **The environment comes from the trace.** `WatcherDriver::new(&trace)` decodes each
   state's `src` and `fs` (the bridge's channel and flags, the watches, the site) and nothing
   else. A step starts from the previous state's environment: `receive(k, capped)` hands the
@@ -66,10 +70,13 @@ and its reconcile (ADR 0050), and the pipeline task between them (ADR 0049).
   are checked against the model after every step; a leading-edge debouncer, a dropped
   overflow, an overflow without a rescan and the recovery without a full reload (ADR 0054)
   each diverge at the step that shows them.
-- The adapter, the bridge and the pipeline task are not under test here: the driver restates
-  the bridge's `next` order and the reconcile's report (a few lines each), and the pipeline's
-  priorities are taken from the model's schedule. Their own tests (ADR 0048 to ADR 0050) and
-  the lifecycle driver over the real `Server` cover them; a driver over the native watcher
-  would need the seams above and would make the OS's timing part of the comparison.
+- The adapter, the bridge and the pipeline task's async shell are not under test here: the
+  driver restates the bridge's `next` order and the reconcile's report (a few lines each),
+  and the pipeline's priorities (cancellation, then the deadline, then a batch) are taken
+  from the model's schedule. Their own tests (ADR 0048 to ADR 0050, composition's
+  `watch_pipeline` tests) cover them; the lifecycle driver does not (its observation has no
+  revision, health or reconcile). A driver over the native watcher would need the seams above
+  and would make the OS's timing part of the comparison. Since ADR 0070 the pipeline's
+  decisions themselves are the shared `WatchDecisions`, which the driver runs.
 - A script and its run can drift; FORMAL-09's freshness check regenerates them with their
   seed, and a change to a run changes its script in the same commit.

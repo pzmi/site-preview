@@ -9,10 +9,10 @@
 //!   directly, fresh ones from the locked Quint. The seed is printed, and `QUINT_SEED=<seed>`
 //!   repeats the run.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use preview_conformance::drivers::watcher::{WatcherDriver, project};
-use preview_conformance::generate::{Family, formal_dir};
+use preview_conformance::generate::{Family, formal_dir, regression};
 use preview_conformance::{Cause, Divergence, DriverError, Trace, replay};
 
 /// The named scenarios of `watcherScenarios`, each scripted in `watcher_traces.qnt`.
@@ -32,9 +32,6 @@ const NAMED: [&str; 14] = [
     "startupFailureBeforeOverflow",
     "startupRegistrationFailure",
 ];
-
-/// The regression traces' recorded seed (the scripts are deterministic).
-const REGRESSION_SEED: &str = "0x5ce1";
 
 /// Foundation.md section 6.4's initial budget: about 30 traces of 25 steps per model.
 const GENERATED: Family<'static> = Family {
@@ -71,11 +68,9 @@ fn replay_trace(trace: &Trace) -> Result<(), Box<Divergence>> {
     replay(trace, &mut driver, project)
 }
 
-/// Replays the trace at `path`.
-fn replay_file(path: &Path, seed: &str) -> Result<(), Box<Divergence>> {
-    let trace = Trace::load(path)
-        .unwrap_or_else(|err| panic!("{}: {err}", path.display()))
-        .with_seed(seed);
+/// Replays the committed trace `watcher-<name>`, with its manifest's seed and length.
+fn replay_named(name: &str) -> Result<(), Box<Divergence>> {
+    let trace = regression(&format!("watcher-{name}")).unwrap_or_else(|err| panic!("{err}"));
     replay_trace(&trace)
 }
 
@@ -98,10 +93,7 @@ fn should_replay_with_zero_divergence_when_trace_is_a_named_scenario() {
     assert_eq!(names, NAMED, "the committed named watcher traces");
 
     // when: each replays, every step compared
-    let outcomes: Vec<_> = traces
-        .iter()
-        .map(|path| replay_file(path, REGRESSION_SEED))
-        .collect();
+    let outcomes: Vec<_> = names.iter().map(|name| replay_named(name)).collect();
 
     // then
     assert_no_divergence(outcomes);
@@ -110,11 +102,11 @@ fn should_replay_with_zero_divergence_when_trace_is_a_named_scenario() {
 #[test]
 fn should_replay_with_zero_divergence_when_traces_are_generated_with_a_seed() {
     // given
-    let (seed, traces) = GENERATED.traces().unwrap_or_else(|err| panic!("{err}"));
+    let (seed, traces) = GENERATED.load().unwrap_or_else(|err| panic!("{err}"));
     println!("watcher generated traces: {}", GENERATED.describe(&seed));
 
     // when
-    let outcomes: Vec<_> = traces.iter().map(|path| replay_file(path, &seed)).collect();
+    let outcomes: Vec<_> = traces.iter().map(replay_trace).collect();
 
     // then
     assert_no_divergence(outcomes);

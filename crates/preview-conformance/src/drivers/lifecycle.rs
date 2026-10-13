@@ -7,12 +7,14 @@
 //! | `init` | drop every server, stream and socket; nothing has started |
 //! | `startServer(bindOk, watcherOk)` | [`Server::start`]; `bindOk` false binds a port this driver already holds, `watcherOk` false is [`Server::start_with_unavailable_watcher`] |
 //! | `refuseStart` | [`Server::start`] on a root that does not exist |
-//! | `stopServer` | [`Server::stop`] on the last server, if one started |
+//! | `stopServer` | [`Server::stop`] on the last server, if one started; then each held event stream is read to its end |
 //! | `request` | `GET /` over a new connection |
 //! | `openStream` | `GET /__site_preview/events`, held open |
 //!
 //! `startServerBound` (`serverStepMostlyBound`'s sampling of `startServer`) is the same
-//! stimulus. A restart builds a new [`Server`]: a stopped one has given up its runtime.
+//! stimulus. A restart builds a new [`Server`]: a stopped one has given up its runtime. The
+//! server is started through a [`StartServer`] function, the real one unless a negative control
+//! wraps it ([`LifecycleDriver::with_server`], FORMAL-10).
 //!
 //! The observation ([`LifecycleObs`]) is read from the real code after every step:
 //!
@@ -23,27 +25,37 @@
 //! - `listener_owned`: whether the last server's address still accepts a TCP connection.
 //!   Only a bound listener completes a handshake on loopback; a closed one is refused.
 //! - `tasks_alive`: [`Server::owns_tasks`], a task spawned and not yet joined.
+//! - `streams_open`: how many event streams this driver opened that have not ended: after a
+//!   stop, each held socket is read until the server closes it (end of file or a reset), so
+//!   a stream the shutdown left open is counted.
+//! - `stopped`: what [`Server::stop`] returned at a `stopServer` step, `None` at any other.
+//!   The model has no drain: every stop it takes ends its streams at `CloseStreams`, before
+//!   `JoinTasks`, so it is [`Stopped::Drained`]; a stop of no server drains nothing and is
+//!   `Drained` too. A `DrainTimedOut` is a connection the shutdown did not end in time, which
+//!   the model rules out.
 //! - `response`: what the last client action saw: a `200` head is `Answered`; a refused,
 //!   reset or other answer is `Unanswered`; a non-client action is `NoRequest`.
 //!
-//! The model's `res.listeners == 1`, `res.serveTasks + res.debounceTasks > 0`, `state` and
-//! `response` project to the same type ([`project`]). The drain itself, open-stream counts
-//! and the watcher's own resources are below this observation (the model's header).
+//! The model's `res.listeners == 1`, `res.serveTasks + res.debounceTasks > 0`, `res.streams`,
+//! `state`, `response` and the step's action project to the same type ([`project`]). The
+//! watcher's own resources are below this observation (the model's header).
 
-use std::io::{self, Read, Write};
+use std::io::{self, ErrorKind, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use preview_composition::{Ready, ServeConfig, Server, StartupError, StartupReporter, WarningSink};
+use preview_composition::{
+    Ready, ServeConfig, Server, StartupError, StartupReporter, Stopped, WarningSink,
+};
 use preview_domain::{InFlight, LifecycleState, StartPhase};
 
 use crate::itf::{State, Value};
 use crate::replay::{Driver, DriverError, Params, ProjectionError};
 
-/// How long a client waits for a response head that should come at once; only a bound on a
-/// failing run, never a timing oracle.
+/// How long a client waits to connect, for a response head that should come at once, or for
+/// a stopped server to close a stream; only a bound on a failing run, never a timing oracle.
 const REPLY_DEADLINE: Duration = Duration::from_secs(20);
 
 /// What a client saw for the last action (the model's `Response`).
@@ -66,8 +78,66 @@ pub struct LifecycleObs {
     pub listener_owned: bool,
     /// A serve or pipeline task is owned and not joined (`serveTasks + debounceTasks > 0`).
     pub tasks_alive: bool,
+    /// Event streams opened and not ended (`res.streams`).
+    pub streams_open: usize,
+    /// What the stop at this step returned; `None` when the step was not a stop.
+    pub stopped: Option<Stopped>,
     /// What the last client action saw.
     pub response: Response,
+}
+
+/// What the driver needs of a started server: [`Server`]'s queries and its stop. The seam a
+/// negative control wraps to put a fault behind the real server (FORMAL-10).
+pub trait ServerHandle {
+    /// [`Server::state`].
+    fn state(&self) -> LifecycleState;
+    /// [`Server::owns_tasks`].
+    fn owns_tasks(&self) -> bool;
+    /// [`Server::local_addr`].
+    fn local_addr(&self) -> SocketAddr;
+    /// [`Server::stop`].
+    fn stop(&mut self) -> Stopped;
+}
+
+impl ServerHandle for Server {
+    fn state(&self) -> LifecycleState {
+        Self::state(self)
+    }
+
+    fn owns_tasks(&self) -> bool {
+        Self::owns_tasks(self)
+    }
+
+    fn local_addr(&self) -> SocketAddr {
+        Self::local_addr(self)
+    }
+
+    fn stop(&mut self) -> Stopped {
+        Self::stop(self)
+    }
+}
+
+/// Starts a server for `config`: [`Server::start`] when `watcher_ok`, else
+/// [`Server::start_with_unavailable_watcher`] ([`start_server`]), or a negative control's
+/// wrapper around them.
+pub type StartServer =
+    fn(config: &ServeConfig, watcher_ok: bool) -> Result<Box<dyn ServerHandle>, StartupError>;
+
+/// The real start: [`Server::start`], or [`Server::start_with_unavailable_watcher`].
+///
+/// # Errors
+///
+/// As [`Server::start`].
+pub fn start_server(
+    config: &ServeConfig,
+    watcher_ok: bool,
+) -> Result<Box<dyn ServerHandle>, StartupError> {
+    let server = if watcher_ok {
+        Server::start(config, Box::new(Quiet), Arc::new(Quiet))?
+    } else {
+        Server::start_with_unavailable_watcher(config, Box::new(Quiet), Arc::new(Quiet))?
+    };
+    Ok(Box::new(server))
 }
 
 /// The server the driver started last, or what stood in for it.
@@ -75,7 +145,7 @@ enum Current {
     /// Nothing started, or the last start was refused before `Start`.
     Absent,
     /// A server that started; it may have been stopped since.
-    Started(Box<Server>),
+    Started(Box<dyn ServerHandle>),
     /// The last start failed to bind.
     BindFailed,
 }
@@ -84,9 +154,11 @@ enum Current {
 pub struct LifecycleDriver {
     /// The site served; it holds an `index.html`.
     root: PathBuf,
+    start_server: StartServer,
     current: Current,
     response: Response,
-    /// The event streams opened and not yet ended by a stop.
+    stopped: Option<Stopped>,
+    /// The event streams opened and not yet seen to end.
     streams: Vec<TcpStream>,
 }
 
@@ -94,10 +166,17 @@ impl LifecycleDriver {
     /// A driver serving `root`, a directory with an `index.html`. Nothing is started until a
     /// trace's `init` and `startServer`.
     pub fn new(root: &Path) -> Self {
+        Self::with_server(root, start_server)
+    }
+
+    /// A driver whose servers `start` starts.
+    pub fn with_server(root: &Path, start: StartServer) -> Self {
         Self {
             root: root.to_path_buf(),
+            start_server: start,
             current: Current::Absent,
             response: Response::NoRequest,
+            stopped: None,
             streams: Vec::new(),
         }
     }
@@ -125,14 +204,10 @@ impl LifecycleDriver {
                 .port();
             Some(blocker)
         };
-        let started = if watcher_ok {
-            Server::start(&config, Box::new(Quiet), Arc::new(Quiet))
-        } else {
-            Server::start_with_unavailable_watcher(&config, Box::new(Quiet), Arc::new(Quiet))
-        };
+        let started = (self.start_server)(&config, watcher_ok);
         drop(occupied);
         self.current = match started {
-            Ok(server) => Current::Started(Box::new(server)),
+            Ok(server) => Current::Started(server),
             Err(StartupError::Bind { .. }) => Current::BindFailed,
             Err(other) => return Err(DriverError::Refused(other.to_string())),
         };
@@ -142,20 +217,22 @@ impl LifecycleDriver {
     fn refuse_start(&mut self) -> Result<(), DriverError> {
         self.reset();
         let config = ServeConfig::new(self.root.join("missing-root"));
-        self.current = match Server::start(&config, Box::new(Quiet), Arc::new(Quiet)) {
-            Ok(server) => Current::Started(Box::new(server)),
+        self.current = match (self.start_server)(&config, true) {
+            Ok(server) => Current::Started(server),
             Err(StartupError::InvalidRoot(_)) => Current::Absent,
             Err(other) => return Err(DriverError::Refused(other.to_string())),
         };
         Ok(())
     }
 
+    /// Stops the last server, keeps what the stop returned, then reads each held stream until
+    /// the server closes it; a stream still open after [`REPLY_DEADLINE`] stays counted.
     fn stop(&mut self) {
-        if let Current::Started(server) = &mut self.current {
-            let _outcome = server.stop();
-        }
-        // The stop ended them (`CloseStreams`); the sockets are only closed here.
-        self.streams.clear();
+        self.stopped = Some(match &mut self.current {
+            Current::Started(server) => server.stop(),
+            Current::Absent | Current::BindFailed => Stopped::Drained,
+        });
+        self.streams.retain_mut(|stream| !ended(stream));
     }
 
     /// The address of the last server that started, stopped or not: where `listener_owned`
@@ -198,6 +275,7 @@ impl Driver for LifecycleDriver {
 
     fn apply(&mut self, action: &str, params: &Params) -> Result<(), DriverError> {
         self.response = Response::NoRequest;
+        self.stopped = None;
         match action {
             "init" => self.reset(),
             "startServer" | "startServerBound" => {
@@ -220,11 +298,35 @@ impl Driver for LifecycleDriver {
         };
         LifecycleObs {
             state,
-            listener_owned: self
-                .address()
-                .is_some_and(|addr| TcpStream::connect(addr).is_ok()),
+            listener_owned: self.address().is_some_and(accepts),
             tasks_alive,
+            streams_open: self.streams.len(),
+            stopped: self.stopped,
             response: self.response,
+        }
+    }
+}
+
+/// Whether a listener at `addr` completes a handshake within [`REPLY_DEADLINE`].
+fn accepts(addr: SocketAddr) -> bool {
+    TcpStream::connect_timeout(&addr, REPLY_DEADLINE).is_ok()
+}
+
+/// Reads `stream` until the server ends it: end of file or a reset is an end; a stream not
+/// ended within [`REPLY_DEADLINE`] (keepalive comments do not extend it) is still open.
+fn ended(stream: &mut TcpStream) -> bool {
+    let deadline = Instant::now() + REPLY_DEADLINE;
+    let mut buffer = [0_u8; 1024];
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() || stream.set_read_timeout(Some(left)).is_err() {
+            return false;
+        }
+        match stream.read(&mut buffer) {
+            Ok(0) => return true,
+            Ok(_) => {}
+            Err(e) if e.kind() == ErrorKind::Interrupted => {}
+            Err(e) => return !matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut),
         }
     }
 }
@@ -232,7 +334,7 @@ impl Driver for LifecycleDriver {
 /// Sends `head` on a new connection to `addr` and reads the response head: whether it is a
 /// `200`, and the connection (an event stream stays open on it).
 fn send(addr: SocketAddr, head: &str) -> io::Result<(bool, TcpStream)> {
-    let mut stream = TcpStream::connect(addr)?;
+    let mut stream = TcpStream::connect_timeout(&addr, REPLY_DEADLINE)?;
     stream.set_read_timeout(Some(REPLY_DEADLINE))?;
     stream.write_all(head.as_bytes())?;
     let mut seen = Vec::new();
@@ -268,6 +370,10 @@ pub fn project(state: &State) -> Result<LifecycleObs, ProjectionError> {
         state: lifecycle_state(var("state")?)?,
         listener_owned: count("listeners")? == 1,
         tasks_alive: count("serveTasks")? + count("debounceTasks")? > 0,
+        streams_open: usize::try_from(count("streams")?)
+            .map_err(|_| ProjectionError::missing("res.streams"))?,
+        // The model has no drain: each of its stops is a drained one (the module's header).
+        stopped: (state.action_taken() == Some("stopServer")).then_some(Stopped::Drained),
         response: match var("response")?.tag() {
             Some("NoRequest") => Response::NoRequest,
             Some("Answered") => Response::Answered,

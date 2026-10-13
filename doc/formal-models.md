@@ -16,7 +16,8 @@ path starts in the model** (foundation.md section 6.2):
 2. Change the Quint model and its invariants. Keep safety and liveness separate, and never
    remove an invariant to get a green run.
 3. Add or change the named runs in `formal/scenarios.qnt`, and the matching script in
-   `formal/<model>_traces.qnt` in the same commit.
+   `formal/<model>_traces.qnt` in the same commit (an xtask unit test compares each script
+   with its run, action by action).
 4. Run `cargo xtask conformance` and check that the simulation passes and the changed traces
    are stale.
 5. Change the conformance driver's stimulus map and observation (`crates/preview-conformance`).
@@ -30,7 +31,7 @@ without a model change fails it too, wherever the model observes the difference.
 | Model | Main module | Step relations | Driver | System under test |
 |:--|:--|:--|:--|:--|
 | `formal/lifecycle.qnt` | `lifecycle` | `step` (the domain machine), `serverStep` (the composition's `Server`), `serverStepMostlyBound` (the same, sampled so a bind fails one start in eight) | `drivers/lifecycle.rs` | the real `Server`: real sockets, the native watcher, real tasks ([ADR 0052](adr/0052-quint-toolchain-and-lifecycle-model.md), [ADR 0056](adr/0056-lifecycle-conformance-driver.md)) |
-| `formal/watcher.qnt` | `watcher` | `step` (an OS lane, a pipeline lane, an ending lane) | `drivers/watcher.rs` | the real `ChangeCoordinator`: classification, change set, debouncer, health, with a real `ReloadState` and a fake clock ([ADR 0054](adr/0054-watcher-model.md), [ADR 0058](adr/0058-watcher-conformance-driver.md)) |
+| `formal/watcher.qnt` | `watcher` | `step` (an OS lane, a pipeline lane, an ending lane) | `drivers/watcher.rs` | the real `ChangeCoordinator` (classification, change set, debouncer, health) behind the pipeline's own decision step `WatchDecisions`, with a real `ReloadState` and a fake clock ([ADR 0054](adr/0054-watcher-model.md), [ADR 0058](adr/0058-watcher-conformance-driver.md), [ADR 0070](adr/0070-conformance-harness-review-fixes.md)) |
 | `formal/reload.qnt` | `reload` | `step` | `drivers/reload.rs` | the real `ReloadState` and SSE handler through the real router, in process with paused time ([ADR 0057](adr/0057-reload-conformance-driver.md)) |
 
 ### Stimuli
@@ -42,10 +43,13 @@ without a model change fails it too, wherever the model observes the difference.
   save, temp-file writes, `.git` changes, directory and root deletion and recreation,
   duplicates, reordering, queue overflow, runtime failure) come from the trace's own
   environment, and so does the start-up (every directory watched, `d` unwatchable, or `d`'s
-  registration past the relisting cap). The driver turns the bridge's delivery into
-  `receive(k, capped)`, a due deadline into `settle`, and a reconcile into
-  `watcher_reconciled`, `watcher_failed(RegistrationFailed)` or, with the root gone,
-  `watcher_failed(RootRemoved)` ([ADR 0067](adr/0067-root-removal-and-watcher-review-fixes.md)).
+  registration past the relisting cap). The driver hands the bridge's delivery to
+  `WatchDecisions::receive` and a due deadline to `WatchDecisions::settle`, the step
+  `WatchPipeline` runs; the reconcile it asks for reports what the adapter would from the
+  model's environment, and the step turns it into `watcher_reconciled`,
+  `watcher_failed(RegistrationFailed)` or, with the root gone, `watcher_failed(RootRemoved)`
+  ([ADR 0067](adr/0067-root-removal-and-watcher-review-fixes.md)). A readiness the
+  coordinator refuses is a divergence.
 - **Reload:** `publish` and `publishHot` (synthetic change sets per kind), `connect`, `send`,
   `disconnect`, `userReload`, `receive`, `stopServer` and `startServer` (a new instance).
 
@@ -54,14 +58,22 @@ without a model change fails it too, wherever the model observes the difference.
 Everything is read from the real code and projected into the model's terms:
 
 - **Lifecycle:** the `Server` state (or the `StartupError` variant), whether the listener
-  still completes a TCP handshake, whether any task is still owned, and whether a request
-  got a `200`.
+  still completes a TCP handshake, whether any task is still owned, how many event streams
+  the driver opened have not ended (after a stop, each is read until the server closes it),
+  what `Server::stop` returned at a stop (the model has no drain, so `Drained`), and whether
+  a request got a `200`.
 - **Watcher:** the committed revision, `dirty` and the deadline, the health, the received
   batch's `recorded` count and reconcile request, the health events returned, and the
   revision published (full or not, its paths, the rescan flag).
 - **Reload:** `up`, the committed revision, the latest change set, and per open connection
-  the events its body yielded (name, instance, revision, kinds, `full`). The browser's own
-  state is the model's, never observed (D16).
+  the events its body yielded (name, instance, revision, kinds, `full`; a frame with more
+  than one event is malformed, a failing body a divergence). The browser's own state is the
+  model's, never observed (D16): the driver reads one model path, `browsers.*.doc`, to know
+  whether a client reloaded, and is handed nothing else (`Driver::MODEL_READS`, ADR 0070).
+
+Every projected field is compared: `crates/preview-conformance/tests/field_sensitivity.rs`
+edits each one at one state of a committed trace and requires the replay to stop there
+(ADR 0070).
 
 ### Invariants
 
@@ -125,10 +137,18 @@ scheduled lane: see "Verification baseline" for what was tried.
   (`crates/preview-cli/tests/lifecycle.rs`) and composition's
   `should_stop_at_once_when_second_stop_arrives_during_drain`.
 - **Watcher:** revision exhaustion, the 64-path cap, nesting below one directory level, a
-  watcher that cannot be created, and `Closed` before shutdown. The adapter, the bridge and
-  the pipeline task are restated by the driver, not driven. Their own tests and the
-  lifecycle driver cover them. How a root removal is detected (the root descriptor's identity
-  against the path) is the adapter's; the model has the outcome only.
+  watcher that cannot be created, and `Closed` before shutdown. How a root removal is
+  detected (the root descriptor's identity against the path) is the adapter's; the model has
+  the outcome only.
+- **Watcher, what the replay drives and what it does not:** it drives the real coordinator,
+  debouncer, classification, change set, health and reload state through the pipeline's own
+  synchronous decision step (`WatchDecisions` in `watch_pipeline.rs`: receive, settle, the
+  rescan rule and the reconcile's report). It does not drive the pipeline's async shell (the
+  timer and its rounding, polling the source, the order cancellation, deadline, batch,
+  `block_in_place`, the warnings), the adapter's reconcile or the bridge's `next`: the driver
+  restates the last two from the model's environment, and composition's `watch_pipeline`
+  tests and the adapter's tests cover all three. The lifecycle driver does not cover them
+  either: its observation has no revision, health or reconcile.
 - **Reload:** the composition's `instance_id` (the driver numbers instances itself), and the
   browser client (its decision is read from the model; the client's `node:test` suite and the
   browser E2E tests cover it).
@@ -157,7 +177,7 @@ scheduled lane: see "Verification baseline" for what was tried.
 | `formal-simulate` | 1000 random traces of 25 steps per step relation, every invariant checked |
 | `formal-freshness` | Regenerates every committed trace and compares byte for byte, Quint's creation date aside; fails with `stale regression trace <file>` |
 | `formal-generate` | Writes the generated traces and their manifest |
-| `conformance-replay` | Replays the committed and generated traces against the real code (`preview-conformance`'s tests) |
+| `conformance-replay` | Replays the committed and generated traces against the real code (`preview-conformance`'s tests, with the per-field sensitivity and model-view tests); a trace whose length is not its manifest's is refused |
 | `conformance-controls` | Faulty implementations, each caught at an asserted step ([ADR 0059](adr/0059-conformance-negative-controls.md)) |
 
 Quint 0.33.0 is locked in `formal/package-lock.json` and runs with `--backend typescript`

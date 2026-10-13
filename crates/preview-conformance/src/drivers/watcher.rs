@@ -1,9 +1,12 @@
-//! The watcher driver (FORMAL-06, ADR 0058): replays `formal/watcher.qnt`'s `step` actions
-//! against the real [`ChangeCoordinator`] (with its domain [`Debouncer`](preview_domain::Debouncer),
-//! `classify`, `ChangeSet` and `WatcherHealth`) publishing to a real [`ReloadState`], on a
-//! [`FakeClock`]. The driver plays the pipeline task's part (`WatchPipeline` in composition):
-//! it hands each batch to `receive`, each due deadline to `settle`, reconciles when the
-//! coordinator asks and reports the reconcile's outcome, as the pipeline does.
+//! The watcher driver (FORMAL-06, ADR 0058, ADR 0070): replays `formal/watcher.qnt`'s `step`
+//! actions against the real [`ChangeCoordinator`] (with its domain
+//! [`Debouncer`](preview_domain::Debouncer), `classify`, `ChangeSet` and `WatcherHealth`)
+//! publishing to a real [`ReloadState`], on a [`FakeClock`], through the pipeline's own
+//! synchronous decision step, composition's [`WatchDecisions`]: the same code
+//! `WatchPipeline` runs for each batch and each due deadline (hand it over, reconcile when the
+//! coordinator asks, a full reconcile after a rescan revision unless one ran since the previous
+//! one, and the reconcile's outcome as readiness or a failure). The pipeline's async shell (the
+//! timer, the source's `next`, `block_in_place`, the warnings) is not driven here.
 //!
 //! The model's environment, the operating system and the bridge's channel (`fs` and `src`),
 //! is not under test here: the driver reads it from the trace, step by step
@@ -12,19 +15,19 @@
 //! | Model action | Stimulus |
 //! |:--|:--|
 //! | `init`, `initUnwatchable`, `initCapped` | a new coordinator and reload state at 0 ms; `watcher_ready(dirs)` when every directory is watched at start-up |
-//! | `receive(k, capped)` | the batch the bridge's `next` delivers from the previous state's `src` (`Overflow`, `Failed`, or up to `k` changes with real names) to [`ChangeCoordinator::receive`]; then the reconcile the outcome asks for |
-//! | `settle(capped)` | [`ChangeCoordinator::settle`]; then a full reconcile for a rescan revision unless one ran since the previous revision |
+//! | `receive(k, capped)` | the batch the bridge's `next` delivers from the previous state's `src` (`Overflow`, `Failed`, or up to `k` changes with real names) to [`WatchDecisions::receive`] |
+//! | `settle(capped)` | [`WatchDecisions::settle`] |
 //! | `tick` | the [`FakeClock`] moves [`TICK_MS`] |
 //! | `shutdown` | the driver stops applying anything but time |
 //! | OS actions, `duplicate`, `reorder`, `kernelQueue`, `runtimeFailure`, `freeWatch` | nothing: they change only the environment, which the next `receive` reads |
 //!
-//! A reconcile reports what the watcher adapter would (ADR 0050, `reconciled` in composition's
-//! bootstrap), from the previous state's `fs` and `src` and the step's `capped`: with the root
-//! gone a root removal ([`ChangeCoordinator::watcher_failed`] with `RootRemoved`, ADR 0067);
-//! `d` gone or watched, or registered now, is readiness
-//! ([`ChangeCoordinator::watcher_reconciled`]); `d` newly unwatchable is a problem
-//! ([`ChangeCoordinator::watcher_failed`] with `RegistrationFailed`); `d` still unwatchable,
-//! or a registration past the relisting cap, is neither.
+//! A reconcile the decisions run reports what the watcher adapter would (ADR 0050, `reconciled`
+//! in composition's bootstrap), from the previous state's `fs` and `src` and the step's
+//! `capped`: with the root gone a root removal (ADR 0067); `d` gone or watched, or registered
+//! now, is readiness; `d` newly unwatchable is a problem; `d` still unwatchable, or a
+//! registration past the relisting cap, is neither. A readiness the coordinator refuses is a
+//! [`DriverError::Refused`]: the model never refuses one (the pipeline carries on past it, as
+//! only revision exhaustion, outside the model, causes it).
 //!
 //! The observation ([`WatcherObs`]) is read from the real code after every step: the
 //! revision from the [`ReloadState`], `dirty` and the deadline from
@@ -35,12 +38,12 @@
 
 use std::collections::BTreeSet;
 
-use preview_application::{
-    ChangeBatch, ChangeCoordinator, Clock, Received, ReloadState, SettleOutcome, SourceFailure,
-};
+use preview_application::{ChangeBatch, ChangeCoordinator, ReloadState, SourceFailure};
+pub use preview_composition::PipelineCoordinator;
+use preview_composition::{ReconcileScope, Reconciled, StepReport, WatchDecisions, WatchReport};
 use preview_domain::{
     ChangeEvent, ChangeKind, Component, Deadline, DebounceWindow, DegradeReason, DomainEvent,
-    InstanceId, RelPath, Tick, WatcherHealth, WatcherHealthRefusal,
+    InstanceId, RelPath, WatcherHealth, WatcherHealthRefusal,
 };
 use preview_testkit::FakeClock;
 
@@ -50,32 +53,18 @@ use crate::replay::{Driver, DriverError, Params, ProjectionError};
 /// One model tick in milliseconds: the model's window is 2 ticks, the debounce window 150 ms.
 pub const TICK_MS: u64 = 75;
 
-/// The coordinator interface the driver exercises: [`ChangeCoordinator`]'s commands and
-/// queries. It is the seam a negative control replaces with a deliberately faulty
-/// implementation (FORMAL-08); the driver uses nothing else of the coordinator.
-pub trait Coordinator {
-    /// [`ChangeCoordinator::receive`].
-    fn receive(&mut self, batch: ChangeBatch<ChangeEvent>, now: Tick) -> Received;
-    /// [`ChangeCoordinator::settle`].
-    fn settle(&mut self, now: Tick) -> SettleOutcome;
+/// The coordinator interface the driver exercises: [`ChangeCoordinator`]'s commands the
+/// pipeline's decisions issue ([`PipelineCoordinator`], composition's own seam), plus the
+/// start-up report and the queries the driver observes. It is the seam a negative control
+/// replaces with a deliberately faulty implementation (FORMAL-08); the driver uses nothing
+/// else of the coordinator.
+pub trait Coordinator: PipelineCoordinator {
     /// [`ChangeCoordinator::watcher_ready`].
     ///
     /// # Errors
     ///
     /// As [`ChangeCoordinator::watcher_ready`].
     fn watcher_ready(&mut self, dirs: usize) -> Result<Vec<DomainEvent>, WatcherHealthRefusal>;
-    /// [`ChangeCoordinator::watcher_reconciled`].
-    ///
-    /// # Errors
-    ///
-    /// As [`ChangeCoordinator::watcher_reconciled`].
-    fn watcher_reconciled(
-        &mut self,
-        dirs: usize,
-        now: Tick,
-    ) -> Result<Vec<DomainEvent>, WatcherHealthRefusal>;
-    /// [`ChangeCoordinator::watcher_failed`].
-    fn watcher_failed(&mut self, failure: SourceFailure) -> Vec<DomainEvent>;
     /// [`ChangeCoordinator::health`].
     fn health(&self) -> WatcherHealth;
     /// [`ChangeCoordinator::deadline`].
@@ -83,28 +72,8 @@ pub trait Coordinator {
 }
 
 impl Coordinator for ChangeCoordinator {
-    fn receive(&mut self, batch: ChangeBatch<ChangeEvent>, now: Tick) -> Received {
-        Self::receive(self, batch, now)
-    }
-
-    fn settle(&mut self, now: Tick) -> SettleOutcome {
-        Self::settle(self, now)
-    }
-
     fn watcher_ready(&mut self, dirs: usize) -> Result<Vec<DomainEvent>, WatcherHealthRefusal> {
         Self::watcher_ready(self, dirs)
-    }
-
-    fn watcher_reconciled(
-        &mut self,
-        dirs: usize,
-        now: Tick,
-    ) -> Result<Vec<DomainEvent>, WatcherHealthRefusal> {
-        Self::watcher_reconciled(self, dirs, now)
-    }
-
-    fn watcher_failed(&mut self, failure: SourceFailure) -> Vec<DomainEvent> {
-        Self::watcher_failed(self, failure)
     }
 
     fn health(&self) -> WatcherHealth {
@@ -280,18 +249,6 @@ struct Env {
     root_present: bool,
 }
 
-/// What a reconcile reports (composition's `Reconciled`).
-enum Reconcile {
-    /// Every eligible directory is watched: readiness with this many directories.
-    Ready(usize),
-    /// A directory newly cannot be watched.
-    Problem,
-    /// The root path no longer names the served directory (ADR 0067).
-    RootRemoved,
-    /// Neither.
-    Nothing,
-}
-
 impl Env {
     fn decode(state: &State) -> Result<Self, ProjectionError> {
         let var = |name: &str| {
@@ -365,26 +322,40 @@ impl Env {
         }
     }
 
-    /// What the adapter's reconcile reports from this state (`reconcile` in the model).
-    fn reconcile(&self, capped: bool) -> Reconcile {
+    /// What the adapter's reconcile reports from this state (`reconcile` in the model), as
+    /// composition's [`Reconciled`]: the root gone is a root removal (ADR 0067); `d` gone or
+    /// watched, or registered now, is readiness with every watched directory; `d` newly
+    /// unwatchable is a problem; `d` still unwatchable, or a registration past the relisting
+    /// cap, is neither.
+    fn reconcile(&self, capped: bool) -> Reconciled {
         let d = Entry::DirD;
         let without_d = self.watched.iter().filter(|e| **e != d).count();
+        let ready = |dirs| Reconciled {
+            ready: Some(dirs),
+            ..Reconciled::default()
+        };
         if !self.root_present {
-            Reconcile::RootRemoved
+            Reconciled {
+                root_removed: true,
+                ..Reconciled::default()
+            }
         } else if !self.d_present {
-            Reconcile::Ready(without_d)
+            ready(without_d)
         } else if self.watched.contains(&d) {
-            Reconcile::Ready(self.watched.len())
+            ready(self.watched.len())
         } else if self.d_unwatchable {
             if self.outstanding.contains(&d) {
-                Reconcile::Nothing
+                Reconciled::default()
             } else {
-                Reconcile::Problem
+                Reconciled {
+                    problems: vec!["d".to_owned()],
+                    ..Reconciled::default()
+                }
             }
         } else if capped {
-            Reconcile::Nothing
+            Reconciled::default()
         } else {
-            Reconcile::Ready(without_d + 1)
+            ready(without_d + 1)
         }
     }
 }
@@ -419,7 +390,7 @@ struct StepOutput {
 }
 
 /// Drives a [`Coordinator`] (the real [`ChangeCoordinator`] unless a negative control swaps
-/// it) from the watcher model's actions.
+/// it) from the watcher model's actions, through composition's [`WatchDecisions`].
 pub struct WatcherDriver<C: Coordinator = ChangeCoordinator> {
     /// The environment at each state of the trace, by index.
     script: Vec<Env>,
@@ -428,9 +399,8 @@ pub struct WatcherDriver<C: Coordinator = ChangeCoordinator> {
     make: fn(DebounceWindow, ReloadState) -> C,
     clock: FakeClock,
     reload: ReloadState,
-    coordinator: C,
-    /// A full reconcile ran since the last published revision (`reconciled_fully`).
-    reconciled_fully: bool,
+    /// The pipeline's decisions over the coordinator.
+    decisions: WatchDecisions<C>,
     cancelled: bool,
     step: StepOutput,
 }
@@ -468,16 +438,11 @@ impl<C: Coordinator> WatcherDriver<C> {
             applied: 0,
             make,
             clock: FakeClock::new(),
-            coordinator: make(window(), reload.clone()),
+            decisions: WatchDecisions::new(make(window(), reload.clone())),
             reload,
-            reconciled_fully: false,
             cancelled: false,
             step: StepOutput::default(),
         })
-    }
-
-    fn now(&self) -> Tick {
-        self.clock.now()
     }
 
     fn revision(&self) -> u64 {
@@ -496,25 +461,39 @@ impl<C: Coordinator> WatcherDriver<C> {
     fn note(&mut self, events: Vec<DomainEvent>) {
         self.step
             .events
-            .extend(events.into_iter().filter_map(|e| match e {
-                DomainEvent::WatcherDegraded { reason } => Some(HealthEvent::Degraded(reason)),
-                DomainEvent::WatcherRecovered => Some(HealthEvent::Recovered),
-                DomainEvent::RevisionPublished(_) => None,
-            }));
+            .extend(events.into_iter().filter_map(health_event));
+    }
+
+    /// Records what a step of the decisions reported: its health events, in order; a
+    /// problem is only a warning, which the model does not hold; a refused readiness is a
+    /// divergence, since the model never refuses one.
+    fn take(&mut self, step: StepReport) -> Result<(), DriverError> {
+        for report in step.reports {
+            match report {
+                WatchReport::Event(event) => self.step.events.extend(health_event(event)),
+                WatchReport::Problem(_) => {}
+                WatchReport::ReadinessRefused(refusal) => {
+                    return Err(DriverError::Refused(format!(
+                        "the coordinator refused a reconcile's readiness: {refusal}"
+                    )));
+                }
+            }
+        }
+        Ok(())
     }
 
     fn init(&mut self, env: &Env) -> Result<(), DriverError> {
         self.clock = FakeClock::new();
         self.reload = new_reload_state();
-        self.coordinator = (self.make)(window(), self.reload.clone());
-        self.reconciled_fully = false;
+        self.decisions = WatchDecisions::new((self.make)(window(), self.reload.clone()));
         self.cancelled = false;
         // Start-up reports readiness only when every eligible directory is watched; otherwise
         // the registration failure waits in the source (the model's first message), or the
         // registration passed the relisting cap and waits for the `Overflow`'s full reconcile.
         if env.outstanding.is_empty() && (!env.d_present || env.watched.contains(&Entry::DirD)) {
             let events = self
-                .coordinator
+                .decisions
+                .coordinator_mut()
                 .watcher_ready(env.watched.len())
                 .map_err(|e| DriverError::Refused(e.to_string()))?;
             self.note(events);
@@ -529,59 +508,33 @@ impl<C: Coordinator> WatcherDriver<C> {
         let Some(batch) = env.next_batch(k) else {
             return Err(DriverError::Refused("the source has nothing ready".into()));
         };
-        let full = matches!(batch, ChangeBatch::Overflow);
-        let now = self.now();
-        match self.coordinator.receive(batch, now) {
-            Received::Recorded(outcome) => {
-                self.step.recorded = outcome.recorded;
-                self.step.needs_reconcile = outcome.needs_reconcile;
-                self.note(outcome.events);
-                if outcome.needs_reconcile {
-                    self.reconcile(env, full, capped);
-                }
-                Ok(())
-            }
-            Received::Closed => Err(DriverError::Refused("the coordinator closed".into())),
-        }
+        let step = self
+            .decisions
+            .receive(batch, &self.clock, |_: ReconcileScope| {
+                env.reconcile(capped)
+            })
+            .ok_or_else(|| DriverError::Refused("the coordinator closed".into()))?;
+        self.step.recorded = step.recorded;
+        self.step.needs_reconcile = step.needs_reconcile;
+        self.take(step)
     }
 
     fn settle(&mut self, env: &Env, params: &Params) -> Result<(), DriverError> {
         let capped = params.bool("capped")?;
-        let outcome = self.coordinator.settle(self.now());
-        self.note(outcome.events);
-        if let Some(settled) = outcome.settled {
-            self.step.rescan = Some(settled.rescan);
-            if settled.rescan && !self.reconciled_fully {
-                self.reconcile(env, true, capped);
-            }
-            self.reconciled_fully = false;
-        }
-        Ok(())
+        let step = self
+            .decisions
+            .settle(&self.clock, |_: ReconcileScope| env.reconcile(capped));
+        self.step.rescan = step.rescan;
+        self.take(step)
     }
+}
 
-    /// The pipeline's `reconcile`: the adapter's report, then readiness or a failure.
-    fn reconcile(&mut self, env: &Env, full: bool, capped: bool) {
-        self.reconciled_fully |= full;
-        match env.reconcile(capped) {
-            Reconcile::Ready(dirs) => {
-                // Refused only once the revisions are exhausted, outside the model; the
-                // pipeline carries on, and so does the driver.
-                if let Ok(events) = self.coordinator.watcher_reconciled(dirs, self.now()) {
-                    self.note(events);
-                }
-            }
-            Reconcile::Problem => {
-                let events = self
-                    .coordinator
-                    .watcher_failed(SourceFailure::RegistrationFailed);
-                self.note(events);
-            }
-            Reconcile::RootRemoved => {
-                let events = self.coordinator.watcher_failed(SourceFailure::RootRemoved);
-                self.note(events);
-            }
-            Reconcile::Nothing => {}
-        }
+/// A domain event as the health event the model names, if it is one.
+fn health_event(event: DomainEvent) -> Option<HealthEvent> {
+    match event {
+        DomainEvent::WatcherDegraded { reason } => Some(HealthEvent::Degraded(reason)),
+        DomainEvent::WatcherRecovered => Some(HealthEvent::Recovered),
+        DomainEvent::RevisionPublished(_) => None,
     }
 }
 
@@ -619,7 +572,8 @@ impl<C: Coordinator> Driver for WatcherDriver<C> {
     }
 
     fn observe(&self) -> WatcherObs {
-        let deadline = self.coordinator.deadline();
+        let coordinator = self.decisions.coordinator();
+        let deadline = coordinator.deadline();
         let revision = self.revision();
         let published = (revision != self.step.revision_before).then(|| {
             let current = self.reload.subscribe();
@@ -638,7 +592,7 @@ impl<C: Coordinator> Driver for WatcherDriver<C> {
             revision,
             dirty: deadline.is_some(),
             deadline_ms: deadline.map(|d| d.at().as_millis()),
-            health: match self.coordinator.health() {
+            health: match coordinator.health() {
                 WatcherHealth::Starting => Health::Starting,
                 WatcherHealth::Watching { .. } => Health::Watching,
                 WatcherHealth::Degraded { reason } => Health::Degraded(reason),

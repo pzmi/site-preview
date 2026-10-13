@@ -9,10 +9,10 @@
 //!   directly, fresh ones from the locked Quint. The seed is printed, and `QUINT_SEED=<seed>`
 //!   repeats the run.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use preview_conformance::drivers::reload::{ReloadDriver, project};
-use preview_conformance::generate::{Family, formal_dir};
+use preview_conformance::generate::{Family, formal_dir, regression};
 use preview_conformance::{Cause, Divergence, Trace, replay};
 
 /// The named scenarios of `reloadScenarios`, each scripted in `reload_traces.qnt`.
@@ -25,9 +25,6 @@ const NAMED: [&str; 7] = [
     "restartSamePort",
     "scriptNotAcceptedReloads",
 ];
-
-/// The regression traces' recorded seed (the scripts are deterministic).
-const REGRESSION_SEED: &str = "0x5ce1";
 
 /// Foundation.md section 6.4's initial budget: about 30 traces of 25 steps per model.
 const GENERATED: Family<'static> = Family {
@@ -57,17 +54,16 @@ fn regression_traces() -> Vec<PathBuf> {
     files
 }
 
-fn load(path: &Path, seed: &str) -> Trace {
-    Trace::load(path)
-        .unwrap_or_else(|err| panic!("{}: {err}", path.display()))
-        .with_seed(seed)
+/// Replays `trace` against a fresh driver.
+fn replay_trace(trace: &Trace) -> Result<(), Box<Divergence>> {
+    let mut driver = ReloadDriver::new();
+    replay(trace, &mut driver, project)
 }
 
-/// Replays the trace at `path` against a fresh driver.
-fn replay_file(path: &Path, seed: &str) -> Result<(), Box<Divergence>> {
-    let trace = load(path, seed);
-    let mut driver = ReloadDriver::new();
-    replay(&trace, &mut driver, project)
+/// Replays the committed trace `reload-<name>`, with its manifest's seed and length.
+fn replay_named(name: &str) -> Result<(), Box<Divergence>> {
+    let trace = regression(&format!("reload-{name}")).unwrap_or_else(|err| panic!("{err}"));
+    replay_trace(&trace)
 }
 
 /// Panics with the full report of the first divergence, if any.
@@ -89,10 +85,7 @@ fn should_replay_with_zero_divergence_when_trace_is_a_named_scenario() {
     assert_eq!(names, NAMED, "the committed named reload traces");
 
     // when: each replays, every step compared
-    let outcomes: Vec<_> = traces
-        .iter()
-        .map(|path| replay_file(path, REGRESSION_SEED))
-        .collect();
+    let outcomes: Vec<_> = names.iter().map(|name| replay_named(name)).collect();
 
     // then
     assert_no_divergence(outcomes);
@@ -101,11 +94,11 @@ fn should_replay_with_zero_divergence_when_trace_is_a_named_scenario() {
 #[test]
 fn should_replay_with_zero_divergence_when_traces_are_generated_with_a_seed() {
     // given
-    let (seed, traces) = GENERATED.traces().unwrap_or_else(|err| panic!("{err}"));
+    let (seed, traces) = GENERATED.load().unwrap_or_else(|err| panic!("{err}"));
     println!("reload generated traces: {}", GENERATED.describe(&seed));
 
     // when
-    let outcomes: Vec<_> = traces.iter().map(|path| replay_file(path, &seed)).collect();
+    let outcomes: Vec<_> = traces.iter().map(replay_trace).collect();
 
     // then
     assert_no_divergence(outcomes);
@@ -120,7 +113,7 @@ fn should_diverge_at_the_send_when_the_model_expects_a_different_event() {
     // given: the coalesced trace with the model's `full` event edited to a hot css one, as a
     // server that ignored the gap would send it (`noHotApplyAcrossGap`)
     let path = formal_dir().join("traces/regression/reload-coalescedCssThenJsFull.itf.json");
-    let trace = load(&path, REGRESSION_SEED);
+    let trace = regression("reload-coalescedCssThenJsFull").unwrap_or_else(|err| panic!("{err}"));
     let send = trace
         .states
         .iter()

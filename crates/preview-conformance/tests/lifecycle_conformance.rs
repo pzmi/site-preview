@@ -8,10 +8,10 @@
 //!   directly, fresh ones from the locked Quint. The seed is printed, and `QUINT_SEED=<seed>`
 //!   repeats the run.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use preview_conformance::drivers::lifecycle::{LifecycleDriver, project};
-use preview_conformance::generate::{Family, formal_dir};
+use preview_conformance::generate::{Family, formal_dir, regression};
 use preview_conformance::{Cause, Divergence, DriverError, Trace, replay};
 use tempfile::TempDir;
 
@@ -24,9 +24,6 @@ const NAMED: [&str; 6] = [
     "startServeStop",
     "watcherFailsDuringStart",
 ];
-
-/// The regression traces' recorded seed (the scripts are deterministic).
-const REGRESSION_SEED: &str = "0x5ce1";
 
 /// Foundation.md section 6.4's initial budget: about 30 traces of 25 steps per model.
 const GENERATED: Family<'static> = Family {
@@ -66,14 +63,17 @@ fn regression_traces() -> Vec<PathBuf> {
     files
 }
 
-/// Replays the trace at `path` against a fresh driver over a fresh site.
-fn replay_file(path: &Path, seed: &str) -> Result<(), Box<Divergence>> {
-    let trace = Trace::load(path)
-        .unwrap_or_else(|err| panic!("{}: {err}", path.display()))
-        .with_seed(seed);
+/// Replays `trace` against a fresh driver over a fresh site.
+fn replay_trace(trace: &Trace) -> Result<(), Box<Divergence>> {
     let root = site();
     let mut driver = LifecycleDriver::new(root.path());
-    replay(&trace, &mut driver, project)
+    replay(trace, &mut driver, project)
+}
+
+/// Replays the committed trace `lifecycle-<name>`, with its manifest's seed and length.
+fn replay_named(name: &str) -> Result<(), Box<Divergence>> {
+    let trace = regression(&format!("lifecycle-{name}")).unwrap_or_else(|err| panic!("{err}"));
+    replay_trace(&trace)
 }
 
 /// Panics with the full report of the first divergence, if any.
@@ -95,10 +95,7 @@ fn should_replay_with_zero_divergence_when_trace_is_a_named_scenario() {
     assert_eq!(names, NAMED, "the committed named lifecycle traces");
 
     // when: each replays, every step compared
-    let outcomes: Vec<_> = traces
-        .iter()
-        .map(|path| replay_file(path, REGRESSION_SEED))
-        .collect();
+    let outcomes: Vec<_> = names.iter().map(|name| replay_named(name)).collect();
 
     // then
     assert_no_divergence(outcomes);
@@ -107,11 +104,11 @@ fn should_replay_with_zero_divergence_when_trace_is_a_named_scenario() {
 #[test]
 fn should_replay_with_zero_divergence_when_traces_are_generated_with_a_seed() {
     // given
-    let (seed, traces) = GENERATED.traces().unwrap_or_else(|err| panic!("{err}"));
+    let (seed, traces) = GENERATED.load().unwrap_or_else(|err| panic!("{err}"));
     println!("lifecycle generated traces: {}", GENERATED.describe(&seed));
 
     // when
-    let outcomes: Vec<_> = traces.iter().map(|path| replay_file(path, &seed)).collect();
+    let outcomes: Vec<_> = traces.iter().map(replay_trace).collect();
 
     // then
     assert_no_divergence(outcomes);

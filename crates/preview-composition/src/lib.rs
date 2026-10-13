@@ -33,3 +33,7 @@ pub use server::{
     DegradedReason, Ready, StartupError, StartupReporter, WatchStatus, WatcherEvents, WatcherState,
     run,
 };
+#[doc(hidden)]
+pub use watch_pipeline::{
+    PipelineCoordinator, ReconcileScope, Reconciled, StepReport, WatchDecisions, WatchReport,
+};

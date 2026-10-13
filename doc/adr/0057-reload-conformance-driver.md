@@ -4,7 +4,9 @@ Date: 2026-10-12
 
 ## Status
 
-Proposed (planner default — owner may override)
+Proposed (planner default — owner may override). Amended by ADR 0070: `apply_with_model`
+receives a `ModelView` holding only the paths the driver declares in `Driver::MODEL_READS`
+(`browsers.*.doc` here), not the whole state.
 
 ## Context
 
@@ -31,7 +33,8 @@ FORMAL-04's replay core (ADR 0053). Three things stood in the way:
   (`util`: `ServiceExt::oneshot`). `architecture.toml` lists them under
   `[external.normal]`. The crate stays `test_only`; no workspace edge changes.
 - **`Driver::apply_with_model`**, a provided method of the replay core's `Driver` trait,
-  receives the model's state after the step; `replay` calls it, and its default calls
+  receives the model's state after the step (since ADR 0070, only the paths the driver
+  declares); `replay` calls it, and its default calls
   `apply`, so the lifecycle driver is unchanged. A driver reads from it only a choice the
   environment made outside the implementation. The reload driver reads one thing: after a
   `receive`, whether the model's page is `Navigating` (the client reloaded), and if so drops
@@ -67,10 +70,12 @@ FORMAL-04's replay core (ADR 0053). Three things stood in the way:
   `ReloadPayload::after` ignoring the revision gap, the replay of
   `reload-coalescedCssThenJsFull` diverges at step 6, `send` (a hot `js` event where the
   model sends `full` with no changes). A stream that ignores the shutdown signal diverges at
-  step 4 of `reload-restartSamePort`, `stopServer`.
+  step 4 of `reload-restartSamePort`, `stopServer` (pinned by a negative control since
+  ADR 0070).
 - `apply_with_model` makes the comparison vacuous if a driver reads from the model what it
-  then observes. Its documentation says so; review is the guard. Only the reload driver
-  overrides it, for the one client decision.
+  then observes. Since ADR 0070 the type guards it: the driver gets a view of the paths it
+  declares and nothing else. Only the reload driver overrides it, for the one client
+  decision.
 - `up` and the instance numbering are the driver's records, so a process that never stops or
   reuses an instance id is outside this driver: the lifecycle driver (ADR 0056) observes the
   listener, while the composition's `server::instance_id` (process id and start time) is

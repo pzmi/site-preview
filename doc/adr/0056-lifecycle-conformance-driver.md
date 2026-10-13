@@ -4,7 +4,9 @@ Date: 2026-10-12
 
 ## Status
 
-Proposed (planner default — owner may override)
+Proposed (planner default — owner may override). Amended by ADR 0070: the observation also
+compares the open event streams (`res.streams`) and the outcome of each stop (`Drained`), and
+the server is started through a seam a negative control can wrap.
 
 ## Context
 

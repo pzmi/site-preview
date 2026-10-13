@@ -22,4 +22,6 @@ pub mod replay;
 pub mod report;
 
 pub use itf::{DecodeError, State, Trace, Value};
-pub use replay::{Cause, Divergence, Driver, DriverError, Params, ProjectionError, replay};
+pub use replay::{
+    Cause, Divergence, Driver, DriverError, ModelView, Params, ProjectionError, replay,
+};

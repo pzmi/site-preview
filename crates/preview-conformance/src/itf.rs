@@ -260,6 +260,9 @@ pub struct Trace {
     /// The seed it was generated with. ITF does not record it, so the caller sets it (from
     /// the corpus manifest or the generating command) with [`Trace::with_seed`].
     pub seed: Option<String>,
+    /// The number of steps its manifest records (`max_steps`), when known: the replay then
+    /// refuses a trace without exactly that many steps after `init`.
+    pub max_steps: Option<usize>,
     /// The variable names in `vars`, in the trace's order.
     pub vars: Vec<String>,
     /// The states, first to last.
@@ -289,6 +292,14 @@ impl Trace {
     #[must_use]
     pub fn with_seed(mut self, seed: impl Into<String>) -> Self {
         self.seed = Some(seed.into());
+        self
+    }
+
+    /// Records the number of steps the trace's manifest gives it (`max_steps`), which
+    /// [`replay`](crate::replay()) then requires.
+    #[must_use]
+    pub const fn with_max_steps(mut self, max_steps: usize) -> Self {
+        self.max_steps = Some(max_steps);
         self
     }
 
@@ -325,6 +336,7 @@ impl Trace {
             id,
             source,
             seed: None,
+            max_steps: None,
             vars,
             states,
         })

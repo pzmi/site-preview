@@ -8,6 +8,13 @@
 //! every deadline to [`ChangeCoordinator::settle`], so the pipeline makes no decision of its
 //! own; it reconciles the watch set when the coordinator asks, turns degradations into
 //! warnings and closes the source when it stops.
+//!
+//! What the pipeline does with a batch or a due deadline once it has one (hand it over,
+//! reconcile when asked, a full reconcile after a rescan revision unless one ran since the
+//! previous revision, and the reconcile's outcome as readiness or a failure) is
+//! [`WatchDecisions`], a synchronous step with no timer, task or IO of its own: the pipeline
+//! wraps it in the async loop and the blocking reconcile, and the watcher conformance driver
+//! (`preview-conformance`, ADR 0058, ADR 0070) drives the same step from the model's traces.
 
 use core::future::{Future, poll_fn};
 use core::pin::{Pin, pin};
@@ -16,9 +23,9 @@ use std::sync::Arc;
 
 use preview_adapter_http::WarningSink;
 use preview_application::{
-    ChangeBatch, ChangeCoordinator, ChangeSource, Clock, Received, SourceFailure,
+    ChangeBatch, ChangeCoordinator, ChangeSource, Clock, Received, SettleOutcome, SourceFailure,
 };
-use preview_domain::{ChangeEvent, DegradeReason, DomainEvent, Tick};
+use preview_domain::{ChangeEvent, DegradeReason, DomainEvent, Tick, WatcherHealthRefusal};
 
 use crate::server::{DegradedReason, WatcherEvents, WatcherState};
 use tokio::runtime::{Handle, RuntimeFlavor};
@@ -27,8 +34,11 @@ use tokio::task::block_in_place;
 use tokio::time::{Instant, sleep};
 
 /// How much of the watch set a reconcile covers.
+///
+/// Public for [`WatchDecisions`]' conformance driver only; not part of the supported API.
+#[doc(hidden)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ReconcileScope {
+pub enum ReconcileScope {
     /// The batch just received changed the directory structure (or may have).
     Changed,
     /// Changes were lost or could not be attributed: every eligible directory.
@@ -36,8 +46,11 @@ pub(crate) enum ReconcileScope {
 }
 
 /// What a reconcile changed in the watcher's health, in words composition can report.
+///
+/// Public for [`WatchDecisions`]' conformance driver only; not part of the supported API.
+#[doc(hidden)]
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct Reconciled {
+pub struct Reconciled {
     /// `Some(dirs)` when every eligible directory is watched afterwards, which the pipeline
     /// reports as readiness (ADR 0040); `None` otherwise.
     pub ready: Option<usize>,
@@ -143,17 +156,222 @@ pub(crate) const fn watcher_state(event: &DomainEvent) -> Option<WatcherState> {
     }
 }
 
-/// The pipeline's state: the source it drains, the coordinator it feeds and where warnings go.
+/// The coordinator commands [`WatchDecisions`] issues: [`ChangeCoordinator`]'s, and a
+/// conformance negative control's deliberately faulty stand-in (FORMAL-08). Public for the
+/// conformance driver only; not part of the supported API.
+#[doc(hidden)]
+pub trait PipelineCoordinator {
+    /// [`ChangeCoordinator::receive`].
+    fn receive(&mut self, batch: ChangeBatch<ChangeEvent>, now: Tick) -> Received;
+    /// [`ChangeCoordinator::settle`].
+    fn settle(&mut self, now: Tick) -> SettleOutcome;
+    /// [`ChangeCoordinator::watcher_reconciled`].
+    ///
+    /// # Errors
+    ///
+    /// As [`ChangeCoordinator::watcher_reconciled`].
+    fn watcher_reconciled(
+        &mut self,
+        dirs: usize,
+        now: Tick,
+    ) -> Result<Vec<DomainEvent>, WatcherHealthRefusal>;
+    /// [`ChangeCoordinator::watcher_failed`].
+    fn watcher_failed(&mut self, failure: SourceFailure) -> Vec<DomainEvent>;
+}
+
+impl PipelineCoordinator for ChangeCoordinator {
+    fn receive(&mut self, batch: ChangeBatch<ChangeEvent>, now: Tick) -> Received {
+        Self::receive(self, batch, now)
+    }
+
+    fn settle(&mut self, now: Tick) -> SettleOutcome {
+        Self::settle(self, now)
+    }
+
+    fn watcher_reconciled(
+        &mut self,
+        dirs: usize,
+        now: Tick,
+    ) -> Result<Vec<DomainEvent>, WatcherHealthRefusal> {
+        Self::watcher_reconciled(self, dirs, now)
+    }
+
+    fn watcher_failed(&mut self, failure: SourceFailure) -> Vec<DomainEvent> {
+        Self::watcher_failed(self, failure)
+    }
+}
+
+/// Something one step of [`WatchDecisions`] reports, in the order it happened.
+#[doc(hidden)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WatchReport {
+    /// A domain event the coordinator returned.
+    Event(DomainEvent),
+    /// A directory that newly cannot be watched, as the reconcile named it.
+    Problem(String),
+    /// The coordinator refused the readiness a reconcile reported. Only once the revisions
+    /// are exhausted (already reported as a degradation) or for `dirs == 0`, which the
+    /// adapter never reports: the pipeline carries on; the conformance driver diverges.
+    ReadinessRefused(WatcherHealthRefusal),
+}
+
+/// What one step of [`WatchDecisions`] did.
+#[doc(hidden)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StepReport {
+    /// What the step reports, in order.
+    pub reports: Vec<WatchReport>,
+    /// How many changes of a received batch reached the debouncer.
+    pub recorded: usize,
+    /// The received batch asked for a reconcile.
+    pub needs_reconcile: bool,
+    /// For a settle that published a revision, whether that revision asked for a rescan.
+    pub rescan: Option<bool>,
+}
+
+/// The pipeline's synchronous decisions, shared with the watcher conformance driver
+/// (ADR 0070): hand a batch to the coordinator and reconcile at once when it asks (`Full`
+/// after an overflow, `Changed` otherwise); hand a due deadline to the coordinator and, when
+/// the revision it publishes asks for a rescan, run a full reconcile unless one ran since the
+/// previous revision; report a reconcile's outcome as a root removal, problems and a
+/// registration failure, or readiness. The timer, the source's `next`, the blocking reconcile
+/// itself and the warnings are the caller's. Public for the conformance driver only; not part
+/// of the supported API.
+#[doc(hidden)]
+#[derive(Debug)]
+pub struct WatchDecisions<C> {
+    coordinator: C,
+    /// Whether a full reconcile ran since the last published revision, so a rescan the
+    /// revision asks for is not repeated.
+    reconciled_fully: bool,
+}
+
+impl<C: PipelineCoordinator> WatchDecisions<C> {
+    /// Decisions over `coordinator`, with no reconcile run yet.
+    pub const fn new(coordinator: C) -> Self {
+        Self {
+            coordinator,
+            reconciled_fully: false,
+        }
+    }
+
+    /// The coordinator, for its queries (the deadline, the health).
+    pub const fn coordinator(&self) -> &C {
+        &self.coordinator
+    }
+
+    /// The coordinator, for a command outside the pipeline's steps (start-up readiness).
+    pub const fn coordinator_mut(&mut self) -> &mut C {
+        &mut self.coordinator
+    }
+
+    /// Hands one batch to the coordinator at `clock`'s time and, when it asks, reconciles at
+    /// once through `reconcile`: a new directory is watched before the edits that follow its
+    /// creation, and the revision still waits for the window. `None` once the source has
+    /// closed. Pinned by `should_publish_after_overflow_when_channel_overflowed` and
+    /// `should_reconcile_full_at_once_when_batch_is_an_overflow`.
+    pub fn receive<K: Clock + ?Sized>(
+        &mut self,
+        batch: ChangeBatch<ChangeEvent>,
+        clock: &K,
+        reconcile: impl FnOnce(ReconcileScope) -> Reconciled,
+    ) -> Option<StepReport> {
+        let scope = if matches!(batch, ChangeBatch::Overflow) {
+            ReconcileScope::Full
+        } else {
+            ReconcileScope::Changed
+        };
+        match self.coordinator.receive(batch, clock.now()) {
+            Received::Recorded(outcome) => {
+                let mut step = StepReport {
+                    recorded: outcome.recorded,
+                    needs_reconcile: outcome.needs_reconcile,
+                    ..StepReport::default()
+                };
+                events_into(&mut step, outcome.events);
+                if outcome.needs_reconcile {
+                    self.reconcile(scope, clock, reconcile, &mut step);
+                }
+                Some(step)
+            }
+            Received::Closed => None,
+        }
+    }
+
+    /// Hands the due deadline to the coordinator at `clock`'s time; a revision that asks for
+    /// a rescan gets a full reconcile through `reconcile`, unless one ran since the previous
+    /// revision. Pinned by `should_rescan_once_when_a_rescan_revision_follows_a_full_reconcile`.
+    pub fn settle<K: Clock + ?Sized>(
+        &mut self,
+        clock: &K,
+        reconcile: impl FnOnce(ReconcileScope) -> Reconciled,
+    ) -> StepReport {
+        let outcome = self.coordinator.settle(clock.now());
+        let mut step = StepReport::default();
+        events_into(&mut step, outcome.events);
+        if let Some(settled) = outcome.settled {
+            step.rescan = Some(settled.rescan);
+            if settled.rescan && !self.reconciled_fully {
+                self.reconcile(ReconcileScope::Full, clock, reconcile, &mut step);
+            }
+            self.reconciled_fully = false;
+        }
+        step
+    }
+
+    /// Runs `reconcile` and reports what changed: a root no longer at its path degrades the
+    /// watcher for good (`should_degrade_once_when_reconcile_finds_root_removed`); each
+    /// directory that newly cannot be watched is a problem and degrades the watcher; a
+    /// complete set is readiness, so a degraded watcher recovers, and the coordinator makes
+    /// the next revision a full reload that catches up what changed while a directory was
+    /// unwatched (ADR 0054).
+    fn reconcile<K: Clock + ?Sized>(
+        &mut self,
+        scope: ReconcileScope,
+        clock: &K,
+        reconcile: impl FnOnce(ReconcileScope) -> Reconciled,
+        step: &mut StepReport,
+    ) {
+        self.reconciled_fully |= scope == ReconcileScope::Full;
+        let reconciled = reconcile(scope);
+        if reconciled.root_removed {
+            // Absorbed after the first: the warning and the event come once (ADR 0067).
+            let events = self.coordinator.watcher_failed(SourceFailure::RootRemoved);
+            events_into(step, events);
+            return;
+        }
+        let problems = !reconciled.problems.is_empty();
+        step.reports
+            .extend(reconciled.problems.into_iter().map(WatchReport::Problem));
+        if let Some(dirs) = reconciled.ready {
+            match self.coordinator.watcher_reconciled(dirs, clock.now()) {
+                Ok(events) => events_into(step, events),
+                Err(refusal) => step.reports.push(WatchReport::ReadinessRefused(refusal)),
+            }
+        } else if problems {
+            let events = self
+                .coordinator
+                .watcher_failed(SourceFailure::RegistrationFailed);
+            events_into(step, events);
+        }
+    }
+}
+
+/// Appends `events` to `step`'s reports.
+fn events_into(step: &mut StepReport, events: Vec<DomainEvent>) {
+    step.reports
+        .extend(events.into_iter().map(WatchReport::Event));
+}
+
+/// The pipeline's state: the source it drains, the decisions it delegates to, its clock and
+/// where warnings go.
 pub(crate) struct WatchPipeline<S, C> {
     source: S,
-    coordinator: ChangeCoordinator,
+    decisions: WatchDecisions<ChangeCoordinator>,
     clock: C,
     warnings: Arc<dyn WarningSink>,
     /// Told of every change of the watcher's state.
     events: Arc<dyn WatcherEvents>,
-    /// Whether a full reconcile ran since the last published revision, so a rescan the
-    /// revision asks for is not repeated.
-    reconciled_fully: bool,
 }
 
 enum Step {
@@ -172,11 +390,10 @@ impl<S: WatchControl, C: Clock> WatchPipeline<S, C> {
     ) -> Self {
         Self {
             source,
-            coordinator,
+            decisions: WatchDecisions::new(coordinator),
             clock,
             warnings,
             events,
-            reconciled_fully: false,
         }
     }
 
@@ -207,7 +424,8 @@ impl<S: WatchControl, C: Clock> WatchPipeline<S, C> {
         // wait so it never ends before the deadline, so `settle` never finds it in the future
         // and the loop cannot spin.
         let wait = self
-            .coordinator
+            .decisions
+            .coordinator()
             .deadline()
             .map(|deadline| deadline.remaining_from(self.clock.now()));
         let mut timer = pin!(wait.map(sleep));
@@ -231,96 +449,66 @@ impl<S: WatchControl, C: Clock> WatchPipeline<S, C> {
         .await
     }
 
-    /// Hands one batch to the coordinator; false once the source has closed.
+    /// Hands one batch to the decisions; false once the source has closed.
     fn receive(&mut self, batch: ChangeBatch<ChangeEvent>) -> bool {
-        let scope = if matches!(batch, ChangeBatch::Overflow) {
-            ReconcileScope::Full
-        } else {
-            ReconcileScope::Changed
-        };
-        match self.coordinator.receive(batch, self.clock.now()) {
-            Received::Recorded(outcome) => {
-                self.report(&outcome.events);
-                // At once, not at the deadline: a new directory is watched before the edits
-                // that follow its creation, and the revision still waits for the window.
-                if outcome.needs_reconcile {
-                    self.reconcile(scope);
-                }
-                true
-            }
-            Received::Closed => false,
-        }
+        let source = &mut self.source;
+        let step = self.decisions.receive(batch, &self.clock, |scope| {
+            reconcile_blocking(source, scope)
+        });
+        step.map(|step| self.report(step)).is_some()
     }
 
     fn settle(&mut self) {
-        let outcome = self.coordinator.settle(self.clock.now());
-        self.report(&outcome.events);
-        if let Some(settled) = outcome.settled {
-            if settled.rescan && !self.reconciled_fully {
-                self.reconcile(ReconcileScope::Full);
-            }
-            self.reconciled_fully = false;
-        }
-    }
-
-    /// Reconciles the watch set and reports what changed: a root no longer at its path
-    /// degrades the watcher for good (`should_degrade_once_when_reconcile_finds_root_removed`);
-    /// each directory that newly cannot
-    /// be watched is warned about and degrades the watcher; a complete set is readiness, so a
-    /// degraded watcher recovers, and the coordinator makes the next revision a full reload
-    /// that catches up what changed while a directory was unwatched (ADR 0054). Pinned by
-    /// `should_warn_and_degrade_when_reconcile_cannot_watch_a_directory`,
-    /// `should_recover_when_reconcile_completes_the_watch_set` and
-    /// `should_publish_full_reload_when_watcher_recovers`.
-    ///
-    /// The walk and the watch registrations block (a directory walk, and calls that wait on
-    /// the native watcher's own thread), so on the multi-thread runtime they run inside
-    /// `block_in_place`: the worker hands its other tasks to the rest of the pool first, so no
-    /// async work waits behind them (plan.md section 9). The pipeline still waits for the
-    /// result before it takes the next batch or deadline, so a new directory is watched before
-    /// the revision announcing it is published (ADR 0050). A current-thread runtime (the
-    /// paused-clock tests) has no pool to hand over to and runs it in line. Pinned by
-    /// `should_run_other_tasks_when_reconcile_blocks`.
-    fn reconcile(&mut self, scope: ReconcileScope) {
-        self.reconciled_fully |= scope == ReconcileScope::Full;
         let source = &mut self.source;
-        let reconciled = match Handle::try_current().map(|runtime| runtime.runtime_flavor()) {
-            Ok(RuntimeFlavor::MultiThread) => block_in_place(|| source.reconcile(scope)),
-            _ => source.reconcile(scope),
-        };
-        if reconciled.root_removed {
-            // Absorbed after the first: the warning and the event come once (ADR 0067).
-            let events = self.coordinator.watcher_failed(SourceFailure::RootRemoved);
-            self.report(&events);
-            return;
-        }
-        for problem in &reconciled.problems {
-            self.warnings.warn("watch-registration-failed", problem);
-        }
-        if let Some(dirs) = reconciled.ready {
-            // Refused only once the revisions are exhausted, which was already reported.
-            // A recovery makes the next revision full (ADR 0054).
-            if let Ok(events) = self.coordinator.watcher_reconciled(dirs, self.clock.now()) {
-                self.report(&events);
+        let step = self
+            .decisions
+            .settle(&self.clock, |scope| reconcile_blocking(source, scope));
+        self.report(step);
+    }
+
+    /// Warns about each problem and each degradation, and announces each change of the
+    /// watcher's state: a directory that newly cannot be watched is warned about
+    /// (`should_warn_and_degrade_when_reconcile_cannot_watch_a_directory`), a complete set
+    /// recovers (`should_recover_when_reconcile_completes_the_watch_set`,
+    /// `should_publish_full_reload_when_watcher_recovers`). A refused readiness is not
+    /// reported: it comes only once the revisions are exhausted, which was already reported.
+    fn report(&self, step: StepReport) {
+        for report in step.reports {
+            match report {
+                WatchReport::Event(event) => self.report_event(&event),
+                WatchReport::Problem(problem) => {
+                    self.warnings.warn("watch-registration-failed", &problem);
+                }
+                WatchReport::ReadinessRefused(_) => {}
             }
-        } else if !reconciled.problems.is_empty() {
-            let events = self
-                .coordinator
-                .watcher_failed(SourceFailure::RegistrationFailed);
-            self.report(&events);
         }
     }
 
-    fn report(&self, events: &[DomainEvent]) {
-        for event in events {
-            let detail = self.source.failure_detail();
-            if let Some((code, message)) = warning_for(event, detail.as_deref()) {
-                self.warnings.warn(code, &message);
-            }
-            if let Some(state) = watcher_state(event) {
-                self.events.changed(state);
-            }
+    fn report_event(&self, event: &DomainEvent) {
+        let detail = self.source.failure_detail();
+        if let Some((code, message)) = warning_for(event, detail.as_deref()) {
+            self.warnings.warn(code, &message);
         }
+        if let Some(state) = watcher_state(event) {
+            self.events.changed(state);
+        }
+    }
+}
+
+/// Reconciles `source`'s watch set.
+///
+/// The walk and the watch registrations block (a directory walk, and calls that wait on the
+/// native watcher's own thread), so on the multi-thread runtime they run inside
+/// `block_in_place`: the worker hands its other tasks to the rest of the pool first, so no
+/// async work waits behind them (plan.md section 9). The pipeline still waits for the result
+/// before it takes the next batch or deadline, so a new directory is watched before the
+/// revision announcing it is published (ADR 0050). A current-thread runtime (the paused-clock
+/// tests) has no pool to hand over to and runs it in line. Pinned by
+/// `should_run_other_tasks_when_reconcile_blocks`.
+fn reconcile_blocking<S: WatchControl>(source: &mut S, scope: ReconcileScope) -> Reconciled {
+    match Handle::try_current().map(|runtime| runtime.runtime_flavor()) {
+        Ok(RuntimeFlavor::MultiThread) => block_in_place(|| source.reconcile(scope)),
+        _ => source.reconcile(scope),
     }
 }
 
@@ -1110,5 +1298,174 @@ mod tests {
         assert_eq!(registration, None);
         assert_eq!(removed.map(|(code, _)| code), Some("root-removed"));
         assert_eq!(recovered, None);
+    }
+
+    /// A coordinator on a fresh reload state, ready with one directory watched.
+    fn decisions() -> (WatchDecisions<ChangeCoordinator>, ReloadState) {
+        let reload = ReloadState::new(InstanceId::parse("test-1").expect("valid id"));
+        let mut coordinator = ChangeCoordinator::new(
+            DebounceWindow::from_millis(WINDOW_MS).expect("in range"),
+            reload.clone(),
+        );
+        coordinator.watcher_ready(1).expect("starting");
+        (WatchDecisions::new(coordinator), reload)
+    }
+
+    #[test]
+    fn should_reconcile_full_at_once_when_batch_is_an_overflow() {
+        // given
+        let (mut decisions, _reload) = decisions();
+        let clock = preview_testkit::FakeClock::new();
+        let mut scopes = Vec::new();
+
+        // when
+        let step = decisions.receive(ChangeBatch::Overflow, &clock, |scope| {
+            scopes.push(scope);
+            Reconciled::default()
+        });
+
+        // then
+        let step = step.expect("the source is open");
+        assert!(step.needs_reconcile);
+        assert_eq!(scopes, [ReconcileScope::Full]);
+    }
+
+    #[test]
+    fn should_rescan_once_when_a_rescan_revision_follows_a_full_reconcile() {
+        // given: an overflow, reconciled in full at once
+        let (mut decisions, reload) = decisions();
+        let clock = preview_testkit::FakeClock::new();
+        let mut scopes = Vec::new();
+        let _received = decisions.receive(ChangeBatch::Overflow, &clock, |scope| {
+            scopes.push(scope);
+            Reconciled::default()
+        });
+        clock.advance(WINDOW_MS);
+
+        // when: its rescan revision settles, then another overflow's
+        let first = decisions.settle(&clock, |scope| {
+            scopes.push(scope);
+            Reconciled::default()
+        });
+        let _received = decisions.receive(ChangeBatch::Overflow, &clock, |scope| {
+            scopes.push(scope);
+            Reconciled::default()
+        });
+        clock.advance(WINDOW_MS);
+        let second = decisions.settle(&clock, |scope| {
+            scopes.push(scope);
+            Reconciled::default()
+        });
+
+        // then: each overflow reconciled once; neither revision repeated it
+        assert_eq!((first.rescan, second.rescan), (Some(true), Some(true)));
+        assert_eq!(scopes, [ReconcileScope::Full, ReconcileScope::Full]);
+        assert_eq!(reload.current().revision().get(), 2);
+    }
+
+    #[test]
+    fn should_rescan_at_settle_when_no_full_reconcile_ran_since_the_last_revision() {
+        // given: an ambiguous change asks for a rescan but no reconcile at receive
+        let (mut decisions, _reload) = decisions();
+        let clock = preview_testkit::FakeClock::new();
+        let batch = ChangeBatch::Events(vec![event(ChangeKind::Ambiguous, "a.css")]);
+        let mut scopes = Vec::new();
+        let received = decisions.receive(batch, &clock, |scope| {
+            scopes.push(scope);
+            Reconciled::default()
+        });
+        clock.advance(WINDOW_MS);
+
+        // when
+        let settled = decisions.settle(&clock, |scope| {
+            scopes.push(scope);
+            Reconciled::default()
+        });
+
+        // then
+        let received = received.expect("the source is open");
+        assert_eq!(settled.rescan, Some(true));
+        let at_receive = usize::from(received.needs_reconcile);
+        assert_eq!(scopes.len(), at_receive + 1, "{scopes:?}");
+        assert_eq!(scopes.last(), Some(&ReconcileScope::Full));
+    }
+
+    #[test]
+    fn should_report_problems_then_degradation_when_reconcile_cannot_watch_a_directory() {
+        // given
+        let (mut decisions, _reload) = decisions();
+        let clock = preview_testkit::FakeClock::new();
+
+        // when
+        let step = decisions.receive(ChangeBatch::Overflow, &clock, |_| Reconciled {
+            problems: vec!["d: cannot watch".to_owned()],
+            ..Reconciled::default()
+        });
+
+        // then
+        assert_eq!(
+            step.expect("the source is open").reports,
+            [
+                WatchReport::Problem("d: cannot watch".to_owned()),
+                WatchReport::Event(DomainEvent::WatcherDegraded {
+                    reason: DegradeReason::RegistrationFailed
+                }),
+            ]
+        );
+    }
+
+    #[test]
+    fn should_report_refused_readiness_when_reconcile_reports_no_directory() {
+        // given
+        let (mut decisions, _reload) = decisions();
+        let clock = preview_testkit::FakeClock::new();
+
+        // when
+        let step = decisions.receive(ChangeBatch::Overflow, &clock, |_| Reconciled {
+            ready: Some(0),
+            ..Reconciled::default()
+        });
+
+        // then
+        let reports = step.expect("the source is open").reports;
+        assert!(
+            matches!(reports.as_slice(), [WatchReport::ReadinessRefused(_)]),
+            "{reports:?}"
+        );
+    }
+
+    #[test]
+    fn should_report_root_removal_only_when_reconcile_finds_root_gone() {
+        // given
+        let (mut decisions, _reload) = decisions();
+        let clock = preview_testkit::FakeClock::new();
+
+        // when
+        let step = decisions.receive(ChangeBatch::Overflow, &clock, |_| Reconciled {
+            ready: Some(1),
+            problems: vec!["ignored".to_owned()],
+            root_removed: true,
+        });
+
+        // then
+        assert_eq!(
+            step.expect("the source is open").reports,
+            [WatchReport::Event(DomainEvent::WatcherDegraded {
+                reason: DegradeReason::RootRemoved
+            })]
+        );
+    }
+
+    #[test]
+    fn should_return_none_when_the_source_has_closed() {
+        // given
+        let (mut decisions, _reload) = decisions();
+        let clock = preview_testkit::FakeClock::new();
+
+        // when
+        let step = decisions.receive(ChangeBatch::Closed, &clock, |_| Reconciled::default());
+
+        // then
+        assert_eq!(step, None);
     }
 }

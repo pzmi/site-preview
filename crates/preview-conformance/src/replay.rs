@@ -6,7 +6,9 @@
 //!
 //! This module knows nothing about a particular model or harness library: a driver names the
 //! actions it understands and decodes its own parameters from [`Params`], and the caller
-//! supplies the projection of the model's state (ADR 0053).
+//! supplies the projection of the model's state (ADR 0053). A driver that needs a choice the
+//! model's environment made declares the model paths it reads ([`Driver::MODEL_READS`]) and
+//! is handed a [`ModelView`] holding those paths only (ADR 0070).
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -168,17 +170,24 @@ pub trait Driver {
     /// The canonical model-facing observation: the same type the model's state projects to.
     type Obs: PartialEq + fmt::Debug;
 
+    /// The model paths [`Driver::apply_with_model`] may read, as [`ModelView`] patterns
+    /// (`browsers.*.doc`): only choices the model's environment makes outside the
+    /// implementation, never a variable the driver observes from the real code, which would
+    /// make the comparison vacuous (ADR 0070). None by default.
+    const MODEL_READS: &'static [&'static str] = &[];
+
     /// Applies one action with its picked parameters to the real code.
     fn apply(&mut self, action: &str, params: &Params) -> Result<(), DriverError>;
 
-    /// [`Driver::apply`], with the model's state after the step at hand. [`replay`] calls
-    /// this one; the default ignores `model` and calls [`Driver::apply`].
+    /// [`Driver::apply`], with the model's state after the step at hand, restricted to
+    /// [`Driver::MODEL_READS`]. [`replay`] calls this one; the default ignores `model` and calls
+    /// [`Driver::apply`].
     ///
     /// For a step of the environment whose stimulus to the real code is a choice the model
     /// makes outside the implementation, such as a browser's decision to navigate away and so
     /// close its event stream (D16: the client is verified elsewhere, never reimplemented in
-    /// Rust). A driver reads only that environmental choice from `model`, never the part of
-    /// the state it observes from the real code, which would make the comparison vacuous.
+    /// Rust). `model` holds nothing but the declared paths, and a read of any other path is a
+    /// [`DriverError::Refused`].
     ///
     /// # Errors
     ///
@@ -187,7 +196,7 @@ pub trait Driver {
         &mut self,
         action: &str,
         params: &Params,
-        model: &State,
+        model: &ModelView,
     ) -> Result<(), DriverError> {
         let _ = model;
         self.apply(action, params)
@@ -195,6 +204,128 @@ pub trait Driver {
 
     /// Projects the real code's current state.
     fn observe(&self) -> Self::Obs;
+}
+
+/// The part of a model state a driver declared it reads ([`Driver::MODEL_READS`]), and
+/// nothing else: [`replay`] builds it from each state, so the rest of the state never reaches
+/// the driver (ADR 0070).
+///
+/// A pattern is a variable name followed by `.`-separated steps: a record field by name, a map
+/// entry by its string key, or `*` for every entry of a map. `browsers.*.doc` keeps each
+/// browser's `doc` and nothing else of `browsers`, or of any other variable.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ModelView {
+    patterns: &'static [&'static str],
+    vars: BTreeMap<String, Value>,
+}
+
+impl ModelView {
+    /// The paths of `state` that `patterns` name, pruned of everything else.
+    pub fn new(state: &State, patterns: &'static [&'static str]) -> Self {
+        let mut vars: BTreeMap<String, Value> = BTreeMap::new();
+        for pattern in patterns {
+            let steps: Vec<&str> = pattern.split('.').collect();
+            let Some((var, rest)) = steps.split_first() else {
+                continue;
+            };
+            let Some(kept) = state.var(var).and_then(|value| prune(value, rest)) else {
+                continue;
+            };
+            let merged = match vars.remove(*var) {
+                Some(earlier) => merge(earlier, kept),
+                None => kept,
+            };
+            vars.insert((*var).to_owned(), merged);
+        }
+        Self { patterns, vars }
+    }
+
+    /// The value at `path` (a variable name, then record fields and map keys).
+    ///
+    /// # Errors
+    ///
+    /// [`DriverError::Refused`] when no declared pattern covers `path` (a driver reading what
+    /// it did not declare), or when the model has nothing there.
+    pub fn read(&self, path: &[&str]) -> Result<&Value, DriverError> {
+        let shown = path.join(".");
+        if !self.patterns.iter().any(|pattern| covers(pattern, path)) {
+            return Err(DriverError::Refused(format!(
+                "the driver read the model path {shown}, which its MODEL_READS does not declare"
+            )));
+        }
+        let missing = || DriverError::Refused(format!("the model has no {shown}"));
+        let (var, rest) = path.split_first().ok_or_else(missing)?;
+        let mut value = self.vars.get(*var).ok_or_else(missing)?;
+        for step in rest {
+            value = match value {
+                Value::Record(fields) => fields.get(*step),
+                Value::Map(entries) => entries.get(&Value::Str((*step).to_owned())),
+                _ => None,
+            }
+            .ok_or_else(missing)?;
+        }
+        Ok(value)
+    }
+}
+
+/// Whether `pattern` covers the concrete `path` or a value inside it.
+fn covers(pattern: &str, path: &[&str]) -> bool {
+    let steps: Vec<&str> = pattern.split('.').collect();
+    path.len() >= steps.len()
+        && steps
+            .iter()
+            .zip(path)
+            .all(|(step, part)| *step == "*" || step == part)
+}
+
+/// `value` with only what the pattern steps `rest` reach; `None` when they reach nothing.
+fn prune(value: &Value, rest: &[&str]) -> Option<Value> {
+    let Some((step, rest)) = rest.split_first() else {
+        return Some(value.clone());
+    };
+    match value {
+        Value::Record(fields) => {
+            let kept = prune(fields.get(*step)?, rest)?;
+            Some(Value::Record(BTreeMap::from([((*step).to_owned(), kept)])))
+        }
+        Value::Map(entries) => {
+            let kept: BTreeMap<Value, Value> = entries
+                .iter()
+                .filter(|(key, _)| *step == "*" || key.as_str() == Some(*step))
+                .filter_map(|(key, entry)| Some((key.clone(), prune(entry, rest)?)))
+                .collect();
+            (!kept.is_empty()).then_some(Value::Map(kept))
+        }
+        _ => None,
+    }
+}
+
+/// The union of two pruned values of one variable.
+fn merge(a: Value, b: Value) -> Value {
+    match (a, b) {
+        (Value::Record(mut left), Value::Record(right)) => {
+            for (name, value) in right {
+                let merged = match left.remove(&name) {
+                    Some(earlier) => merge(earlier, value),
+                    None => value,
+                };
+                left.insert(name, merged);
+            }
+            Value::Record(left)
+        }
+        (Value::Map(mut left), Value::Map(right)) => {
+            for (key, value) in right {
+                let merged = match left.remove(&key) {
+                    Some(earlier) => merge(earlier, value),
+                    None => value,
+                };
+                left.insert(key, merged);
+            }
+            Value::Map(left)
+        }
+        // Two patterns that reach the same whole value keep it once.
+        (_, whole) => whole,
+    }
 }
 
 /// What went wrong at a step.
@@ -237,8 +368,11 @@ pub struct Divergence {
 /// Replays `trace` against `driver`, comparing after every step.
 ///
 /// `project_expected` maps a model state to the driver's observation type. The replay stops
-/// at the first divergence; a trace with no states is one (a vacuous replay must not pass).
-/// The error is boxed because a report is large and the success path carries nothing.
+/// at the first divergence; a trace with no states is one (a vacuous replay must not pass),
+/// and so is a trace whose length differs from the one its manifest records
+/// ([`Trace::with_max_steps`]): a script or a generation cut short would otherwise pass on its
+/// first states. The error is boxed because a report is large and the success path carries
+/// nothing.
 pub fn replay<D, P>(
     trace: &Trace,
     driver: &mut D,
@@ -267,6 +401,16 @@ where
             Cause::Trace("the trace has no states".into()),
         )));
     }
+    if let Some(steps) = trace.max_steps
+        && trace.states.len() != steps + 1
+    {
+        let cause = Cause::Trace(format!(
+            "the trace has {} states, not the {} its manifest's max_steps {steps} gives",
+            trace.states.len(),
+            steps + 1
+        ));
+        return Err(Box::new(diverge(0, "", String::new(), cause)));
+    }
     for state in &trace.states {
         let step = state.index;
         let Some(action) = state.action_taken() else {
@@ -285,7 +429,8 @@ where
         };
         let params = Params::new(picks);
         let expected = project_expected(state);
-        let applied = driver.apply_with_model(action, &params, state);
+        let view = ModelView::new(state, D::MODEL_READS);
+        let applied = driver.apply_with_model(action, &params, &view);
         let actual = driver.observe();
         let mut divergence = diverge(step, action, params.to_string(), Cause::Mismatch);
         divergence.actual = Some(format!("{actual:#?}"));
@@ -596,5 +741,183 @@ mod tests {
         );
         assert_eq!(results.3, Err(DriverError::MissingParam("nope".into())));
         assert_eq!(params.to_string(), "count = 3, flag = true");
+    }
+
+    /// A driver that reads one model path at every step and records what it read.
+    struct Peeker {
+        path: &'static [&'static str],
+        read: Vec<Value>,
+    }
+
+    impl Driver for Peeker {
+        type Obs = Obs;
+
+        const MODEL_READS: &'static [&'static str] = &["res.listeners"];
+
+        fn apply(&mut self, _action: &str, _params: &Params) -> Result<(), DriverError> {
+            Ok(())
+        }
+
+        fn apply_with_model(
+            &mut self,
+            _action: &str,
+            _params: &Params,
+            model: &ModelView,
+        ) -> Result<(), DriverError> {
+            self.read.push(model.read(self.path)?.clone());
+            Ok(())
+        }
+
+        fn observe(&self) -> Obs {
+            Obs {
+                state: String::new(),
+                listeners: 0,
+                response: String::new(),
+            }
+        }
+    }
+
+    #[test]
+    fn should_refuse_the_read_when_driver_reads_an_undeclared_model_path() {
+        // given: a driver that declares `res.listeners` and reads `res.serveTasks`
+        let trace = sample();
+        let mut driver = Peeker {
+            path: &["res", "serveTasks"],
+            read: Vec::new(),
+        };
+
+        // when
+        let divergence = replay(&trace, &mut driver, project).expect_err("refused");
+
+        // then
+        assert_eq!(divergence.step, 0);
+        assert_eq!(
+            divergence.cause,
+            Cause::Driver(DriverError::Refused(
+                "the driver read the model path res.serveTasks, which its MODEL_READS does not \
+                 declare"
+                    .to_owned()
+            ))
+        );
+    }
+
+    #[test]
+    fn should_hand_the_declared_path_only_when_driver_reads_the_model() {
+        // given
+        let state = &sample().states[1];
+
+        // when
+        let view = ModelView::new(state, Peeker::MODEL_READS);
+
+        // then: the declared value, and nothing else of `res` or of any other variable
+        let listeners = state.var("res").and_then(|r| r.field("listeners"));
+        assert_eq!(view.read(&["res", "listeners"]).ok(), listeners);
+        assert_eq!(
+            view,
+            ModelView::new(
+                &State {
+                    index: 9,
+                    vars: BTreeMap::from([(
+                        "res".to_owned(),
+                        Value::Record(BTreeMap::from([(
+                            "listeners".to_owned(),
+                            listeners.expect("res.listeners").clone()
+                        )]))
+                    )]),
+                },
+                Peeker::MODEL_READS
+            )
+        );
+        for undeclared in [&["res", "serveTasks"][..], &["state"], &["res"]] {
+            assert!(
+                matches!(view.read(undeclared), Err(DriverError::Refused(why)) if why.contains("does not declare")),
+                "{undeclared:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn should_keep_each_entry_of_a_map_when_pattern_names_every_key() {
+        // given: two browsers with a page and a counter each, and another variable
+        let browser = |doc: &str| {
+            Value::Record(BTreeMap::from([
+                ("doc".to_owned(), Value::Str(doc.to_owned())),
+                ("reloaded".to_owned(), Value::Int(3)),
+            ]))
+        };
+        let state = State {
+            index: 0,
+            vars: BTreeMap::from([
+                (
+                    "browsers".to_owned(),
+                    Value::Map(BTreeMap::from([
+                        (Value::Str("b1".into()), browser("Shown")),
+                        (Value::Str("b2".into()), browser("Navigating")),
+                    ])),
+                ),
+                ("up".to_owned(), Value::Bool(true)),
+            ]),
+        };
+
+        // when
+        let view = ModelView::new(&state, &["browsers.*.doc", "browsers.b1.doc"]);
+
+        // then
+        assert_eq!(
+            view.read(&["browsers", "b2", "doc"]),
+            Ok(&Value::Str("Navigating".into()))
+        );
+        assert_eq!(
+            view.read(&["browsers", "b1", "doc"]),
+            Ok(&Value::Str("Shown".into()))
+        );
+        assert!(view.read(&["browsers", "b1", "reloaded"]).is_err());
+        assert!(view.read(&["up"]).is_err());
+        assert_eq!(
+            view.read(&["browsers", "b3", "doc"]),
+            Err(DriverError::Refused(
+                "the model has no browsers.b3.doc".to_owned()
+            ))
+        );
+    }
+
+    #[test]
+    fn should_reject_a_longer_or_shorter_path_when_checking_the_patterns() {
+        // given
+        let pattern = "browsers.*.doc";
+
+        // when
+        let results = (
+            covers(pattern, &["browsers", "b1", "doc"]),
+            covers(pattern, &["browsers", "b1", "doc", "inner"]),
+            covers(pattern, &["browsers", "b1"]),
+            covers(pattern, &["browsers", "b1", "open"]),
+        );
+
+        // then
+        assert_eq!(results, (true, true, false, false));
+    }
+
+    #[test]
+    fn should_refuse_a_trace_of_another_length_when_its_manifest_gives_one() {
+        // given: the five-step sample, said to have four steps
+        let trace = sample().with_max_steps(4);
+        let mut driver = Toy::new(Fault::None);
+
+        // when
+        let divergence = replay(&trace, &mut driver, project).expect_err("another length");
+
+        // then
+        assert_eq!(
+            divergence.cause,
+            Cause::Trace(
+                "the trace has 6 states, not the 5 its manifest's max_steps 4 gives".to_owned()
+            )
+        );
+        let mut driver = Toy::new(Fault::None);
+        assert_eq!(
+            replay(&sample().with_max_steps(5), &mut driver, project),
+            Ok(())
+        );
     }
 }

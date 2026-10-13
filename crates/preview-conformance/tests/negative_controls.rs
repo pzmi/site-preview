@@ -3,21 +3,29 @@
 //! seam, replays a named committed trace, and asserts that the checker stops at the exact
 //! step and action where the fault first shows, with the exact field that differs.
 //!
-//! A driver that silently stopped comparing (an `observe` returning a constant, a projection
-//! that ignored a field) would let a faulty implementation pass, so these tests fail with it.
-//! They run in the `unit-tests` stage with the rest of the workspace.
+//! A driver that silently stopped comparing a field these controls fault (an `observe`
+//! returning a constant, a projection that ignored the field) would let the faulty
+//! implementation pass, so these tests fail with it; `field_sensitivity.rs` holds every
+//! projected field to the same standard from the model's side (ADR 0070). They run in the
+//! `conformance-controls` stage of `cargo xtask conformance` (ADR 0060), not in `unit-tests`.
 //!
 //! Every fault lives here, in test code: the production crates are unchanged. The seams are
-//! the drivers' own: a wrapper [`Driver`] around [`LifecycleDriver`], the reload driver's
+//! the drivers' own: a wrapper [`Driver`] around [`LifecycleDriver`] and the lifecycle
+//! driver's [`LifecycleDriver::with_server`], the reload driver's
 //! [`ReloadDriver::with_router`] and [`ReloadDriver::with_publisher`], and the watcher
-//! driver's [`WatcherDriver::with_coordinator`].
+//! driver's [`WatcherDriver::with_coordinator`] (behind composition's `WatchDecisions`, the
+//! pipeline's own decision step, ADR 0070).
 //!
 //! The named traces are deterministic scripts (seed `0x5ce1`, ADR 0056 to ADR 0058); every
 //! control replays its trace twice with fresh drivers and asserts the same divergence, so a
 //! rerun with the same seed reproduces the same step.
 
 use std::convert::Infallible;
-use std::net::TcpListener;
+use std::io::{Read, Write};
+use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::sync::mpsc;
+use std::thread::JoinHandle;
+use std::time::Duration;
 
 use axum::Router;
 use axum::body::Body;
@@ -31,16 +39,20 @@ use preview_application::{
     ChangeBatch, ChangeCoordinator, Received, RecordOutcome, ReloadState, SettleOutcome,
     SourceFailure,
 };
-use preview_conformance::drivers::lifecycle::{self, LifecycleDriver, LifecycleObs};
-use preview_conformance::drivers::reload::{self, Kind, Publisher, ReloadDriver, ReloadObs};
-use preview_conformance::drivers::watcher::{
-    self, Coordinator, Publish, WatcherDriver, WatcherObs,
+use preview_composition::{ServeConfig, StartupError, Stopped};
+use preview_conformance::drivers::lifecycle::{
+    self, LifecycleDriver, LifecycleObs, Response as Answer, ServerHandle, start_server,
 };
-use preview_conformance::generate::formal_dir;
+use preview_conformance::drivers::reload::{
+    self, Event, EventName, Kind, Publisher, ReloadDriver, ReloadObs, Stamp,
+};
+use preview_conformance::drivers::watcher::{
+    self, Coordinator, PipelineCoordinator, Publish, WatcherDriver, WatcherObs,
+};
 use preview_conformance::{Cause, Divergence, Driver, DriverError, Params, Trace, replay};
 use preview_domain::{
-    AssetKind, ChangeEvent, ChangeSet, Deadline, DebounceWindow, DomainEvent, SiteState, Tick,
-    WatcherHealth, WatcherHealthRefusal,
+    AssetKind, ChangeEvent, ChangeSet, Deadline, DebounceWindow, DomainEvent, LifecycleState,
+    SiteState, Tick, WatcherHealth, WatcherHealthRefusal,
 };
 use tempfile::TempDir;
 
@@ -50,14 +62,10 @@ const REGRESSION_SEED: &str = "0x5ce1";
 /// The event stream's path (plan.md section 7.2).
 const EVENTS: &str = "/__site_preview/events";
 
-/// The committed regression trace `formal/traces/regression/<name>.itf.json`.
+/// The committed regression trace `formal/traces/regression/<name>.itf.json`, with its
+/// manifest's seed and length.
 fn regression(name: &str) -> Trace {
-    let path = formal_dir()
-        .join("traces/regression")
-        .join(format!("{name}.itf.json"));
-    Trace::load(&path)
-        .unwrap_or_else(|err| panic!("{}: {err}", path.display()))
-        .with_seed(REGRESSION_SEED)
+    preview_conformance::generate::regression(name).unwrap_or_else(|err| panic!("{err}"))
 }
 
 /// What a control caught: the divergence, the model's projected state at that step and the
@@ -198,6 +206,226 @@ fn should_catch_listener_leak_at_first_stop_when_lifecycle_keeps_listener() {
 }
 
 // ------------------------------------------------------------------------------------------
+// Lifecycle: a stream the shutdown does not end (`CloseStreams` a no-op).
+// ------------------------------------------------------------------------------------------
+
+/// How long the faulty servers' drain waits: short, so the control is quick.
+const SHORT_DRAIN: Duration = Duration::from_millis(200);
+
+/// A file in the site too large to send while its reader does not read.
+const BIG_FILE: &str = "big.bin";
+
+/// Which fault a [`FaultyServer`] has.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ServerFault {
+    /// A connection outlives the shutdown's end of the streams, as an event stream does when
+    /// `CloseStreams` (and the serve task's own trigger) end nothing: the drain waits for it
+    /// to the bound and the stop returns `DrainTimedOut`. Built from outside the server, which
+    /// cannot be made to skip its own effect: a response that never finishes, a large file
+    /// whose reader stopped reading, which no shutdown signal ends.
+    StreamOutlivesShutdown,
+    /// A task outlives the stop: a thread the server started and never joins.
+    TaskOutlivesStop,
+}
+
+/// The real [`Server`](preview_composition::Server) behind [`ServerHandle`], with one fault.
+struct FaultyServer {
+    fault: ServerFault,
+    inner: Box<dyn ServerHandle>,
+    /// The connection the shutdown cannot end, held across the stop.
+    held: Option<TcpStream>,
+    /// The task the stop does not join, and the sender whose drop ends it.
+    task: Option<(mpsc::Sender<()>, JoinHandle<()>)>,
+}
+
+impl FaultyServer {
+    fn start(
+        fault: ServerFault,
+        config: &ServeConfig,
+        watcher_ok: bool,
+    ) -> Result<Box<dyn ServerHandle>, StartupError> {
+        let mut config = config.clone();
+        config.limits.drain_timeout = SHORT_DRAIN;
+        let big = config.root.join(BIG_FILE);
+        if fault == ServerFault::StreamOutlivesShutdown && config.root.is_dir() && !big.exists() {
+            // Larger than any loopback socket buffer, so its writer waits for the reader.
+            std::fs::write(&big, vec![b'x'; 64 << 20]).expect("a large file");
+        }
+        let inner = start_server(&config, watcher_ok)?;
+        let task = (fault == ServerFault::TaskOutlivesStop).then(|| {
+            let (keep, kept) = mpsc::channel::<()>();
+            (
+                keep,
+                std::thread::spawn(move || while kept.recv().is_ok() {}),
+            )
+        });
+        Ok(Box::new(Self {
+            fault,
+            inner,
+            held: None,
+            task,
+        }))
+    }
+}
+
+impl ServerHandle for FaultyServer {
+    fn state(&self) -> LifecycleState {
+        self.inner.state()
+    }
+
+    fn owns_tasks(&self) -> bool {
+        self.inner.owns_tasks()
+            || self
+                .task
+                .as_ref()
+                .is_some_and(|(_, task)| !task.is_finished())
+    }
+
+    fn local_addr(&self) -> SocketAddr {
+        self.inner.local_addr()
+    }
+
+    fn stop(&mut self) -> Stopped {
+        let addr = self.inner.local_addr();
+        if self.fault == ServerFault::StreamOutlivesShutdown
+            && self.held.is_none()
+            && let Ok(mut stream) = TcpStream::connect(addr)
+        {
+            let head = format!("GET /{BIG_FILE} HTTP/1.1\r\nHost: {addr}\r\n\r\n");
+            let mut start = [0_u8; 12];
+            // The response has begun and is not read further: it cannot finish.
+            if stream.write_all(head.as_bytes()).is_ok()
+                && stream.read_exact(&mut start).is_ok()
+                && &start == b"HTTP/1.1 200"
+            {
+                self.held = Some(stream);
+            }
+        }
+        self.inner.stop()
+    }
+}
+
+#[test]
+fn should_catch_drain_timeout_at_first_stop_when_a_stream_outlives_shutdown() {
+    // given
+    let trace = regression("lifecycle-doubleStop");
+    let root = site();
+    let make = || {
+        LifecycleDriver::with_server(root.path(), |config, watcher_ok| {
+            FaultyServer::start(ServerFault::StreamOutlivesShutdown, config, watcher_ok)
+        })
+    };
+
+    // when
+    let caught = catch(&trace, make, lifecycle::project);
+
+    // then: the model's stop ends every stream before the drain; the real one waited out the
+    // bound for the connection it could not end
+    assert_caught_at(&caught, "lifecycle-doubleStop", 3, "stopServer");
+    assert_eq!(caught.expected.stopped, Some(Stopped::Drained));
+    assert_eq!(
+        caught.actual,
+        LifecycleObs {
+            stopped: Some(Stopped::DrainTimedOut),
+            ..caught.expected
+        }
+    );
+}
+
+#[test]
+fn should_catch_unjoined_task_at_first_stop_when_a_task_outlives_stop() {
+    // given: `tasksReleasedAfterStop`
+    let trace = regression("lifecycle-doubleStop");
+    let root = site();
+    let make = || {
+        LifecycleDriver::with_server(root.path(), |config, watcher_ok| {
+            FaultyServer::start(ServerFault::TaskOutlivesStop, config, watcher_ok)
+        })
+    };
+
+    // when
+    let caught = catch(&trace, make, lifecycle::project);
+
+    // then: stopped, the listener and streams closed, but a task still owned
+    assert_caught_at(&caught, "lifecycle-doubleStop", 3, "stopServer");
+    assert!(!caught.expected.tasks_alive);
+    assert_eq!(
+        caught.actual,
+        LifecycleObs {
+            tasks_alive: true,
+            ..caught.expected
+        }
+    );
+}
+
+/// The real server, answering a request after its stop: while the driver's `request` of a
+/// stopped server runs, something answers `200` at the server's address, as a serve task that
+/// kept accepting would; the listener is gone again before the observation probes it, so only
+/// the response shows the fault (`noResponsesWhenStopped`).
+struct AnswersAfterStop {
+    inner: LifecycleDriver,
+}
+
+impl Driver for AnswersAfterStop {
+    type Obs = LifecycleObs;
+
+    fn apply(&mut self, action: &str, params: &Params) -> Result<(), DriverError> {
+        let stopped = self.inner.observe().state == LifecycleState::Stopped;
+        let Some(address) = self
+            .inner
+            .address()
+            .filter(|_| action == "request" && stopped)
+        else {
+            return self.inner.apply(action, params);
+        };
+        let listener = TcpListener::bind(address)
+            .map_err(|e| DriverError::Refused(format!("cannot answer at {address}: {e}")))?;
+        std::thread::scope(|scope| {
+            let answering = scope.spawn(|| {
+                let (mut client, _) = listener.accept()?;
+                let mut head = [0_u8; 512];
+                let _read = client.read(&mut head)?;
+                client.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+            });
+            let applied = self.inner.apply(action, params);
+            answering
+                .join()
+                .map_err(|_| DriverError::Refused("the answering thread panicked".into()))?
+                .map_err(|e| DriverError::Refused(format!("cannot answer: {e}")))?;
+            applied
+        })
+    }
+
+    fn observe(&self) -> LifecycleObs {
+        self.inner.observe()
+    }
+}
+
+#[test]
+fn should_catch_answer_at_request_after_stop_when_server_answers_when_stopped() {
+    // given: `noResponsesWhenStopped`
+    let trace = regression("lifecycle-startServeStop");
+    let root = site();
+    let make = || AnswersAfterStop {
+        inner: LifecycleDriver::new(root.path()),
+    };
+
+    // when
+    let caught = catch(&trace, make, lifecycle::project);
+
+    // then: stopped, nothing owned, yet the request after the stop was answered
+    assert_caught_at(&caught, "lifecycle-startServeStop", 5, "request");
+    assert_eq!(caught.expected.response, Answer::Unanswered);
+    assert_eq!(
+        caught.actual,
+        LifecycleObs {
+            response: Answer::Answered,
+            ..caught.expected
+        }
+    );
+}
+
+// ------------------------------------------------------------------------------------------
 // Reload: `GapIgnoringSse` sends a hot update across a coalesced gap.
 // ------------------------------------------------------------------------------------------
 
@@ -287,6 +515,38 @@ fn should_catch_hot_update_across_gap_at_send_when_sse_ignores_gap() {
     );
     event.full = false;
     event.kinds = [Kind::Js].into();
+    assert_eq!(caught.actual, faulty);
+}
+
+#[test]
+fn should_catch_open_stream_at_stop_when_sse_ignores_shutdown() {
+    // given: b1 holds the baseline; the handler behind the seam never watches the shutdown
+    // signal (`GapIgnoringSse` has no shutdown, and this trace has no gap for its other fault)
+    let trace = regression("reload-restartSamePort");
+
+    // when
+    let caught = catch(
+        &trace,
+        || ReloadDriver::with_router(GapIgnoringSse::router),
+        reload::project,
+    );
+
+    // then: the model's stop closes b1's stream; the faulty one stays open (ADR 0057)
+    assert_caught_at(&caught, "reload-restartSamePort", 4, "stopServer");
+    assert!(!caught.expected.up && caught.expected.streams.is_empty());
+    let mut faulty = caught.expected.clone();
+    faulty.streams.insert(
+        "b1".to_owned(),
+        vec![Event {
+            name: EventName::State,
+            at: Stamp {
+                instance: 1,
+                revision: 0,
+            },
+            kinds: [].into(),
+            full: false,
+        }],
+    );
     assert_eq!(caught.actual, faulty);
 }
 
@@ -411,7 +671,7 @@ impl FaultyCoordinator {
     }
 }
 
-impl Coordinator for FaultyCoordinator {
+impl PipelineCoordinator for FaultyCoordinator {
     fn receive(&mut self, batch: ChangeBatch<ChangeEvent>, now: Tick) -> Received {
         match (self.fault, &batch) {
             (WatcherFault::NoDuplicateSuppression, ChangeBatch::Events(events)) => {
@@ -458,10 +718,6 @@ impl Coordinator for FaultyCoordinator {
         outcome
     }
 
-    fn watcher_ready(&mut self, dirs: usize) -> Result<Vec<DomainEvent>, WatcherHealthRefusal> {
-        self.inner.watcher_ready(dirs)
-    }
-
     fn watcher_reconciled(
         &mut self,
         dirs: usize,
@@ -477,6 +733,12 @@ impl Coordinator for FaultyCoordinator {
 
     fn watcher_failed(&mut self, failure: SourceFailure) -> Vec<DomainEvent> {
         self.inner.watcher_failed(failure)
+    }
+}
+
+impl Coordinator for FaultyCoordinator {
+    fn watcher_ready(&mut self, dirs: usize) -> Result<Vec<DomainEvent>, WatcherHealthRefusal> {
+        self.inner.watcher_ready(dirs)
     }
 
     fn health(&self) -> WatcherHealth {
@@ -512,7 +774,6 @@ fn should_catch_reload_per_event_at_first_receive_when_coordinator_suppresses_no
     // when
     let caught = catch_watcher("watcher-burstOneReload", make);
 
-    // then
     // then: the model has nothing published before the burst settles; the fault published
     // the batch's change at once
     assert_caught_at(&caught, "watcher-burstOneReload", 4, "receive");
@@ -536,7 +797,6 @@ fn should_catch_publish_at_receive_when_debouncer_fires_on_leading_edge() {
     // when
     let caught = catch_watcher("watcher-atomicSave", make);
 
-    // then
     // then: the model waits out the window; the fault published at the first change
     assert_caught_at(&caught, "watcher-atomicSave", 2, "receive");
     assert_eq!(caught.expected.deadline_ms, Some(150));
@@ -558,7 +818,6 @@ fn should_catch_lost_overflow_at_receive_when_coordinator_drops_overflow() {
     // when
     let caught = catch_watcher("watcher-overflowRescan", make);
 
-    // then
     // then: the model is dirty and reconciles after the overflow; the fault noticed nothing
     assert_caught_at(&caught, "watcher-overflowRescan", 5, "receive");
     assert!(caught.expected.dirty && caught.expected.needs_reconcile);
@@ -579,7 +838,6 @@ fn should_catch_missing_rescan_at_settle_when_overflow_sets_no_rescan_flag() {
     // when
     let caught = catch_watcher("watcher-overflowRescan", make);
 
-    // then
     // then: the full revision is published, but without the rescan the model asks for
     assert_caught_at(&caught, "watcher-overflowRescan", 9, "settle");
     assert_eq!(
@@ -601,7 +859,6 @@ fn should_catch_hot_revision_after_recovery_at_settle_when_recovery_is_unmarked(
     // when
     let caught = catch_watcher("watcher-recoveryAfterWatchLimit", make);
 
-    // then
     // then: the revision after the recovery is hot where the model reloads fully
     assert_caught_at(&caught, "watcher-recoveryAfterWatchLimit", 14, "settle");
     let mut faulty = caught.expected.clone();

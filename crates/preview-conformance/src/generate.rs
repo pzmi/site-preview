@@ -13,9 +13,12 @@
 //! `QUINT_SEED` when set, so a failing run repeats exactly. A missing Node or Quint is an
 //! error naming the install command, never a skip.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+use crate::itf::Trace;
 
 /// Set by `cargo xtask conformance` to the generated traces' manifest, relative to the
 /// repository root: the replay then reads its traces from there instead of generating them.
@@ -24,6 +27,73 @@ pub const MANIFEST_ENV: &str = "CONFORMANCE_GENERATED_MANIFEST";
 /// The repository's `formal/` directory.
 pub fn formal_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../formal")
+}
+
+/// One committed trace's entry in `formal/traces/regression/manifest.toml`: its seed and
+/// length (ADR 0060).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RegressionEntry {
+    /// The seed it was generated with.
+    pub seed: String,
+    /// Its number of steps after `init`.
+    pub max_steps: usize,
+}
+
+/// The `file`, `seed` and `max_steps` of each `[[trace]]` of the regression manifest's
+/// `text`, by file name. A minimal reader of the manifest's flat form (`key = value` lines);
+/// xtask's unit tests hold the manifest to that form and to one entry per committed trace.
+///
+/// # Errors
+///
+/// A message naming an entry without a file, a seed or a numeric `max_steps`.
+pub fn regression_manifest(text: &str) -> Result<BTreeMap<String, RegressionEntry>, String> {
+    let mut entries = BTreeMap::new();
+    let mut blocks: Vec<BTreeMap<&str, &str>> = Vec::new();
+    for line in text.lines().map(str::trim) {
+        if line == "[[trace]]" {
+            blocks.push(BTreeMap::new());
+        } else if let (Some(block), Some((key, value))) = (blocks.last_mut(), line.split_once('='))
+            && !line.starts_with('#')
+        {
+            block.insert(key.trim(), value.trim().trim_matches('"'));
+        }
+    }
+    for block in blocks {
+        let file = block.get("file").ok_or("a manifest entry has no file")?;
+        let seed = block
+            .get("seed")
+            .ok_or_else(|| format!("the manifest entry {file} has no seed"))?;
+        let max_steps = block
+            .get("max_steps")
+            .and_then(|n| n.parse().ok())
+            .ok_or_else(|| format!("the manifest entry {file} has no max_steps"))?;
+        entries.insert(
+            (*file).to_owned(),
+            RegressionEntry {
+                seed: (*seed).to_owned(),
+                max_steps,
+            },
+        );
+    }
+    Ok(entries)
+}
+
+/// The committed regression trace `formal/traces/regression/<name>.itf.json`, with the seed
+/// and length its manifest entry records, so the replay refuses a trace of another length.
+///
+/// # Errors
+///
+/// A message when the manifest or the trace cannot be read, or the manifest has no entry.
+pub fn regression(name: &str) -> Result<Trace, String> {
+    let dir = formal_dir().join("traces/regression");
+    let manifest = std::fs::read_to_string(dir.join("manifest.toml"))
+        .map_err(|e| format!("formal/traces/regression/manifest.toml: {e}"))?;
+    let file = format!("{name}.itf.json");
+    let entry = regression_manifest(&manifest)?
+        .remove(&file)
+        .ok_or_else(|| format!("manifest.toml has no entry for {file}"))?;
+    let trace = Trace::load(&dir.join(&file)).map_err(|e| format!("{file}: {e}"))?;
+    Ok(trace.with_seed(entry.seed).with_max_steps(entry.max_steps))
 }
 
 /// The seed for this run: `QUINT_SEED` when set and not empty, else one from the clock.
@@ -67,6 +137,29 @@ impl Family<'_> {
              (QUINT_SEED={seed} repeats it)",
             self.file, self.step, self.traces, self.max_steps
         )
+    }
+
+    /// The family's traces, decoded, with the seed and this family's `max_steps`, so the
+    /// replay refuses one of another length.
+    ///
+    /// # Errors
+    ///
+    /// As [`Family::traces`], or a message naming a trace that does not decode.
+    pub fn load(&self) -> Result<(String, Vec<Trace>), String> {
+        let (seed, files) = self.traces()?;
+        let traces = files
+            .iter()
+            .map(|path| {
+                Trace::load(path)
+                    .map(|trace| {
+                        trace
+                            .with_seed(seed.clone())
+                            .with_max_steps(self.max_steps as usize)
+                    })
+                    .map_err(|e| format!("{}: {e}", path.display()))
+            })
+            .collect::<Result<_, _>>()?;
+        Ok((seed, traces))
     }
 
     /// The traces to replay and their seed: the manifest's when [`MANIFEST_ENV`] is set,
@@ -261,6 +354,64 @@ mod tests {
              \"step\": \"step\", \"invariant\": \"allInvariants\", \"traces\": {traces}, \
              \"max_steps\": 25, \"status\": \"ok\", \"files\": [{files}]}}]}}"
         )
+    }
+
+    #[test]
+    fn should_read_seed_and_length_of_each_entry_when_regression_manifest_is_read() {
+        // given
+        let text = "# header = ignored\n[[trace]]\nfile = \"a.itf.json\"\nmodel = \"m.qnt\"\nmax_steps = 3\nseed = \"0x5ce1\"\n\n[[trace]]\nfile = \"b.itf.json\"\nseed = \"11\"\nmax_steps = 5\n";
+
+        // when
+        let entries = regression_manifest(text).expect("parses");
+
+        // then
+        assert_eq!(
+            entries,
+            BTreeMap::from([
+                (
+                    "a.itf.json".to_owned(),
+                    RegressionEntry {
+                        seed: "0x5ce1".to_owned(),
+                        max_steps: 3
+                    }
+                ),
+                (
+                    "b.itf.json".to_owned(),
+                    RegressionEntry {
+                        seed: "11".to_owned(),
+                        max_steps: 5
+                    }
+                ),
+            ])
+        );
+    }
+
+    #[test]
+    fn should_refuse_an_entry_without_a_length_when_regression_manifest_is_read() {
+        // given
+        let text = "[[trace]]\nfile = \"a.itf.json\"\nseed = \"1\"\n";
+
+        // when
+        let result = regression_manifest(text);
+
+        // then
+        assert_eq!(
+            result,
+            Err("the manifest entry a.itf.json has no max_steps".to_owned())
+        );
+    }
+
+    #[test]
+    fn should_carry_seed_and_length_when_a_committed_trace_is_loaded() {
+        // given
+        let name = "lifecycle-doubleStop";
+
+        // when
+        let trace = regression(name).expect("the committed trace");
+
+        // then
+        assert_eq!(trace.seed.as_deref(), Some("0x5ce1"));
+        assert_eq!(trace.max_steps, Some(trace.states.len() - 1));
     }
 
     #[test]
