@@ -61,7 +61,7 @@ Environment:
 | Save to `reload` event, p95 of 50 | 180.0 ms (max 180.6 ms) | about 500 ms | met |
 | Idle CPU over 30 s | 0.00 % of one core (below the 10 ms tick resolution) | close to zero | met (threshold used here: 1 %) |
 | Descriptors, before / with 10 clients / after soak | 14 / 24 / 14 | no leak | met |
-| RSS, start / after save 20 / end of soak | 5,752 / 5,920 / 6,808 KiB | stable | met (+15 % over warm, limit +25 % with 4 MiB floor) |
+| RSS, start / after save 20 / end of soak | 5,752 / 5,920 / 6,808 KiB | stable | met (+15 % over warm; the limit is the larger of +25 % and 4 MiB, which detects a leak of about 22 KiB per save or more) |
 | Soak delivery | 200 of 200 saves reached all 10 clients | n/a | met |
 | Connection cap | 64 streams open, the 65th answered 503 | maximum 64 | met |
 

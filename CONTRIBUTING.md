@@ -24,7 +24,7 @@ The Rust toolchain is pinned in `rust-toolchain.toml`; `rustup` installs it on f
 
 ```text
 cargo xtask doctor          # report missing dev tools and wrong versions
-cargo xtask install-tools   # install the pinned cargo tools and scanners
+cargo xtask install-tools   # install the pinned cargo tools (not the scanners or Apalache)
 cargo xtask quick           # formatter, architecture, Clippy, fast tests: while you work
 cargo xtask check           # the full gate: run it before you open a pull request
 cargo xtask list-checks     # every check, machine-readable
@@ -33,7 +33,7 @@ cargo xtask list-checks     # every check, machine-readable
 `quick` is not `check`. `check` is the same gate CI runs, split over several jobs
 ([doc/required-checks.md](doc/required-checks.md)). It needs:
 
-- **Node 22 or newer** and npm, for the Quint models (`npm ci --prefix formal` installs the locked
+- **Node 22.x** and npm, for the Quint models (`npm ci --prefix formal` installs the locked
   Quint; nothing is fetched at run time) and the browser tests.
 - **Chromium** for the Playwright browser stage. `install-tools` does not install it: run
   `npx --prefix tests/e2e/browser playwright install chromium` once, or point
@@ -41,8 +41,10 @@ cargo xtask list-checks     # every check, machine-readable
   (`chromium_headless_shell-1194`). Without it the stage fails with that hint;
   `cargo xtask test --only browser` runs it alone.
 - **The pinned cargo tools** that `cargo xtask install-tools` installs: `cargo-nextest`,
-  `cargo-llvm-cov`, `cargo-deny` and the others in `tools/versions.toml`, plus the scanners
-  Gitleaks and actionlint for the security stages.
+  `cargo-llvm-cov`, `cargo-deny` and the others in `tools/versions.toml`.
+- **Gitleaks and actionlint** for the security stages, and **Apalache** (with a JVM) for
+  `formal-verify`: `install-tools` does not install these, it prints the release page of the
+  pinned version. Install them by hand; `cargo xtask doctor` names what is missing.
 
 If a required tool is missing, the command fails and says how to install it; it never reports
 success for a stage it did not run. `cargo xtask check --only <stage>` runs single stages.

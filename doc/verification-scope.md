@@ -18,7 +18,7 @@ not used. Decisions: D25 and [ADR 0026](adr/0026-nightly-fuzz-miri-and-concurren
 | No undefined behaviour in the pure crates | Miri over the `preview-domain` and `preview-application` tests | Scheduled `miri` job (`cargo xtask formal-verify --miri`), not in `check` | See "Miri" below |
 | Parsers and the change pipeline survive adversarial input | `cargo-fuzz` targets `decode_path`, `rewrite_html`, `host_header` and `change_sequence`, each with committed seeds and asserted properties ([`security.md`](security.md#fuzzing)) | Nightly `fuzz.yml`; `cargo xtask fuzz <target>` locally; not in `check` | Behaviour with no oracle in the target; code outside the four targets |
 | Tests exercise the code | LLVM line coverage floors (`coverage-floor.toml`, overall and per crate) and at least 95% of changed instrumented lines | `check` (`coverage`, `changed-lines`) | Whether the assertions are strong enough |
-| Tests would fail if the code were wrong | Mutation testing, `cargo xtask mutation` (TEST-08, in progress; scope per foundation.md section 5.3) | Scheduled, not in `check` | Equivalent mutants; paths the selected tests do not execute |
+| Tests would fail if the code were wrong | Mutation testing, `cargo xtask mutation` (TEST-08; scope per foundation.md section 5.3) | Scheduled, not in `check` | Equivalent mutants; paths the selected tests do not execute |
 | Crate layering, pure domain, no `unsafe`, test naming and hygiene, `fuzz_only` isolation | The architecture checker and its negative fixtures; `unsafe_code = "forbid"` in the workspace lints | `quick`, `check` | Semantics: it reads structure, not behaviour |
 | Supply chain and workflow safety | `cargo deny`, gitleaks, `actionlint`, the action-pin check | `check` (`security`) | Vulnerabilities not yet in the advisory database |
 
@@ -44,7 +44,7 @@ times slower than native code and refuses host access (isolation stays on):
 | `PROPTEST_DISABLE_FAILURE_PERSISTENCE=true`, forwarded | Proptest's persistence calls `getcwd`, which isolation refuses; the committed `proptest-regressions/` seeds are replayed by `unit-tests`, not here | same |
 | A `miri` nextest profile with a 300 s slow-test period (four periods) | The 30 s of the other profiles is far too short | `.config/nextest.toml` |
 | Shorter generated inputs under `cfg!(miri)`: `HOT_EVENTS` 70 instead of 100 (still past the 64-path cap) in `change_set.rs`, `SCHEDULE_STEPS` 30 instead of 120 in `debounce.rs`, `INPUT_LENGTH` 3 instead of 4 symbols in the exhaustive enumeration of `path.rs` | These tests are heavy per case or exhaustive, and the case count does not shorten them | `crates/preview-domain/src/` |
-| **Excluded:** the `compile_fail` test binaries (`-E 'not binary(compile_fail)'`) | `trybuild` starts `cargo` and `rustc` and reads the file system; Miri cannot run either. They check that invalid API use does not compile, which is not a property of executed code, and `unit-tests` runs them | `MIRI_FILTER` |
+| **Excluded:** the `compile_fail` test binaries (`-E 'not binary(compile_fail)'`) | `trybuild` starts `cargo` and `rustc` and reads the file system; Miri cannot run either. They check that invalid API use does not compile, which is not a property of executed code, and `integration-tests` runs them | `MIRI_FILTER` |
 
 No test is `#[ignore]`d, and no `#[allow]` was added.
 

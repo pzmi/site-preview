@@ -245,11 +245,13 @@ fn soak(binary: &Path, site: &BenchSite, report: &mut Report) -> Result<(), Stri
         .map(|_| subscribe(&server))
         .collect::<Result<Vec<_>, _>>()?;
     let mut rss_warm = rss_start;
+    let mut delivered = 0_usize;
     for save in 1..=SOAK_SAVES {
         revision += 1;
         site.save(revision)?;
         for client in &mut clients {
             client.wait_for("reload")?;
+            delivered += 1;
         }
         if save == SOAK_WARM_AT {
             rss_warm = sys::rss_kib(pid)?;
@@ -265,8 +267,11 @@ fn soak(binary: &Path, site: &BenchSite, report: &mut Report) -> Result<(), Stri
 
     report.checks.push(Check {
         name: "soak_delivery".to_owned(),
-        passed: true,
-        detail: format!("{SOAK_SAVES} saves reached all {SOAK_CLIENTS} clients"),
+        passed: delivered == SOAK_SAVES * SOAK_CLIENTS,
+        detail: format!(
+            "{delivered} of {} reloads delivered ({SOAK_SAVES} saves, {SOAK_CLIENTS} clients)",
+            SOAK_SAVES * SOAK_CLIENTS
+        ),
     });
     report.checks.push(Check {
         name: "soak_fds".to_owned(),

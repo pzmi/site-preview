@@ -138,7 +138,10 @@ skipped. The browser stage needs Chromium, which `install-tools` does not instal
 - **Red CI on `main` is fixed immediately, on `main`.** A red `Required` check is work now: the
   failing job and line are named from the job log, a fix goes in as a new task commit, is gated
   and pushed, and no further task builds on the red commit. A test is never skipped, ignored or
-  retried to green. After three consecutive red attempts the work stops and the failing job and
+  retried to green: in CI a red job is fixed, not re-run, unless it died before any test body
+  ran (a runner or network failure). Locally, a stage that failed only from machine load may
+  be rerun alone with `cargo xtask check --only <stage>` and the rerun is reported
+  ([`required-checks.md`](required-checks.md#when-a-check-goes-red)). After three consecutive red attempts the work stops and the failing job and
   step are reported to the owner.
 - **Outside contributions** arrive as pull requests, which run the same CI. The maintainer
   integrates an accepted one as a signed-off commit on `main`

@@ -205,16 +205,41 @@ mod tests {
         assert_eq!(only, ["a", "b", "c"]);
     }
 
+    type JobMap = BTreeMap<String, Vec<String>>;
+
     /// The `cargo xtask check --only` stages of each job of `ci.yml`, and each job's `needs`.
-    fn ci_jobs() -> (BTreeMap<String, Vec<String>>, BTreeMap<String, Vec<String>>) {
+    fn ci_jobs() -> (JobMap, JobMap) {
         let text = std::fs::read_to_string(crate::repo::root().join(".github/workflows/ci.yml"))
             .expect("ci.yml");
-        let mut stages: BTreeMap<String, Vec<String>> = BTreeMap::new();
-        let mut needs: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        let parsed = parse_ci(&text);
+        (parsed.stages, parsed.needs)
+    }
+
+    #[derive(Default)]
+    struct ParsedCi {
+        stages: JobMap,
+        needs: JobMap,
+        /// Gate steps (or their jobs) that can be red and still count as green.
+        softened: Vec<String>,
+    }
+
+    /// Reads the job table of a workflow without a YAML parser: job ids at two spaces, steps as
+    /// `      - ` items. Comment lines are ignored, so prose naming the command counts for
+    /// nothing. A step that runs `cargo xtask check --only` with `continue-on-error` or its own
+    /// `if:`, or in a job that has `continue-on-error`, is listed in `softened`: the gate would
+    /// pass without having run (or passed) that stage.
+    fn parse_ci(text: &str) -> ParsedCi {
+        let mut out = ParsedCi::default();
         let mut in_jobs = false;
         let mut job = String::new();
         let mut in_needs = false;
+        let mut job_soft = false;
+        let mut step_soft = false;
+        let mut step_gate = false;
         for line in text.lines() {
+            if line.trim_start().starts_with('#') {
+                continue;
+            }
             if line == "jobs:" {
                 in_jobs = true;
             } else if in_jobs && !line.starts_with(' ') && !line.is_empty() {
@@ -229,13 +254,39 @@ mod tests {
                 .filter(|l| !l.starts_with([' ', '#']))
             {
                 job = id.to_owned();
-                stages.entry(job.clone()).or_default();
-                needs.entry(job.clone()).or_default();
+                out.stages.entry(job.clone()).or_default();
+                out.needs.entry(job.clone()).or_default();
                 in_needs = false;
-            } else if let Some(args) = line.split("cargo xtask check --only ").nth(1) {
+                job_soft = false;
+                step_soft = false;
+                step_gate = false;
+                continue;
+            }
+            let is_step_start = line.starts_with("      - ");
+            if is_step_start {
+                step_soft = false;
+                step_gate = false;
+            }
+            // A step's own keys: the item line itself (`      - if:`) or eight spaces in.
+            let key = if is_step_start {
+                line.trim_start().trim_start_matches("- ")
+            } else if line.starts_with("        ") && !line.starts_with("         ") {
+                line.trim_start()
+            } else {
+                ""
+            };
+            let soft_key = key.starts_with("continue-on-error:") || key.starts_with("if:");
+            if soft_key {
+                step_soft = true;
+            }
+            if line.starts_with("    continue-on-error:") {
+                job_soft = true;
+            }
+            if let Some(args) = line.split("cargo xtask check --only ").nth(1) {
+                step_gate = true;
                 // `--only a,b` and `--only a --only b` both name stages
                 let args = args.replace("--only ", "");
-                let list = stages.get_mut(&job).unwrap();
+                let list = out.stages.get_mut(&job).unwrap();
                 list.extend(
                     args.split(|c: char| c == ',' || c.is_whitespace())
                         .filter(|n| !n.is_empty())
@@ -244,12 +295,16 @@ mod tests {
             } else if line.trim() == "needs:" {
                 in_needs = true;
             } else if in_needs && let Some(name) = line.trim().strip_prefix("- ") {
-                needs.get_mut(&job).unwrap().push(name.to_owned());
+                out.needs.get_mut(&job).unwrap().push(name.to_owned());
             } else {
                 in_needs = false;
             }
+            let note = format!("{job}: a step running `check --only`");
+            if step_gate && (step_soft || job_soft) && !out.softened.contains(&note) {
+                out.softened.push(note);
+            }
         }
-        (stages, needs)
+        out
     }
 
     #[test]
@@ -296,6 +351,91 @@ mod tests {
         // then
         assert!(jobs.contains_key("required"), "{jobs:?}");
         assert_eq!(got, want);
+    }
+
+    #[test]
+    fn should_run_every_gate_step_unconditionally_when_ci_is_read() {
+        // given
+        let text = std::fs::read_to_string(crate::repo::root().join(".github/workflows/ci.yml"))
+            .expect("ci.yml");
+
+        // when
+        let parsed = parse_ci(&text);
+
+        // then
+        assert!(parsed.softened.is_empty(), "{:?}", parsed.softened);
+    }
+
+    #[test]
+    fn should_ignore_comment_lines_when_ci_jobs_are_parsed() {
+        // given
+        let text = "jobs:\n  a:\n    steps:\n      # run: cargo xtask check --only fmt-check\n      - run: cargo xtask check --only clippy\n";
+
+        // when
+        let parsed = parse_ci(text);
+
+        // then
+        assert_eq!(parsed.stages["a"], ["clippy"]);
+    }
+
+    #[test]
+    fn should_flag_a_gate_step_when_it_has_continue_on_error() {
+        // given
+        let text = "jobs:\n  a:\n    steps:\n      - name: Gate\n        continue-on-error: true\n        run: cargo xtask check --only clippy\n";
+
+        // when
+        let parsed = parse_ci(text);
+
+        // then
+        assert_eq!(parsed.softened.len(), 1, "{:?}", parsed.softened);
+    }
+
+    #[test]
+    fn should_flag_a_gate_step_when_its_own_if_follows_the_run() {
+        // given
+        let text = "jobs:\n  a:\n    steps:\n      - run: cargo xtask check --only clippy\n        if: github.event_name == 'push'\n";
+
+        // when
+        let parsed = parse_ci(text);
+
+        // then
+        assert_eq!(parsed.softened.len(), 1, "{:?}", parsed.softened);
+    }
+
+    #[test]
+    fn should_flag_a_gate_step_when_the_if_is_on_the_item_line() {
+        // given
+        let text = "jobs:\n  a:\n    steps:\n      - if: always()\n        run: cargo xtask check --only clippy\n";
+
+        // when
+        let parsed = parse_ci(text);
+
+        // then
+        assert_eq!(parsed.softened.len(), 1, "{:?}", parsed.softened);
+    }
+
+    #[test]
+    fn should_flag_a_gate_step_when_its_job_has_continue_on_error() {
+        // given
+        let text = "jobs:\n  a:\n    continue-on-error: true\n    steps:\n      - run: cargo xtask check --only clippy\n";
+
+        // when
+        let parsed = parse_ci(text);
+
+        // then
+        assert_eq!(parsed.softened.len(), 1, "{:?}", parsed.softened);
+    }
+
+    #[test]
+    fn should_not_flag_other_steps_when_a_neighbour_has_an_if() {
+        // given
+        let text = "jobs:\n  a:\n    steps:\n      - name: Keep\n        if: failure()\n        run: echo\n      - run: cargo xtask check --only clippy\n";
+
+        // when
+        let parsed = parse_ci(text);
+
+        // then
+        assert!(parsed.softened.is_empty(), "{:?}", parsed.softened);
     }
 
     #[test]

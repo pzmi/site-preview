@@ -51,6 +51,12 @@ jobs:
       - name: Install pinned dev tools
         run: cargo xtask install-tools cargo-nextest
 
+      # Node 22 is the line tools/versions.toml pins (its probe refuses any other major).
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+
       # Quint is locked by formal/package-lock.json; npx never fetches it (ADR 0052).
       - name: Install Quint
         run: npm ci --prefix formal
@@ -105,6 +111,12 @@ jobs:
           key: formal-verify-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'tools/versions.toml') }}
           restore-keys: |
             formal-verify-${{ runner.os }}-
+
+      # Node 22 is the line tools/versions.toml pins (its probe refuses any other major).
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
 
       # Quint is locked by formal/package-lock.json; npx never fetches it (ADR 0052).
       - name: Install Quint
@@ -164,8 +176,10 @@ jobs:
       - name: Install pinned dev tools
         run: cargo xtask install-tools cargo-nextest nightly
 
-      # The nightly is installed with the minimal profile, which has no Miri. The component
-      # name and the date come from tools/versions.toml through xtask, so the pin has one owner.
+      # The nightly is installed with the minimal profile, which has no Miri. The date is read
+      # from the [tools.nightly] table of tools/versions.toml by the sed below (xtask has no
+      # command that prints it), so the pin still has one owner; `formal-verify --miri` then
+      # checks the same pin and fails with the install hint if the component is missing.
       - name: Install Miri
         run: |
           nightly="$(sed -n '/^\[tools.nightly\]/,/^$/s/^version = "\(.*\)"/\1/p' tools/versions.toml)"

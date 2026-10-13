@@ -273,10 +273,11 @@ an unknown name exits 2 and lists the stage names). The same command reproduces 
 |:--|:--|:--|:--|
 | `architecture` (Architecture and policy) | `architecture` | none | none |
 | `static` (Static quality) | `fmt-check,fuzz-fmt,clippy,docs` | none | none |
-| `fast-tests` (Fast tests) | `unit-tests,doctests,client-js` | `cargo-nextest` | JUnit on failure |
-| `integration` (Integration) | `integration-tests` | `cargo-nextest` | JUnit on failure |
-| `conformance` (Conformance (Quint)) | the seven `formal-*` and `conformance-*` stages | `cargo-nextest`, Quint (`npm ci --prefix formal`) | generated ITF traces and JUnit on failure |
-| `coverage` (Coverage) | `coverage,changed-lines` | `cargo-nextest`, `cargo-llvm-cov`, Quint | `lcov.info` always, JUnit on failure |
+| `fast-tests` (Fast tests) | `unit-tests,doctests,client-js` | `cargo-nextest`, Node 22 | JUnit on failure |
+| `integration` (Integration) | `integration-tests` | `cargo-nextest`, `cargo-deny`, Gitleaks, actionlint (the xtask security fixtures run them) | JUnit on failure |
+| `platform` (Platform, a matrix of four legs) | none: `cargo xtask test --only platform-tests` on Linux x86-64 and arm64 and macOS arm64 and x86-64 (ADR 0074) | `cargo-nextest` | JUnit on failure, per leg |
+| `conformance` (Conformance (Quint)) | the seven `formal-*` and `conformance-*` stages | `cargo-nextest`, Quint (`npm ci --prefix formal`) on Node 22 | generated ITF traces and JUnit on failure |
+| `coverage` (Coverage) | `coverage,changed-lines` | `cargo-nextest`, `cargo-llvm-cov`, `cargo-deny`, Gitleaks, actionlint, Quint | `lcov.info` always, JUnit on failure |
 | `security` (Security) | `deny,deny-fuzz,secrets,workflows,action-pins` | `cargo-deny`, Gitleaks, actionlint | none |
 | `browser` (Browser) | `browser` | Playwright and Chromium | Playwright `test-results/` (traces, screenshots) on failure |
 | `artifact-smoke` (Artifact smoke) | none: `cargo xtask release-check --target x86_64-unknown-linux-musl` (ADR 0076) | `cargo-about`, the musl target and `musl-tools` | logs on failure |
@@ -285,9 +286,9 @@ an unknown name exits 2 and lists the stage names). The same command reproduces 
 `required` needs every other job and fails unless each finished `success` (a failed, cancelled or
 skipped job fails it): it is the one result to watch. The unit test
 `should_cover_each_in_check_stage_once_when_ci_jobs_are_read` fails when an `in_check` stage is in
-no job or in two, so a stage cannot be dropped silently. Node is the runner's preinstalled one.
+no job or in two, so a stage cannot be dropped silently. Every job that runs Node installs 22.x with a SHA-pinned `actions/setup-node`.
 
-Caches are keyed by job, OS, `rust-toolchain.toml`, `Cargo.lock`, `tools/versions.toml` and the
+Caches are keyed by job, OS, CPU architecture, `rust-toolchain.toml`, `Cargo.lock`, `tools/versions.toml` and the
 job's tool list. Every run restores them; only a push to `main` saves one, so a pull request never
 displaces `main`'s entries. `coverage` and `changed-lines` need the full history
 (`fetch-depth: 0`); on a push the changed-line gate starts from `github.event.before`

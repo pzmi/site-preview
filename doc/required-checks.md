@@ -53,5 +53,8 @@ fixed as a task, but does not make `Required` red.
 ## When a check goes red
 
 Read the failed job's log, name the failing line, and fix it on `main`
-([`sdlc.md`](sdlc.md#integration-procedure)). A stage that fails only from machine load is rerun
-alone with `cargo xtask check --only <stage>` and the rerun is reported.
+([`sdlc.md`](sdlc.md#integration-procedure)). Locally, a stage that fails only from machine load
+may be rerun alone with `cargo xtask check --only <stage>`; the rerun is reported with the
+original failure, and the full `check` is still run before the commit. In CI a red job is
+fixed, never re-run to green; the one exception is a job that died before any test body ran (a
+runner or network failure), which may be re-run once and is reported.

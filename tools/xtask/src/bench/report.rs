@@ -136,8 +136,11 @@ pub fn cpu_percent(cpu_seconds: f64, wall_seconds: f64) -> f64 {
 }
 
 /// Whether resident memory stayed stable between the warmed-up state and the end of the soak:
-/// growth of at most a quarter plus 4 MiB. The slack absorbs allocator noise; a leak of one
-/// small buffer per save or per connection over 200 saves and 75 connections exceeds it.
+/// growth of at most the larger of a quarter of the warm size and 4 MiB. The slack absorbs
+/// allocator noise. Measured from save 20, the 180 later saves fill it with a leak of about
+/// 22 KiB per save (4 MiB over 180); a smaller per-save leak, such as one small buffer, passes
+/// undetected, and so does one that has already reached its steady state by save 20. The
+/// descriptor check, not this one, catches a leaked connection.
 pub fn rss_is_stable(warm_kib: u64, end_kib: u64) -> bool {
     end_kib <= warm_kib + (warm_kib / 4).max(4096)
 }

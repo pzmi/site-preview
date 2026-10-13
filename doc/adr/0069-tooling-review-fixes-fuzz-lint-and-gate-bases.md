@@ -5,7 +5,7 @@ Date: 2026-10-13
 ## Status
 
 Proposed (planner default — owner may override). Amends 0060 (formal.yml concurrency) and
-0064 (the changed-line base in CI and the freshness stamp).
+0064 (the changed-line base in CI and the freshness stamp). Amended by 0072.
 
 ## Context
 

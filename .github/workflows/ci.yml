@@ -88,6 +88,12 @@ jobs:
           job: fast-tests
           tools: cargo-nextest
 
+      # Node 22 is the line tools/versions.toml pins (its probe refuses any other major).
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+
       - name: Fast tests
         run: cargo xtask check --only unit-tests,doctests,client-js
 
@@ -208,8 +214,13 @@ jobs:
           job: conformance
           tools: cargo-nextest
 
+      # Node 22 is the line tools/versions.toml pins (its probe refuses any other major).
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+
       # The conformance stages run the locked Quint; npx never fetches it (ADR 0052, ADR 0060).
-      # Node is the runner's preinstalled one (22 or newer, tools/versions.toml).
       - name: Install Quint
         run: npm ci --prefix formal
 
@@ -260,8 +271,13 @@ jobs:
       - name: Install Gitleaks and actionlint
         uses: ./.github/actions/install-scanners
 
+      # Node 22 is the line tools/versions.toml pins (its probe refuses any other major).
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+
       # The conformance stages run the locked Quint; npx never fetches it (ADR 0052, ADR 0060).
-      # Node is the runner's preinstalled one (22 or newer, tools/versions.toml).
       - name: Install Quint
         run: npm ci --prefix formal
 
@@ -338,6 +354,12 @@ jobs:
         uses: ./.github/actions/setup-rust
         with:
           job: browser
+
+      # Node 22 is the line tools/versions.toml pins (its probe refuses any other major).
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
 
       # The browser stage never downloads a browser itself (D9); CI provides Chromium here.
       - name: Install Chromium for Playwright

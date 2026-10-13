@@ -30,7 +30,7 @@ The workspace nextest run was a single `unit-tests` stage, so there was nothing 
   | Job | Stages |
   |:--|:--|
   | `architecture` | `architecture` |
-  | `static` | `fmt-check`, `fuzz-fmt`, `clippy` |
+  | `static` | `fmt-check`, `fuzz-fmt`, `clippy`, `docs` |
   | `fast-tests` | `unit-tests`, `doctests`, `client-js` |
   | `integration` | `integration-tests` |
   | `conformance` (`Conformance (Quint)`) | the seven conformance stages |
@@ -78,9 +78,14 @@ The workspace nextest run was a single `unit-tests` stage, so there was nothing 
 
 - A red `required` job names the failing level; the failing job's artifacts say why. Jobs run in
   parallel, so the wall-clock time is that of the slowest job (coverage), at the price of
-  compiling in eight jobs; the per-job caches carry that cost.
-- Eight cache entries of `target/` compete for the repository's cache quota. If eviction makes
-  jobs slow, share one cache between jobs with the same build profile; correctness is unaffected.
+  compiling in every job; the per-job caches carry that cost.
+- Thirteen cache entries of `target/` (nine jobs, with the four legs of `platform` each saving
+  their own) plus the scheduled `formal.yml`, `fuzz.yml` and `mutation.yml` ones compete for the
+  repository's cache quota. `save-rust-cache` therefore prunes before it saves: the workspace
+  crates' own build outputs (rebuilt on a fresh checkout anyway, because their sources are
+  newer), incremental directories and nextest reports. Registry dependencies stay. If eviction
+  still makes jobs slow, share one cache between jobs with the same build profile; correctness
+  is unaffected.
 - Adding a catalog stage with `in_check` fails the unit test until a job calls it.
 - `cargo xtask test` and `check` list the new stage `integration-tests`; docs that named
   `unit-tests` for black-box suites now name it.

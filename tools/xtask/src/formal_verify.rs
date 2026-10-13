@@ -162,7 +162,7 @@ pub const MIRI_PROFILE: &str = "miri";
 /// The nextest filter of the Miri run: every test but the `trybuild` compile-fail suites,
 /// which start `cargo` and `rustc` as child processes and read the file system, none of which
 /// Miri can run. They check that invalid API use does not compile, which is not a property
-/// of executed code; the `unit-tests` stage still runs them (doc/verification-scope.md).
+/// of executed code; the `integration-tests` stage still runs them (doc/verification-scope.md).
 pub const MIRI_FILTER: &str = "not binary(compile_fail)";
 
 /// The stages `formal-verify --miri` runs.
