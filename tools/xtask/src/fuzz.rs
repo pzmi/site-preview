@@ -139,6 +139,64 @@ fn available_targets(root: &Path) -> Result<Vec<String>, String> {
     Ok(names)
 }
 
+/// The `fuzz-fmt` stage as `quick` and `check` show it (ADR 0069).
+pub const FMT_DISPLAY: &str = "rustfmt --check --edition 2024 fuzz/fuzz_targets/*.rs";
+
+/// The `rustfmt` arguments over the target files: `--check` to only report.
+fn rustfmt_args(root: &Path, check: bool) -> Result<Vec<String>, String> {
+    let mut args = Vec::new();
+    if check {
+        args.push("--check".to_owned());
+    }
+    args.extend(["--edition".to_owned(), "2024".to_owned()]);
+    for target in available_targets(root)? {
+        args.push(
+            root.join(TARGETS_DIR)
+                .join(format!("{target}.rs"))
+                .display()
+                .to_string(),
+        );
+    }
+    Ok(args)
+}
+
+/// Runs `rustfmt` over the fuzz targets, which `cargo fmt --all` never sees because the fuzz
+/// crate is not a workspace member; `check` only reports. Returns the exit code.
+pub fn rustfmt_targets(check: bool) -> i32 {
+    let root = repo::root();
+    let args = match rustfmt_args(&root, check) {
+        Ok(args) => args,
+        Err(err) => {
+            eprintln!("xtask: {err}");
+            return 1;
+        }
+    };
+    match Command::new("rustfmt")
+        .args(&args)
+        .current_dir(&root)
+        .status()
+    {
+        Ok(status) if status.success() => 0,
+        Ok(status) => {
+            if check {
+                eprintln!("xtask: a fuzz target is not formatted; run `cargo xtask fmt`");
+            }
+            status.code().unwrap_or(1)
+        }
+        Err(err) => {
+            eprintln!(
+                "xtask: cannot run rustfmt: {err}; install it with `rustup component add rustfmt`"
+            );
+            1
+        }
+    }
+}
+
+/// The `fuzz-fmt` stage body.
+pub fn fmt_check() -> i32 {
+    rustfmt_targets(true)
+}
+
 /// Fails, naming the targets that exist, unless `target` is one of them. Taking the name from
 /// the directory also keeps a path or an option out of the `cargo` command line.
 fn check_target(available: &[String], target: &str) -> Result<(), String> {
@@ -281,6 +339,52 @@ mod tests {
 
         // then
         assert_eq!(scheduled, available_targets(&root).unwrap());
+    }
+
+    #[test]
+    fn should_check_every_target_with_edition_2024_when_rustfmt_args_are_built() {
+        // given
+        let root = repo::root();
+
+        // when
+        let args = rustfmt_args(&root, true).unwrap();
+
+        // then
+        assert_eq!(&args[..3], ["--check", "--edition", "2024"]);
+        let files: Vec<&String> = args[3..].iter().collect();
+        assert_eq!(files.len(), available_targets(&root).unwrap().len());
+        assert!(
+            files
+                .iter()
+                .all(|f| f.ends_with(".rs") && f.contains(TARGETS_DIR))
+        );
+        assert!(
+            !rustfmt_args(&root, false)
+                .unwrap()
+                .contains(&"--check".to_owned())
+        );
+    }
+
+    #[test]
+    fn should_carry_the_workspace_lints_when_fuzz_manifest_is_read() {
+        // given
+        let root = repo::root();
+        let read = |path: &str| -> toml::Table {
+            std::fs::read_to_string(root.join(path))
+                .unwrap()
+                .parse()
+                .unwrap()
+        };
+
+        // when
+        let workspace = read("Cargo.toml")["workspace"]["lints"].clone();
+        let fuzz = read("fuzz/Cargo.toml")["lints"].clone();
+
+        // then
+        assert_eq!(
+            fuzz, workspace,
+            "fuzz/Cargo.toml [lints] must equal [workspace.lints]"
+        );
     }
 
     #[test]

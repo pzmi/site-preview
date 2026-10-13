@@ -29,6 +29,32 @@ env:
   CARGO_INCREMENTAL: "0"
 
 jobs:
+  # Clippy over the fuzz targets with the pinned nightly they build with, under the lint table
+  # fuzz/Cargo.toml copies from the workspace. Formatting is checked by `cargo xtask check`
+  # (stage `fuzz-fmt`), which needs no nightly.
+  clippy:
+    name: Clippy (fuzz targets)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install toolchain from rust-toolchain.toml
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - name: Install the pinned nightly with Clippy
+        run: |
+          set -euo pipefail
+          cargo xtask install-tools nightly
+          rustup component add clippy --toolchain "$(sed -n 's/^channel = "\(.*\)"$/\1/p' fuzz/rust-toolchain.toml)"
+
+      # fuzz/rust-toolchain.toml selects the nightly in fuzz/.
+      - name: Clippy
+        working-directory: fuzz
+        run: cargo clippy --locked --bins -- -D warnings
+
   fuzz:
     name: Fuzz (${{ matrix.target }})
     runs-on: ubuntu-24.04

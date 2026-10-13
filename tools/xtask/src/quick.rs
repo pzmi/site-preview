@@ -1,15 +1,17 @@
-//! `cargo xtask quick`: formatter check, the architecture policy (ADR 0019), Clippy, the
-//! unit/component tests and the doctests.
+//! `cargo xtask quick`: formatter check (the workspace, then the fuzz targets outside it, ADR
+//! 0069), the architecture policy (ADR 0019), Clippy, the unit/component tests and the
+//! doctests.
 //!
 //! This is not the full gate; `check` is (see `check.rs`).
 
 use crate::process::{Stage, run_stages};
-use crate::{architecture, tools};
+use crate::{architecture, fuzz, tools};
 
 /// The stages `quick` runs, in order. Their names are catalog ids.
 pub fn stages() -> Vec<Stage> {
     vec![
         Stage::new("fmt-check", "cargo", &["fmt", "--all", "--check"]),
+        Stage::in_process("fuzz-fmt", fuzz::FMT_DISPLAY, fuzz::fmt_check),
         Stage::in_process("architecture", "cargo xtask architecture", || {
             architecture::run(None)
         }),

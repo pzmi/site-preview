@@ -175,6 +175,7 @@ Per level:
 
 ```bash
 cargo fmt --all --check                                   # fmt-check: formatting
+rustfmt --check --edition 2024 fuzz/fuzz_targets/*.rs     # fuzz-fmt: the fuzz targets, outside the workspace
 cargo clippy --locked --workspace --all-targets -- -D warnings   # clippy
 cargo nextest run --workspace --locked --profile ci       # unit-tests: the catalog command
 cargo test --locked --workspace --doc                     # doctests (nextest does not run them)
@@ -183,7 +184,7 @@ cargo xtask test                                          # unit-tests under the
 cargo xtask security                                      # deny, deny-fuzz, secrets, workflows, action pins
 node --test crates/*/assets/*.test.mjs                    # client-js: the reload client's tests
 cargo xtask test --only browser                           # browser: build, npm ci, npx playwright test (needs Node 22 and Chromium 1194)
-cargo xtask fmt                                           # apply rustfmt (developer convenience)
+cargo xtask fmt                                           # apply rustfmt to the workspace and the fuzz targets
 ```
 
 To select a crate or a test by name, use nextest's package and name-filter options with the
@@ -250,6 +251,6 @@ cargo xtask release-check  # OPS-05
 ## Checks the gate runs
 
 `cargo xtask list-checks` marks the stages `check` runs with `"in_check": true`. Today those are
-`fmt-check`, `clippy`, `unit-tests`, `doctests`, `client-js`, `browser`, `architecture` (with its `ARCH-*` rules),
+`fmt-check`, `fuzz-fmt`, `clippy`, `unit-tests`, `doctests`, `client-js`, `browser`, `architecture` (with its `ARCH-*` rules),
 the seven `conformance` stages (`formal-typecheck` to `conformance-controls`), `coverage`, `changed-lines`, `deny`, `deny-fuzz`, `secrets`, `workflows` and `action-pins`. (`security` is the umbrella command for the last five, not a stage of its own.) `check` runs each stage once; a stage that
 is in the catalog but not yet implemented is absent from the run, not skipped.

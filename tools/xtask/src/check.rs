@@ -1,9 +1,11 @@
 //! `cargo xtask check`: the full blocking gate (foundation.md section 9, ADR 0019).
 //!
 //! It composes the registered stages: the `quick` stages other than its fast tests (format
-//! check, architecture with fixtures, Clippy), everything `test` runs, everything
-//! `conformance` runs (FORMAL-09, ADR 0060), then `coverage` (TEST-06, ADR 0062) and the
-//! `changed-lines` gate over its report (TEST-07, ADR 0064), then `security`. A stage that does not exist yet is absent, never skipped; one that cannot run shows `UNAVAILABLE`.
+//! checks of the workspace and the fuzz targets, architecture with fixtures, Clippy),
+//! everything `test` runs, everything `conformance` runs (FORMAL-09, ADR 0060), then
+//! `coverage` (TEST-06, ADR 0062) and the `changed-lines` gate over its report (TEST-07, ADR
+//! 0064), then `security`. A stage that does not exist yet is absent, never skipped; one that
+//! cannot run shows `UNAVAILABLE`.
 
 use crate::process::{Stage, finish, run_report};
 use crate::{changed_lines, conformance, coverage, quick, security, test, tools};
@@ -75,6 +77,7 @@ mod tests {
         // then
         for want in [
             "fmt-check",
+            "fuzz-fmt",
             "architecture",
             "clippy",
             "unit-tests",

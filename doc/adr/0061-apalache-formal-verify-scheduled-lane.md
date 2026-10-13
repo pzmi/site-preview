@@ -4,7 +4,8 @@ Date: 2026-10-13
 
 ## Status
 
-Proposed (planner default — owner may override)
+Proposed (planner default — owner may override). Amended 2026-10-13 (checkpoint FORMAL-10
+review): the Apalache release is verified by its SHA-256 before it runs; see "Amendment".
 
 ## Context
 
@@ -51,8 +52,33 @@ the `adm-zip` advisories to this task. Running `quint verify` showed three thing
   nondeterministic choice up to the depth, not a sample, but the cost grows about tenfold per
   step in these models. The simulation covers depth; Apalache covers breadth. Raising a depth
   needs a measured duration in the baseline.
-- The Apalache release is downloaded unchecked, in a job with no secrets and a read-only
-  token. Pinning the SHA-256 of `apalache.jar` and checking it before a run is a follow-up if
-  the lane ever gets more privilege.
+- The Apalache release was first downloaded unchecked by Quint. The amendment below replaces
+  that with a pinned digest.
 - A model written with deeply nested pure calls can pass `quint run` and still not translate;
   `formal-verify` is where that shows.
+
+## Amendment (2026-10-13): a pinned SHA-256 for the Apalache release
+
+The checkpoint review found that Quint downloads `apalache.tgz` without a checksum and that
+`formal.yml` cached `~/.quint`, so a poisoned cache entry or a replaced release asset would run
+unverified JVM code in the lane. Quint itself offers no digest option.
+
+- `tools/versions.toml` pins `sha256` beside `tools.apalache.version`: for 0.62.1 (the version
+  Quint 0.33.0 pins as its default), `38202a8c4ebeb3ab73e0fe5a7e4bb948442d46ad5de8a7fb45c9e5cac2beb2a6`,
+  computed from the real download of
+  `https://github.com/apalache-mc/apalache/releases/download/v0.62.1/apalache.tgz`
+  (192,000,835 bytes; its unpacked files are byte-identical to the tree Quint had unpacked from
+  the same URL the day before). A new version needs a new hash, computed the same way.
+- Before Quint runs, `formal-verify` (stage `formal-verify-bounded`) fetches the tarball with
+  `curl --proto =https` into `target/apalache/`, or reuses one already there, hashes it, and
+  fails with both digests when the hash differs. It then removes any existing
+  `apalache-dist-<version>/apalache` and unpacks the verified tarball into a fresh directory
+  there (under `$QUINT_HOME`, else `~/.quint`, where Quint looks), moved into place in one
+  rename, so Quint always finds the binary and never downloads. What runs is unpacked from a
+  verified tarball on every run; an unpacked tree is never trusted on its own.
+- `formal.yml` no longer caches `~/.quint`. The tarball may sit in the cached `target/`, which
+  is harmless because it is hashed before every use.
+- `doctor` probes the binary at that location instead of `apalache-mc` on `PATH`.
+- The release workflow (OPS-06) must restore no caches at all, so that no cached tool or
+  build output reaches a release artifact; the digest check here protects only this lane.
+

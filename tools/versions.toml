@@ -53,15 +53,17 @@ url = "https://github.com/rhysd/actionlint/releases/tag/v1.7.12"
 probe = ["actionlint", "-version"]
 
 # Apalache is the version the pinned quint release downloads and is validated against; it is
-# run by the scheduled formal lane only (`cargo xtask formal-verify`, ADR 0061). Quint downloads
-# it into ~/.quint/apalache-dist-<version> and `formal-verify` passes this version to it, so the
-# probe below finds it only when apalache-mc is also on PATH; `doctor` reports it missing
-# otherwise, which `formal-verify` does not need.
+# run by the scheduled formal lane only (`cargo xtask formal-verify`, ADR 0061). Quint would
+# download it unchecked, so `formal-verify` fetches the release tarball itself, refuses it
+# unless its SHA-256 equals `sha256` below, and unpacks it where Quint looks for it
+# (~/.quint/apalache-dist-<version>, or $QUINT_HOME) before Quint runs. `doctor` probes that
+# binary, not PATH. A new version needs a new hash, computed from the real download.
 [tools.apalache]
 version = "0.62.1"
 method = "manual"
 url = "https://github.com/apalache-mc/apalache/releases/tag/v0.62.1"
 probe = ["apalache-mc", "version"]
+sha256 = "38202a8c4ebeb3ab73e0fe5a7e4bb948442d46ad5de8a7fb45c9e5cac2beb2a6"
 
 # The one dated nightly (ADR 0026): cargo-fuzz and Miri only, never production builds.
 [tools.nightly]

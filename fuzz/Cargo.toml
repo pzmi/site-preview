@@ -20,6 +20,20 @@ preview-adapter-http = { path = "../crates/preview-adapter-http" }
 preview-application = { path = "../crates/preview-application" }
 preview-domain = { path = "../crates/preview-domain" }
 
+# A copy of the root workspace's `[workspace.lints]` (this crate is not a member, so it cannot
+# inherit them); keep the two equal, a xtask unit test compares them. Clippy runs over the
+# targets with the pinned nightly in fuzz.yml.
+[lints.rust]
+unsafe_code = "forbid"
+unused_must_use = "deny"
+missing_docs = "warn"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+dbg_macro = "deny"
+todo = "deny"
+unimplemented = "deny"
+
 [[bin]]
 name = "decode_path"
 path = "fuzz_targets/decode_path.rs"

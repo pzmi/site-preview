@@ -1,6 +1,7 @@
 //! Repository automation entry point, invoked as `cargo xtask`.
 
 mod action_pins;
+mod apalache;
 mod architecture;
 mod browser;
 mod catalog;
@@ -63,13 +64,20 @@ fn main() -> ExitCode {
     ExitCode::from(u8::try_from(code).unwrap_or(1))
 }
 
+/// `cargo fmt --all`, then the fuzz targets, which are outside the workspace (ADR 0069).
 fn run_fmt() -> i32 {
-    match Proc::new("cargo").args(["fmt", "--all"]).status() {
+    let workspace = match Proc::new("cargo").args(["fmt", "--all"]).status() {
         Ok(status) => status.code().unwrap_or(1),
         Err(err) => {
             eprintln!("xtask: cannot run cargo fmt: {err}");
             1
         }
+    };
+    let fuzz_targets = fuzz::rustfmt_targets(false);
+    if workspace != 0 {
+        workspace
+    } else {
+        fuzz_targets
     }
 }
 

@@ -24,8 +24,11 @@
 //!
 //! 1. the published revision is monotonic: nothing but `settle` changes it, and a publish
 //!    advances it by exactly one;
-//! 2. nothing is published for ignored-only input: a publish needs a non-ignored event
-//!    ([`preview_domain::classify`]), an overflow or a recovery since the previous publish;
+//! 2. nothing is published for ignored-only input: a publish needs a non-ignored event, an
+//!    overflow or a recovery since the previous publish. Which events are ignored is decided
+//!    here, not by the production `classify`: an access-only or metadata-only event, or one
+//!    whose path the deny rules refuse, by the [`Deny`] rule written next to each of
+//!    [`NAMES`] (generated `f<b>.<ext>` names are always eligible);
 //! 3. a published `ChangeSet` that is not full has at most `MAX_CHANGES` (64) entries, all of
 //!    kind css, js or asset; a full one has at most 64 too, and a rescan is always full.
 
@@ -34,8 +37,8 @@
 use libfuzzer_sys::fuzz_target;
 use preview_application::{ChangeBatch, ChangeCoordinator, Received, ReloadState, SourceFailure};
 use preview_domain::{
-    AssetKind, ChangeEvent, ChangeKind, Classification, Component, DebounceWindow, DomainEvent,
-    InstanceId, MAX_CHANGES, RelPath, Tick, classify,
+    AssetKind, ChangeEvent, ChangeKind, Component, DebounceWindow, DomainEvent, InstanceId,
+    MAX_CHANGES, RelPath, Tick,
 };
 
 const KINDS: [ChangeKind; 8] = [
@@ -49,23 +52,37 @@ const KINDS: [ChangeKind; 8] = [
     ChangeKind::Ambiguous,
 ];
 
-const NAMES: [&str; 16] = [
-    "index.html",
-    "style.css",
-    "app.js",
-    "logo.png",
-    ".git",
-    "node_modules",
-    "vendor",
-    "docs",
-    "notes.txt",
-    "module.mjs",
-    "font.woff2",
-    "__site_preview",
-    ".env",
-    "THEME.CSS",
-    "page.htm",
-    "backup.html~",
+/// When a name is refused by the deny rules (plan.md §5.2, `eligibility.rs`), as the expected
+/// answer for this fixed list rather than a call into the code under test.
+#[derive(Clone, Copy)]
+enum Deny {
+    /// Never refused.
+    Never,
+    /// Refused everywhere, as a file or a directory: hidden names and editor artifacts.
+    Always,
+    /// Refused as a directory only: the excluded directories.
+    AsDirectory,
+    /// Refused directly in the root only: the reserved name.
+    InRoot,
+}
+
+const NAMES: [(&str, Deny); 16] = [
+    ("index.html", Deny::Never),
+    ("style.css", Deny::Never),
+    ("app.js", Deny::Never),
+    ("logo.png", Deny::Never),
+    (".git", Deny::Always),
+    ("node_modules", Deny::AsDirectory),
+    ("vendor", Deny::AsDirectory),
+    ("docs", Deny::Never),
+    ("notes.txt", Deny::Never),
+    ("module.mjs", Deny::Never),
+    ("font.woff2", Deny::Never),
+    ("__site_preview", Deny::InRoot),
+    (".env", Deny::Always),
+    ("THEME.CSS", Deny::Never),
+    ("page.htm", Deny::Never),
+    ("backup.html~", Deny::Always),
 ];
 
 const EXTENSIONS: [&str; 8] = ["css", "js", "png", "html", "txt", "svg", "swp", ""];
@@ -135,11 +152,8 @@ fuzz_target!(|data: &[u8]| {
 fn step(coordinator: &mut ChangeCoordinator, input: &mut Input<'_>, oracle: &mut Oracle) -> bool {
     match input.byte() % 8 {
         0 => {
-            let events = events(input);
-            if events
-                .iter()
-                .any(|event| !matches!(classify(event), Classification::Ignored(_)))
-            {
+            let (events, all_ignored) = events(input);
+            if !all_ignored {
                 oracle.publishable = true;
             }
             let received = coordinator.receive(ChangeBatch::Events(events), oracle.now);
@@ -224,29 +238,54 @@ fn settle(coordinator: &mut ChangeCoordinator, oracle: &Oracle) -> bool {
     true
 }
 
-fn events(input: &mut Input<'_>) -> Vec<ChangeEvent> {
+/// A batch of events, and whether every one of them is expected to be ignored.
+fn events(input: &mut Input<'_>) -> (Vec<ChangeEvent>, bool) {
     let count = input.byte() % 8;
-    (0..count)
+    let mut all_ignored = true;
+    let events = (0..count)
         .map(|_| {
             let kind = KINDS[usize::from(input.byte() % 8)];
             let depth = input.byte() % 4;
-            let components = (0..depth).map(|_| component(input)).collect();
+            let (components, rules): (Vec<_>, Vec<_>) =
+                (0..depth).map(|_| component(input)).unzip();
+            all_ignored &= expected_ignored(kind, &rules);
             ChangeEvent {
                 kind,
                 path: RelPath::new(components),
             }
         })
-        .collect()
+        .collect();
+    (events, all_ignored)
 }
 
-fn component(input: &mut Input<'_>) -> Component {
+/// Whether an event is ignored: an access-only or metadata-only event, or one with a refused
+/// component, where every component but the last is a directory, the last is one only for
+/// `DirectoryChanged` (an event of unknown type is ignored only when refused as a file), and
+/// the first is in the root. Everything else, the root itself included, is not ignored.
+fn expected_ignored(kind: ChangeKind, rules: &[Deny]) -> bool {
+    if matches!(kind, ChangeKind::AccessOnly | ChangeKind::MetadataOnly) {
+        return true;
+    }
+    let last = rules.len().saturating_sub(1);
+    rules.iter().enumerate().any(|(index, rule)| {
+        let is_dir = index < last || kind == ChangeKind::DirectoryChanged;
+        match rule {
+            Deny::Never => false,
+            Deny::Always => true,
+            Deny::AsDirectory => is_dir,
+            Deny::InRoot => index == 0,
+        }
+    })
+}
+
+fn component(input: &mut Input<'_>) -> (Component, Deny) {
     let (selector, number) = (input.byte(), input.byte());
-    let name = match NAMES.get(usize::from(selector)) {
-        Some(name) => (*name).to_owned(),
+    let (name, rule) = match NAMES.get(usize::from(selector)) {
+        Some((name, rule)) => ((*name).to_owned(), *rule),
         None => match EXTENSIONS[usize::from(selector) % EXTENSIONS.len()] {
-            "" => format!("f{number}"),
-            extension => format!("f{number}.{extension}"),
+            "" => (format!("f{number}"), Deny::Never),
+            extension => (format!("f{number}.{extension}"), Deny::Never),
         },
     };
-    Component::new(&name).expect("a valid component name")
+    (Component::new(&name).expect("a valid component name"), rule)
 }

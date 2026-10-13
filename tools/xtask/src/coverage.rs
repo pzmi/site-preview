@@ -25,8 +25,10 @@
 //!
 //! Beside the report, a successful measurement writes `target/coverage/lcov.stamp`: the
 //! fingerprint of the source tree it measured (`changed_lines::tree_fingerprint`, taken before
-//! the run). The changed-line gate (TEST-07, ADR 0064) reads the report only while the stamp
-//! still matches the tree, so it never joins a diff with an LCOV of other file contents.
+//! the run) followed by the build environment (`rustc -vV` and the variables in [`BUILD_ENV`],
+//! ADR 0069). The changed-line gate (TEST-07, ADR 0064) reads the report only while the stamp
+//! still matches both, so it never joins a diff with an LCOV of other file contents or of
+//! another build.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -46,6 +48,15 @@ pub const LCOV_PATH: &str = "target/coverage/lcov.info";
 
 /// The fingerprint of the tree the LCOV report measured, from the repository root.
 const STAMP_PATH: &str = "target/coverage/lcov.stamp";
+
+/// Environment variables that change what the instrumented build compiles; the stamp records
+/// each one's value (ADR 0069).
+const BUILD_ENV: [&str; 4] = [
+    "RUSTFLAGS",
+    "CARGO_ENCODED_RUSTFLAGS",
+    "CARGO_BUILD_RUSTFLAGS",
+    "RUSTUP_TOOLCHAIN",
+];
 
 /// No floor may be set below this (ADR 0018).
 const MIN_FLOOR: u32 = 90;
@@ -243,7 +254,7 @@ pub fn fresh_lcov(root: &Path) -> Result<Option<String>, String> {
     let Ok(stamp) = std::fs::read_to_string(root.join(STAMP_PATH)) else {
         return Ok(None);
     };
-    if stamp.trim() != changed_lines::tree_fingerprint(root)? {
+    if stamp.trim_end() != stamp_of(root, &changed_lines::tree_fingerprint(root)?).trim_end() {
         return Ok(None);
     }
     std::fs::read_to_string(root.join(LCOV_PATH))
@@ -251,9 +262,37 @@ pub fn fresh_lcov(root: &Path) -> Result<Option<String>, String> {
         .map_err(|e| format!("cannot read {LCOV_PATH}: {e}"))
 }
 
-/// Records that the LCOV report measured the tree with this fingerprint.
-fn write_stamp(root: &Path, fingerprint: &str) -> Result<(), String> {
-    std::fs::write(root.join(STAMP_PATH), format!("{fingerprint}\n"))
+/// The stamp text: the tree fingerprint, `rustc -vV` of the toolchain the build uses (run in
+/// `root`, so `rust-toolchain.toml` applies) and the [`BUILD_ENV`] values.
+pub fn stamp_of(root: &Path, fingerprint: &str) -> String {
+    let rustc = Command::new("rustc")
+        .arg("-vV")
+        .current_dir(root)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map_or_else(
+            || "rustc: unavailable".to_owned(),
+            |o| String::from_utf8_lossy(&o.stdout).into_owned(),
+        );
+    stamp_text(fingerprint, &rustc, |name| std::env::var(name).ok())
+}
+
+/// [`stamp_of`] with the toolchain description and the environment given.
+fn stamp_text(fingerprint: &str, rustc: &str, var: impl Fn(&str) -> Option<String>) -> String {
+    let mut out = format!("{fingerprint}\n{}\n", rustc.trim_end());
+    for name in BUILD_ENV {
+        let _ = match var(name) {
+            Some(value) => writeln!(out, "{name}={value:?}"),
+            None => writeln!(out, "{name} unset"),
+        };
+    }
+    out
+}
+
+/// Records that the LCOV report measured the tree and build described by `stamp`.
+fn write_stamp(root: &Path, stamp: &str) -> Result<(), String> {
+    std::fs::write(root.join(STAMP_PATH), stamp)
         .map_err(|e| format!("cannot write {STAMP_PATH}: {e}"))
 }
 
@@ -318,7 +357,7 @@ pub fn measure(root: &Path) -> Result<(), String> {
     {
         return Err(format!("cannot remove {STAMP_PATH}: {e}"));
     }
-    let fingerprint = changed_lines::tree_fingerprint(root);
+    let fingerprint = changed_lines::tree_fingerprint(root).map(|f| stamp_of(root, &f));
     let status = Command::new("cargo")
         .args([
             "llvm-cov",
@@ -343,7 +382,7 @@ pub fn measure(root: &Path) -> Result<(), String> {
         return Err(format!("cargo llvm-cov failed with {status}"));
     }
     match fingerprint {
-        Ok(fingerprint) => write_stamp(root, &fingerprint),
+        Ok(stamp) => write_stamp(root, &stamp),
         Err(e) => {
             eprintln!("xtask: {LCOV_PATH} gets no freshness stamp: {e}");
             Ok(())
@@ -392,6 +431,31 @@ fn run() -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn should_change_the_stamp_when_the_toolchain_or_rustflags_change() {
+        // given
+        let unset = |_: &str| None;
+        let flagged = |name: &str| (name == "RUSTFLAGS").then(|| "-C opt-level=1".to_owned());
+
+        // when
+        let base = stamp_text("tree", "rustc 1.97.0", unset);
+        let same = stamp_text("tree", "rustc 1.97.0", unset);
+        let other_toolchain = stamp_text("tree", "rustc 1.98.0", unset);
+        let other_flags = stamp_text("tree", "rustc 1.97.0", flagged);
+        let other_tree = stamp_text("tree2", "rustc 1.97.0", unset);
+
+        // then
+        assert_eq!(base, same);
+        assert!(base.starts_with("tree\nrustc 1.97.0\n"), "{base}");
+        for other in [&other_toolchain, &other_flags, &other_tree] {
+            assert_ne!(&base, other);
+        }
+        assert!(
+            other_flags.contains("RUSTFLAGS=\"-C opt-level=1\""),
+            "{other_flags}"
+        );
+    }
 
     const LCOV: &str = "\
 SF:/r/crates/preview-domain/src/a.rs

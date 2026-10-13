@@ -7,8 +7,12 @@
 //! before it is committed. `<base>` is the merge-base of `REV` and `HEAD`, so commits that
 //! landed on `REV` after this branch left it never count as this change. With no `REV` it is
 //! the merge-base with `origin/main`, or `HEAD~1` when `origin/main` is absent or already
-//! contains `HEAD` (a push to `main`, where the last commit is what changed). Renames are
-//! detected, so a moved file counts only its edited lines; deleted lines count for nothing.
+//! contains `HEAD` (a push to `main`, where the last commit is what changed). In `check`, a
+//! commit id in [`BASE_ENV`] (CI sets it to the commit a push started from) takes the place of
+//! `REV`, so every commit of a push counts (ADR 0069). Renames are detected, so a moved file
+//! counts only its edited lines; deleted lines count for nothing. Untracked files are ignored
+//! by the committed `.gitignore` files only, never by `.git/info/exclude` or a personal
+//! excludes file, so every machine gates the same files.
 //!
 //! **The join** reads the LCOV `DA:` records of `target/coverage/lcov.info` per
 //! repository-relative file (`coverage::parse_lcov_lines`). A changed line with a record is
@@ -40,6 +44,9 @@ const DEFAULT_REV: &str = "origin/main";
 /// The pathspec the diff is limited to; [`is_gated`] narrows it further.
 const PATHSPEC: &str = "crates/";
 
+/// The environment variable through which CI names the commit a push started from.
+pub const BASE_ENV: &str = "CHANGED_LINES_BASE";
+
 /// Changed line numbers per repository-relative file.
 pub type Changed = BTreeMap<String, BTreeSet<u32>>;
 
@@ -47,7 +54,7 @@ pub type Changed = BTreeMap<String, BTreeSet<u32>>;
 pub fn stage() -> Stage {
     Stage::in_process(
         "changed-lines",
-        "git diff -U0 <merge-base with origin/main, else HEAD~1> over crates/**/src/**/*.rs, joined with target/coverage/lcov.info: >=95% of instrumented changed lines covered",
+        "git diff -U0 <merge-base with $CHANGED_LINES_BASE, else origin/main, else HEAD~1> over crates/**/src/**/*.rs, joined with target/coverage/lcov.info: >=95% of instrumented changed lines covered",
         run_in_check,
     )
 }
@@ -310,7 +317,7 @@ pub fn changed_since(dir: &Path, base: &str) -> Result<Changed, String> {
             "core.quotePath=false",
             "ls-files",
             "--others",
-            "--exclude-standard",
+            "--exclude-per-directory=.gitignore",
             "--",
             PATHSPEC,
         ],
@@ -330,8 +337,8 @@ pub fn changed_since(dir: &Path, base: &str) -> Result<Changed, String> {
     Ok(changed)
 }
 
-/// A fingerprint of the source tree's content: every tracked or untracked, non-ignored file
-/// that exists, with its path and git blob id, hashed by git. It depends on content only, not
+/// A fingerprint of the source tree's content: every tracked or untracked file that exists and
+/// no committed `.gitignore` ignores, with its path and git blob id, hashed by git. It depends on content only, not
 /// on `HEAD`, so committing a measured tree keeps its report fresh, and two trees with equal
 /// fingerprints build and test the same. `target/` and other ignored paths do not count; a
 /// symbolic link counts by its target. Nothing is written to the object store.
@@ -343,7 +350,7 @@ pub fn tree_fingerprint(dir: &Path) -> Result<String, String> {
             "-z",
             "--cached",
             "--others",
-            "--exclude-standard",
+            "--exclude-per-directory=.gitignore",
         ],
         None,
     )?;
@@ -454,9 +461,44 @@ pub fn command(rev: Option<&str>) -> i32 {
     print_outcome(lcov.and_then(|text| gate(&root, rev, &text)))
 }
 
+/// The base `check` takes from [`BASE_ENV`]: a full commit id (40 or 64 lowercase hex digits)
+/// that is not all zeros and names a commit sharing history with `HEAD`. Anything else gives
+/// `None` and a note saying why, and the default base applies; a value that is not hex never
+/// reaches git, so it cannot be read as an option.
+pub fn env_base(dir: &Path, value: Option<&str>) -> (Option<String>, Option<String>) {
+    let Some(value) = value.map(str::trim).filter(|v| !v.is_empty()) else {
+        return (None, None);
+    };
+    let fallback = |why: &str| {
+        (
+            None,
+            Some(format!("{BASE_ENV} {why}; using the default base")),
+        )
+    };
+    let is_hex = value
+        .bytes()
+        .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
+    if !matches!(value.len(), 40 | 64) || !is_hex {
+        return fallback("is not a full commit id");
+    }
+    if value.bytes().all(|b| b == b'0') {
+        return fallback("is all zeros (a new branch)");
+    }
+    match resolve_base(dir, Some(value)) {
+        Ok(_) => (Some(value.to_owned()), None),
+        Err(_) => fallback(&format!(
+            "{value} is not a commit of this clone that HEAD shares history with"
+        )),
+    }
+}
+
 /// The `check` stage body: the report `coverage` just wrote, never a new measurement.
 fn run_in_check() -> i32 {
     let root = repo::root();
+    let (base, note) = env_base(&root, std::env::var(BASE_ENV).ok().as_deref());
+    if let Some(note) = note {
+        eprintln!("xtask: {note}");
+    }
     let result = coverage::fresh_lcov(&root).and_then(|lcov| {
         let lcov = lcov.ok_or_else(|| {
             format!(
@@ -464,7 +506,7 @@ fn run_in_check() -> i32 {
                  changed during the gate; run `cargo xtask coverage --changed-since`"
             )
         })?;
-        gate(&root, None, &lcov)
+        gate(&root, base.as_deref(), &lcov)
     });
     print_outcome(result)
 }
@@ -823,6 +865,73 @@ deleted file mode 100644
     }
 
     #[test]
+    fn should_take_the_pushed_from_commit_when_ci_names_one() {
+        // given: the commit before two new ones
+        let (_temp, dir) = repository();
+        let before = sh_git(&dir, &["rev-parse", "HEAD"]);
+        write(&dir, A, "fn a() {\n    uno();\n}\n");
+        commit(&dir, "c1");
+        write(&dir, A, "fn a() {\n    uno();\n    two();\n}\n");
+        commit(&dir, "c2");
+
+        // when
+        let (base, note) = env_base(&dir, Some(&before));
+        let lines = changed_since(&dir, base.as_deref().unwrap()).unwrap();
+
+        // then: both commits of the push count, not only the last
+        assert_eq!(base.as_deref(), Some(before.as_str()));
+        assert_eq!(note, None);
+        assert_eq!(lines, changed(&[(A, &[2, 3])]));
+    }
+
+    #[test]
+    fn should_fall_back_to_the_default_when_ci_names_no_usable_commit() {
+        // given
+        let (_temp, dir) = repository();
+        let missing = "1".repeat(40);
+
+        // when
+        let unset = env_base(&dir, None);
+        let empty = env_base(&dir, Some(""));
+        let new_branch = env_base(&dir, Some(&"0".repeat(40)));
+        let option = env_base(&dir, Some("--output=/tmp/x"));
+        let unknown = env_base(&dir, Some(&missing));
+
+        // then
+        assert_eq!(unset, (None, None));
+        assert_eq!(empty, (None, None));
+        for (base, note) in [new_branch, option, unknown] {
+            assert_eq!(base, None);
+            assert!(note.is_some_and(|n| n.contains(BASE_ENV)));
+        }
+    }
+
+    #[test]
+    fn should_gate_an_untracked_file_when_only_a_personal_exclude_hides_it() {
+        // given: a new source file listed in .git/info/exclude
+        let (_temp, dir) = repository();
+        let base = sh_git(&dir, &["rev-parse", "HEAD"]);
+        let info = PathBuf::from(sh_git(&dir, &["rev-parse", "--git-path", "info/exclude"]));
+        let info = if info.is_absolute() {
+            info
+        } else {
+            dir.join(info)
+        };
+        std::fs::create_dir_all(info.parent().unwrap()).unwrap();
+        std::fs::write(&info, "crates/preview-cli/src/hidden.rs\n").unwrap();
+        write(&dir, "crates/preview-cli/src/hidden.rs", "fn h() {}\n");
+
+        // when
+        let lines = changed_since(&dir, &base).unwrap();
+
+        // then
+        assert_eq!(
+            lines,
+            changed(&[("crates/preview-cli/src/hidden.rs", &[1])])
+        );
+    }
+
+    #[test]
     fn should_change_the_fingerprint_when_the_tree_changes() {
         // given
         let (_temp, dir) = repository();
@@ -859,8 +968,8 @@ deleted file mode 100644
         let (_temp, dir) = repository();
         write(&dir, LCOV_PATH, "SF:x\nDA:1,1\nend_of_record\n");
         let missing = coverage::fresh_lcov(&dir).unwrap();
-        let stamp = tree_fingerprint(&dir).unwrap();
-        write(&dir, "target/coverage/lcov.stamp", &format!("{stamp}\n"));
+        let stamp = coverage::stamp_of(&dir, &tree_fingerprint(&dir).unwrap());
+        write(&dir, "target/coverage/lcov.stamp", &stamp);
 
         // when
         let fresh = coverage::fresh_lcov(&dir).unwrap();

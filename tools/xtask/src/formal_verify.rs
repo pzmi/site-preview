@@ -11,9 +11,11 @@
 //!   [`SIM_SAMPLES`] traces of [`SIM_STEPS`] steps each, far beyond the pull-request
 //!   simulation, and beyond the depth Apalache reaches.
 //!
-//! Apalache is the version `tools/versions.toml` pins. Quint downloads that release from
-//! GitHub into `~/.quint/apalache-dist-<version>` on first use and starts it as a local
-//! server; the xtask passes `--apalache-version` so a Quint upgrade cannot change the pin,
+//! Apalache is the version `tools/versions.toml` pins. Before Quint runs, the xtask fetches
+//! that release from GitHub, refuses it unless its SHA-256 is the pinned one, and unpacks it
+//! into `~/.quint/apalache-dist-<version>` (`crate::apalache`, ADR 0061), where Quint finds it
+//! and starts it as a local server instead of downloading it unchecked; the xtask passes
+//! `--apalache-version` so a Quint upgrade cannot change the pin,
 //! and one run per model and relation gets its own server port. A missing JVM, a JVM older
 //! than [`MIN_JAVA`] or an Apalache that cannot be downloaded fails with what to do about it
 //! (ADR 0010); it is never a skip, and it is never reported as a verification result.
@@ -37,7 +39,7 @@ use crate::conformance::{
     output_of, quint, require_quint, seed,
 };
 use crate::process::{Stage, finish, run_report};
-use crate::{repo, tools};
+use crate::{apalache, repo, tools};
 
 /// One bounded verification: a model under one step relation, to `steps` steps.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -203,17 +205,10 @@ fn require_java() -> Result<(), String> {
     classify_java(probe.as_ref().map(|(ok, t)| (*ok, t.as_str())))
 }
 
-/// Where Quint keeps the Apalache release it downloads.
-fn apalache_binary(version: &str) -> Option<PathBuf> {
-    let home = std::env::var_os("HOME")?;
-    Some(
-        Path::new(&home)
-            .join(".quint")
-            .join(format!("apalache-dist-{version}"))
-            .join("apalache")
-            .join("bin")
-            .join("apalache-mc"),
-    )
+/// Where Quint runs the Apalache release from (`$QUINT_HOME`, else `~/.quint`), and where
+/// [`apalache::ensure_pinned`] unpacks the verified release; `doctor` probes it.
+pub fn apalache_binary(version: &str) -> Option<PathBuf> {
+    apalache::dist_dir(version).map(|dist| dist.join("apalache").join("bin").join("apalache-mc"))
 }
 
 /// The D9 hint for an Apalache release that cannot be fetched.
@@ -223,9 +218,9 @@ fn apalache_hint(version: &str) -> String {
         |p| p.display().to_string(),
     );
     format!(
-        "Quint downloads Apalache {version} on first use from \
-         https://github.com/apalache-mc/apalache/releases/tag/v{version} (the pinned release in \
-         tools/versions.toml); allow github.com or unpack the release so that {place} exists"
+        "formal-verify fetches Apalache {version} from \
+         https://github.com/apalache-mc/apalache/releases/tag/v{version} (the release and SHA-256 \
+         pinned in tools/versions.toml) and unpacks it so that {place} exists; allow github.com"
     )
 }
 
@@ -244,6 +239,8 @@ fn preflight() -> Result<Context, String> {
     require_quint(&formal)?;
     require_java()?;
     let apalache = pinned_apalache()?;
+    // Fetched and checked against the pinned SHA-256 here, so Quint never downloads it.
+    apalache::ensure_pinned(&apalache)?;
     let out = out_dir();
     std::fs::create_dir_all(out.join(APALACHE_OUT))
         .map_err(|e| format!("cannot create {}: {e}", out.display()))?;

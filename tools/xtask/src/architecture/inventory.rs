@@ -225,15 +225,24 @@ pub fn check_fuzz(policy: &Policy, root: &Path, members: &[Crate]) -> Vec<Diagno
 /// Every dependency of the fuzz crate, of any kind: a path dependency must name a workspace
 /// crate in `[dependencies.normal] <fuzz crate>`, any other must be in
 /// `[external.normal] <fuzz crate>` (features are not checked: the fuzz crate has its own
-/// lockfile and is built on the nightly only).
+/// lockfile and is built on the nightly only). The target-specific tables
+/// (`[target.'cfg(...)'.dependencies]` and the like) count as well.
 fn check_fuzz_dependencies(policy: &Policy, manifest: &toml::Table, name: &str) -> Vec<Diagnostic> {
     let mut out = Vec::new();
     let workspace_allowed = policy.dependencies.normal.get(name);
     let external_allowed = policy.external.normal.get(name);
-    for kind in ["dependencies", "dev-dependencies", "build-dependencies"] {
-        let Some(table) = manifest.get(kind).and_then(toml::Value::as_table) else {
-            continue;
-        };
+    let targets = manifest
+        .get("target")
+        .and_then(toml::Value::as_table)
+        .into_iter()
+        .flat_map(|t| t.values().filter_map(toml::Value::as_table));
+    let scopes: Vec<&toml::Table> = std::iter::once(manifest).chain(targets).collect();
+    let tables = scopes.iter().flat_map(|scope| {
+        ["dependencies", "dev-dependencies", "build-dependencies"]
+            .into_iter()
+            .filter_map(|kind| scope.get(kind).and_then(toml::Value::as_table))
+    });
+    for table in tables {
         for (key, spec) in table {
             let package = spec
                 .get("package")
@@ -543,6 +552,29 @@ mod tests {
         assert!(
             text.iter()
                 .any(|m| m.contains("`rand`") && m.contains("[external.normal] fz"))
+        );
+    }
+
+    #[test]
+    fn should_report_fuzz_crate_when_a_target_specific_dependency_is_unlisted() {
+        // given
+        let root = fuzz_root(
+            "[package]\nname = \"fz\"\n[dependencies]\nlibfuzzer-sys = \"0.4\"\n[target.'cfg(unix)'.dependencies]\nlibc = \"0.2\"\n[target.'cfg(unix)'.dev-dependencies]\nb = { path = \"../crates/b\" }\n[workspace]\n",
+        );
+
+        // when
+        let diagnostics = check_fuzz(&policy(FUZZ_POLICY), root.path(), &[krate("a", "crates")]);
+
+        // then
+        let text: Vec<_> = diagnostics.iter().map(|d| d.message.as_str()).collect();
+        assert_eq!(text.len(), 2, "{text:?}");
+        assert!(
+            text.iter()
+                .any(|m| m.contains("`libc`") && m.contains("[external.normal] fz"))
+        );
+        assert!(
+            text.iter()
+                .any(|m| m.contains("`b`") && m.contains("[dependencies.normal] fz"))
         );
     }
 }

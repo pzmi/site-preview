@@ -64,5 +64,11 @@ jobs:
       - name: Install Quint for the conformance stages
         run: npm ci --prefix formal
 
+      # On a push, the changed-line gate starts from the commit the branch was at before it
+      # (every commit of the push counts, not only the last); a pull request and a new branch
+      # (the all-zeros SHA) use the merge-base with origin/main (ADR 0069). The SHA reaches the
+      # xtask as an environment variable, never interpolated into a script.
       - name: Full gate
+        env:
+          CHANGED_LINES_BASE: ${{ github.event_name == 'push' && github.event.before || '' }}
         run: cargo xtask check

@@ -34,6 +34,9 @@ pub struct Tool {
     pub probe: Vec<String>,
     /// Match the version as a substring of the probe output instead of as a token.
     pub contains: bool,
+    /// The SHA-256 of the release download, lowercase hex, for a tool the xtask fetches
+    /// itself (Apalache, ADR 0061).
+    pub sha256: Option<String>,
 }
 
 /// Result of checking one tool.
@@ -89,6 +92,14 @@ pub fn parse(text: &str) -> Result<Vec<Tool>, String> {
         if probe.is_empty() && !matches!(method, Method::Lockfile(_)) {
             return Err(format!("versions.toml: tools.{name}.probe missing"));
         }
+        let sha256 = t.get("sha256").and_then(toml::Value::as_str);
+        if let Some(digest) = sha256
+            && !is_sha256(digest)
+        {
+            return Err(format!(
+                "versions.toml: tools.{name}.sha256 must be 64 lowercase hexadecimal digits"
+            ));
+        }
         out.insert(
             name.clone(),
             Tool {
@@ -100,10 +111,16 @@ pub fn parse(text: &str) -> Result<Vec<Tool>, String> {
                     .get("contains")
                     .and_then(toml::Value::as_bool)
                     .unwrap_or(false),
+                sha256: sha256.map(str::to_owned),
             },
         );
     }
     Ok(out.into_values().collect())
+}
+
+/// Whether `text` is a SHA-256 digest as the manifest writes it: 64 lowercase hex digits.
+pub fn is_sha256(text: &str) -> bool {
+    text.len() == 64 && text.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
 /// The embedded manifest, parsed.
@@ -216,7 +233,7 @@ pub fn doctor() -> i32 {
             );
             continue;
         }
-        let status = check_with_path(tool, None);
+        let status = check_with_path(&doctor_probe(tool), None);
         if status != Status::Ok {
             bad += 1;
         }
@@ -228,6 +245,20 @@ pub fn doctor() -> i32 {
     } else {
         0
     }
+}
+
+/// The tool as `doctor` probes it: Apalache is never looked up on `PATH` but at the place
+/// `formal-verify` unpacks the verified release and Quint runs it from
+/// ([`crate::formal_verify::apalache_binary`]), so `doctor` reports what the lane would use.
+fn doctor_probe(tool: &Tool) -> Tool {
+    let mut probed = tool.clone();
+    if tool.name == "apalache"
+        && let Some(binary) = crate::formal_verify::apalache_binary(&tool.version)
+        && let Some(program) = probed.probe.first_mut()
+    {
+        *program = binary.display().to_string();
+    }
+    probed
 }
 
 /// What `install` does for a Cargo or Rustup tool, given what the probe found.
@@ -338,6 +369,61 @@ fn run(program: &str, args: &[&str]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn should_probe_the_quint_home_binary_when_doctor_checks_apalache() {
+        // given
+        let apalache = manifest()
+            .unwrap()
+            .into_iter()
+            .find(|t| t.name == "apalache")
+            .unwrap();
+
+        // when
+        let probed = doctor_probe(&apalache);
+
+        // then
+        let expected = crate::formal_verify::apalache_binary(&apalache.version)
+            .map(|p| p.display().to_string());
+        assert_eq!(probed.probe.first().cloned(), expected);
+        assert_eq!(probed.probe[1..], apalache.probe[1..]);
+        assert_eq!(doctor_probe(&nextest()), nextest());
+    }
+
+    #[test]
+    fn should_pin_a_sha256_for_apalache_when_the_manifest_is_read() {
+        // given
+        let tools = manifest().unwrap();
+
+        // when
+        let apalache = tools.iter().find(|t| t.name == "apalache").unwrap();
+
+        // then
+        assert!(
+            apalache.sha256.as_deref().is_some_and(is_sha256),
+            "{apalache:?}"
+        );
+    }
+
+    #[test]
+    fn should_refuse_a_digest_when_it_is_not_lowercase_hex_sha256() {
+        // given
+        let text = |digest: &str| {
+            format!(
+                "[tools.x]\nversion = \"1\"\nmethod = \"manual\"\nurl = \"u\"\nprobe = [\"x\"]\nsha256 = \"{digest}\"\n"
+            )
+        };
+
+        // when
+        let upper = parse(&text(&"A".repeat(64)));
+        let short = parse(&text(&"a".repeat(63)));
+        let good = parse(&text(&"a".repeat(64)));
+
+        // then
+        assert!(upper.unwrap_err().contains("sha256"));
+        assert!(short.is_err());
+        assert_eq!(good.unwrap()[0].sha256, Some("a".repeat(64)));
+    }
 
     fn nextest() -> Tool {
         manifest()

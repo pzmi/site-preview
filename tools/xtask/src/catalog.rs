@@ -33,14 +33,21 @@ const fn row(
     }
 }
 
-/// All rows. `quick` runs the stage rows `fmt-check`, `architecture`, `clippy`, `unit-tests`
-/// and `doctests`.
+/// All rows. `quick` runs the stage rows `fmt-check`, `fuzz-fmt`, `architecture`, `clippy`,
+/// `unit-tests` and `doctests`.
 pub const CATALOG: &[Check] = &[
     row(
         "fmt-check",
         "static",
         "cargo fmt --all --check",
         "FND-03",
+        true,
+    ),
+    row(
+        "fuzz-fmt",
+        "static",
+        "rustfmt --check --edition 2024 fuzz/fuzz_targets/*.rs",
+        "SEC-05",
         true,
     ),
     row(
@@ -154,7 +161,7 @@ pub const CATALOG: &[Check] = &[
     row(
         "changed-lines",
         "coverage",
-        "git diff -U0 <merge-base with origin/main, else HEAD~1> over crates/**/src/**/*.rs, joined with target/coverage/lcov.info: >=95% of instrumented changed lines covered",
+        "git diff -U0 <merge-base with $CHANGED_LINES_BASE, else origin/main, else HEAD~1> over crates/**/src/**/*.rs, joined with target/coverage/lcov.info: >=95% of instrumented changed lines covered",
         "TEST-07",
         true,
     ),

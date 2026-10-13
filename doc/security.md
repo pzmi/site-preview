@@ -343,10 +343,10 @@ in the code under test or a broken property.
 
 | Target | Code under test | Properties |
 |:--|:--|:--|
-| `decode_path` | `decode_request_path`, `eligibility::path` (domain) | No panic. Every accepted path has only single-entry components (no `.`, `..`, empty, `/`, `\` or control character); `eligibility::path` agrees with the component walk and with an independent oracle of the deny rules; decoding is deterministic and a re-encoded path decodes to itself. |
+| `decode_path` | `decode_request_path`, `eligibility::path` (domain) | No panic. Every accepted path has only single-entry components (no `.`, `..`, empty, `/`, `\` or control character); `eligibility::path` returns exactly the verdict and reason of an oracle written in the target from the documented rules (HFS-ignorable code points, the reserved root name, excluded directories, editor artifacts, hidden names, compared after its own copy of the case fold: ASCII, `ſ` as `s`, `İ` and `ı` as `i`), in both directions: eligible exactly when the oracle denies nothing; decoding is deterministic and a re-encoded path decodes to itself. Seeds cover the confusable spellings. |
 | `rewrite_html` | `inject::rewrite` (`preview-adapter-http`) over arbitrary bytes | No panic. On `Injected`, the output is the input with the tag inserted at one offset (removing it gives back the input bytes) and a separate strict `lol_html` parse sees exactly one client `<script>`. On `AlreadyPresent`, every client tag carries the snapshot attributes. |
 | `host_header` | `HostPolicy::check`, `OriginPolicy::check` (domain), over eight listener addresses, both `--allow-remote` settings and any port | No panic. Any `Allow` has the bound port; `localhost` only on a loopback listener; an allowed address is never unspecified and is the bound one, or any one on a wildcard listener with `--allow-remote`; the decision is deterministic; the Origin a browser sends for an accepted authority is allowed. |
-| `change_sequence` | `ChangeCoordinator` (`preview-application`) with its real debouncer and `ReloadState`, fed change batches, overflows, failures, readiness, reconciles, clock steps and settles | No panic. The revision changes only on a publish, by exactly one; nothing is published unless a non-ignored event, an overflow or a recovery came since the last publish; a published change set has at most 64 entries, a non-full one only css, js or asset entries, and a rescan is always full. |
+| `change_sequence` | `ChangeCoordinator` (`preview-application`) with its real debouncer and `ReloadState`, fed change batches, overflows, failures, readiness, reconciles, clock steps and settles | No panic. The revision changes only on a publish, by exactly one; nothing is published unless a non-ignored event (decided by the target's own table of which of its names each deny rule refuses, not by the production `classify`), an overflow or a recovery came since the last publish; a published change set has at most 64 entries, a non-full one only css, js or asset entries, and a rescan is always full. |
 
 Each target's input layout is documented at the top of its file, and its committed seeds are in
 `fuzz/seeds/<target>/` (a xtask unit test fails when a target has no seeds, no `[[bin]]` entry
@@ -359,6 +359,28 @@ or no place in the `fuzz.yml` matrix). Run one locally with
 a time per target from 1 to 3600 seconds, 600 by default), resumes from the corpus the previous
 run cached, and uploads a crash input as the artifact `fuzz-crash-<target>-<run>-<attempt>`.
 The fuzz crate's own lockfile is audited by the `deny-fuzz` stage (see Supply chain).
+
+Fuzz targets are formatted like the workspace (`fuzz-fmt` in `quick` and `check`), carry the
+workspace's lint table in `fuzz/Cargo.toml`, and are linted with Clippy on the pinned nightly
+in `fuzz.yml` (ADR 0069).
+
+### Results
+
+Local runs of `cargo xtask fuzz <target> --time 60` (one core, `nightly-2026-10-01`, from the
+committed seeds and the local corpus). `cov` is libFuzzer's count of covered edges at the end
+of the run.
+
+| Target | Date | Runs | `cov` | Crashes |
+|:--|:--|--:|--:|--:|
+| `host_header` | 2026-10-13 (SEC-05) | 6,367,011 | 545 | 0 |
+| `rewrite_html` | 2026-10-13 (SEC-05) | 105,086 | 6778 | 0 |
+| `change_sequence` | 2026-10-13 (SEC-05) | 221,846 | 788 | 0 |
+| `decode_path` | 2026-10-13 (FORMAL-10 review, the two-way oracle) | 382,049 | 533 | 0 |
+| `change_sequence` | 2026-10-13 (FORMAL-10 review, the explicit ignored-name table) | 273,984 | 813 | 0 |
+
+A changed property that the fuzzer then fails to break still needs a control: with the oracle's
+`ſ` mapping removed, the committed seed `confusable-long-s-raw` fails `decode_path` at once
+(`eligibility::path disagrees with the oracle for ["node_moduleſ", "x"]`).
 
 ### Triage
 

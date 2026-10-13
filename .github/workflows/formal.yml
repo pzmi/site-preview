@@ -16,8 +16,10 @@ on:
 permissions:
   contents: read
 
+# The scheduled and dispatched runs (the 120-minute Apalache lane) get a group of their own, so
+# a push to main never queues behind one, nor one behind a push (ADR 0069).
 concurrency:
-  group: formal-${{ github.ref }}
+  group: formal-${{ github.ref }}-${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'deep' || 'gate' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -77,8 +79,10 @@ jobs:
   # The scheduled deep lane (foundation.md section 6.4, FORMAL-10): `quint verify` through the
   # Apalache release pinned in tools/versions.toml (bounded model checking of every model's
   # invariants) and a multi-seed simulation far larger than the pull-request one. It is not part
-  # of `cargo xtask check`. The hosted runner's default JDK (17 or newer) runs Apalache; Quint
-  # downloads the pinned release into ~/.quint on first use, which the cache below keeps. TEST-09
+  # of `cargo xtask check`. The hosted runner's default JDK (17 or newer) runs Apalache.
+  # `formal-verify` fetches the pinned release itself, refuses it unless its SHA-256 equals the
+  # one in tools/versions.toml, and unpacks it into ~/.quint before Quint runs (ADR 0061), so
+  # ~/.quint is never cached: what runs is always unpacked from a verified tarball. TEST-09
   # adds its Miri job beside this one.
   formal-verify:
     name: Formal verification (Apalache)
@@ -93,14 +97,14 @@ jobs:
       - name: Install toolchain from rust-toolchain.toml
         run: rustup show active-toolchain || rustup toolchain install
 
-      - name: Cache cargo registry, build output and the Apalache release
+      # target/ holds the downloaded Apalache tarball too; it is re-hashed before every use.
+      - name: Cache cargo registry and build output
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry/index
             ~/.cargo/registry/cache
             ~/.cargo/git/db
-            ~/.quint
             target
           key: formal-verify-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'tools/versions.toml') }}
           restore-keys: |
