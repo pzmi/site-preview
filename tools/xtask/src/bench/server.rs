@@ -141,7 +141,12 @@ impl SseClient {
 
     /// Blocks until an event named `name` has arrived (consuming it) or `DEADLINE` passes.
     pub fn wait_for(&mut self, name: &str) -> Result<(), String> {
-        let deadline = Instant::now() + DEADLINE;
+        self.wait_for_within(name, DEADLINE)
+    }
+
+    /// Like [`Self::wait_for`] with a caller-chosen limit.
+    pub fn wait_for_within(&mut self, name: &str, limit: Duration) -> Result<(), String> {
+        let deadline = Instant::now() + limit;
         loop {
             if take_event(&mut self.buffer, name) {
                 return Ok(());

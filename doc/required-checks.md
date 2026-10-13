@@ -35,7 +35,7 @@ pull requests.
 | `coverage` | Coverage | `check --only coverage,changed-lines` |
 | `security` | Security | `check --only deny,deny-fuzz,secrets,workflows,action-pins` |
 | `browser` | Browser | `check --only browser` |
-| `artifact-smoke` | Artifact smoke | builds the release binary and runs it outside the repository |
+| `artifact-smoke` | Artifact smoke | `cargo xtask release-check --target x86_64-unknown-linux-musl`: builds, packages and smokes the release archive |
 | `required` | Required | the aggregate; needs all of the above |
 
 The four `platform` rows are the legs of one matrix job (`fail-fast: false`, so one red leg never

@@ -88,8 +88,13 @@ pub enum Command {
         #[arg(long)]
         miri: bool,
     },
-    /// Clean packaged artifact tests.
-    ReleaseCheck,
+    /// Clean packaged artifact tests: builds, packages and smoke-tests the release archive.
+    ReleaseCheck {
+        /// Rust target triple to build and package (default: the host). The release targets
+        /// are the four of plan section 11 M5, each run on its own native runner.
+        #[arg(long, value_name = "TARGET")]
+        target: Option<String>,
+    },
     /// Non-blocking performance and soak measurement; writes `target/bench/report.json`.
     Bench,
     /// Print the check catalog as JSON.
@@ -104,7 +109,8 @@ pub enum Command {
 }
 
 impl Command {
-    /// The subcommand name, which is also the catalog id.
+    /// The subcommand name, which is also the catalog id (tests).
+    #[cfg(test)]
     pub fn id(&self) -> &'static str {
         match self {
             Self::Fmt => "fmt",
@@ -118,7 +124,7 @@ impl Command {
             Self::Mutation { .. } => "mutation",
             Self::Fuzz { .. } => "fuzz",
             Self::FormalVerify { .. } => "formal-verify",
-            Self::ReleaseCheck => "release-check",
+            Self::ReleaseCheck { .. } => "release-check",
             Self::Bench => "bench",
             Self::ListChecks => "list-checks",
             Self::Doctor => "doctor",
@@ -156,6 +162,29 @@ mod tests {
         // then
         assert!(matches!(flags.0, Command::FormalVerify { miri: false }));
         assert!(matches!(flags.1, Command::FormalVerify { miri: true }));
+    }
+
+    #[test]
+    fn should_take_an_optional_target_when_release_check_is_parsed() {
+        // given
+        let host = Cli::try_parse_from(["xtask", "release-check"]).unwrap();
+        let musl = Cli::try_parse_from([
+            "xtask",
+            "release-check",
+            "--target",
+            "x86_64-unknown-linux-musl",
+        ])
+        .unwrap();
+
+        // when
+        let targets = (host.command, musl.command);
+
+        // then
+        assert!(matches!(targets.0, Command::ReleaseCheck { target: None }));
+        assert!(matches!(
+            targets.1,
+            Command::ReleaseCheck { target: Some(ref t) } if t == "x86_64-unknown-linux-musl"
+        ));
     }
 
     #[test]

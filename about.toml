@@ -1,0 +1,26 @@
+# cargo-about configuration for THIRD-PARTY-NOTICES (OPS-05, ADR 0076). `cargo xtask
+# release-check` runs `cargo about generate --locked --manifest-path crates/preview-cli/Cargo.toml
+# --config about.toml --target <triple> about.hbs`, so the notices describe the crates linked
+# into the binary for that target: the normal dependency graph of `preview-cli`, without
+# dev-dependencies (test tools) or build-only dependencies.
+
+# Licences the shipped graph may use: the permissive set of deny.toml plus the exceptions it
+# scopes per crate (MPL-2.0 for the four crates of ADR 0043, CC0-1.0 for notify, ADR 0047). A
+# crate under any other licence makes the generator fail; widen this only together with
+# deny.toml and an ADR.
+accepted = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    "MPL-2.0",
+    "CC0-1.0",
+]
+
+ignore-dev-dependencies = true
+ignore-build-dependencies = true
+ignore-transitive-dependencies = false
+private = { ignore = true }

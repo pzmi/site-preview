@@ -37,6 +37,8 @@ pub struct Tool {
     /// The SHA-256 of the release download, lowercase hex, for a tool the xtask fetches
     /// itself (Apalache, ADR 0061).
     pub sha256: Option<String>,
+    /// Cargo features `cargo install` enables (cargo-about's binary needs `cli`).
+    pub features: Option<String>,
 }
 
 /// Result of checking one tool.
@@ -112,6 +114,10 @@ pub fn parse(text: &str) -> Result<Vec<Tool>, String> {
                     .and_then(toml::Value::as_bool)
                     .unwrap_or(false),
                 sha256: sha256.map(str::to_owned),
+                features: t
+                    .get("features")
+                    .and_then(toml::Value::as_str)
+                    .map(str::to_owned),
             },
         );
     }
@@ -207,6 +213,12 @@ fn require_in(tools: &[Tool], name: &str, path: Option<&OsStr>) -> Result<(), St
 /// that invokes an external tool calls this first.
 pub fn require(name: &str) -> Result<(), String> {
     require_in(&manifest()?, name, None)
+}
+
+/// Like [`require`], probing with `path` as the probe's `PATH` (a test of the missing-tool hint).
+#[cfg(test)]
+pub fn require_on(name: &str, path: &OsStr) -> Result<(), String> {
+    require_in(&manifest()?, name, Some(path))
 }
 
 /// `cargo xtask doctor`: checks every pinned tool, prints one line each, and exits non-zero
@@ -319,6 +331,9 @@ pub fn install(names: &[String]) -> i32 {
                 let mut args = vec!["install", "--locked"];
                 if force {
                     args.push("--force");
+                }
+                if let Some(features) = &tool.features {
+                    args.extend(["--features", features]);
                 }
                 args.push(&spec);
                 run("cargo", &args)

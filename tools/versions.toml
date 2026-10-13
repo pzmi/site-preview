@@ -5,6 +5,7 @@
 # method = "rustup"  : rustup toolchain install nightly-<date> --profile minimal
 # method = "manual"  : not installable by xtask; `url` says where to get it
 # method = "lockfile": version owned by a package-lock.json, noted here, not checked by doctor
+# features = "a b"   : (method cargo) passed as --features to cargo install
 #
 # probe = [program, args...] is run to read the installed version; the output must contain
 # the exact version as a whitespace-separated token (a leading "v" is ignored), or, with
@@ -39,6 +40,14 @@ probe = ["cargo-fuzz", "fuzz", "--version"]
 version = "0.5.9"
 method = "cargo"
 probe = ["cargo-cyclonedx", "cyclonedx", "--version"]
+
+# The third-party notices of the release archive (OPS-05, ADR 0076): `cargo xtask release-check`
+# runs `cargo about generate` with the committed `about.toml` and `about.hbs`.
+[tools.cargo-about]
+version = "0.9.2"
+method = "cargo"
+features = "cli"   # the crate's binary is behind this feature
+probe = ["cargo-about", "about", "--version"]
 
 [tools.gitleaks]
 version = "8.30.1"

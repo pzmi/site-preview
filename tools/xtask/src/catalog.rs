@@ -299,7 +299,8 @@ pub fn all_rows() -> Vec<Check> {
     rows
 }
 
-/// Finds a row by id.
+/// Finds a row by id (tests: every command is implemented, so `main` no longer looks owners up).
+#[cfg(test)]
 pub fn find(id: &str) -> Option<&'static Check> {
     CATALOG.iter().find(|c| c.id == id)
 }

@@ -247,12 +247,13 @@ stage just wrote and fails rather than measure twice if it no longer matches
 Node and Quint, a JVM 17 or newer, and the pinned Apalache release, and fails with the fix when one
 is missing ([ADR 0061](adr/0061-apalache-formal-verify-scheduled-lane.md)).
 
-Planned, printing `not available yet` until their task lands:
-
-```bash
-cargo xtask mutation       # TEST-08
-cargo xtask release-check  # OPS-05
-```
+`cargo xtask release-check [--target T]` (OPS-05, [ADR 0076](adr/0076-release-check-archive-and-notices.md);
+not in `check`, run by the `artifact-smoke` CI job and by the release workflow on each native
+runner) builds the release binary for `T` (default: the host), packages
+`site-preview-<T>.tar.gz`, extracts it into a fresh temporary directory and tests the extracted
+binary under `env -i PATH=/usr/bin:/bin`. It needs `cargo-about` (`cargo xtask install-tools
+cargo-about`) and the Rust target (`rustup target add T`; the Linux release targets are musl
+and may need `musl-tools`). Logs of the run are in `target/release-check/<T>/logs/`.
 
 ## Checks the gate runs
 
@@ -278,7 +279,7 @@ an unknown name exits 2 and lists the stage names). The same command reproduces 
 | `coverage` (Coverage) | `coverage,changed-lines` | `cargo-nextest`, `cargo-llvm-cov`, Quint | `lcov.info` always, JUnit on failure |
 | `security` (Security) | `deny,deny-fuzz,secrets,workflows,action-pins` | `cargo-deny`, Gitleaks, actionlint | none |
 | `browser` (Browser) | `browser` | Playwright and Chromium | Playwright `test-results/` (traces, screenshots) on failure |
-| `artifact-smoke` (Artifact smoke) | none: a release build run outside the repository on a copy of the fixture (`serve --json --port 0`, `ready`, GET `/`, SIGTERM, exit 0, tree unchanged); OPS-05 replaces it with `release-check` | none | logs on failure |
+| `artifact-smoke` (Artifact smoke) | none: `cargo xtask release-check --target x86_64-unknown-linux-musl` (ADR 0076) | `cargo-about`, the musl target and `musl-tools` | logs on failure |
 | `required` (Required) | none | none | none |
 
 `required` needs every other job and fails unless each finished `success` (a failed, cancelled or

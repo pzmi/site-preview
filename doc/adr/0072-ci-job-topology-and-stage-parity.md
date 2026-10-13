@@ -37,7 +37,7 @@ The workspace nextest run was a single `unit-tests` stage, so there was nothing 
   | `coverage` | `coverage`, `changed-lines` |
   | `security` | `deny`, `deny-fuzz`, `secrets`, `workflows`, `action-pins` |
   | `browser` | `browser` |
-  | `artifact-smoke` | none (a release build run outside the repository; OPS-05 moves it into `release-check`) |
+  | `artifact-smoke` | none (`cargo xtask release-check`, OPS-05, ADR 0076) |
   | `required` | `needs:` every job above and fails unless each result is `success` (a cancelled or skipped job fails it) |
 
   `browser` stays one stage with its Chromium install step in the job. A unit test

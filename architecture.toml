@@ -48,7 +48,7 @@ preview-application = { tokio = ["sync"] }
 preview-composition = { axum = ["http1"], hyper = ["server", "http1"], hyper-util = ["tokio", "service"], tokio = ["rt-multi-thread", "net", "signal", "sync", "time"] }
 preview-cli = { clap = ["default", "derive", "std", "help", "usage", "error-context"], serde_json = ["std"] }
 preview-conformance = { axum = [], serde_json = ["std"], tokio = ["rt", "time", "test-util"], tower = ["util"] }
-xtask = { cargo_metadata = ["default"], clap = ["default", "derive"], proc-macro2 = ["span-locations"], serde = ["default", "derive"], syn = ["parsing", "full", "visit", "clone-impls"], toml = ["default"], yaml-rust2 = [] }
+xtask = { cargo_metadata = ["default"], clap = ["default", "derive"], proc-macro2 = ["span-locations"], serde = ["default", "derive"], syn = ["parsing", "full", "visit", "clone-impls"], tempfile = ["default"], toml = ["default"], yaml-rust2 = [] }
 preview-fuzz = { libfuzzer-sys = [], lol_html = [] }
 
 [external.dev]
@@ -59,7 +59,6 @@ preview-cli = { assert_cmd = ["default"], predicates = ["default"], tempfile = [
 preview-conformance = { futures-util = [], tempfile = ["default"] }
 preview-application = { proptest = ["default"], tokio = ["rt", "macros"] }
 preview-domain = { proptest = ["default"], trybuild = ["default"] }
-xtask = { tempfile = ["default"] }
 
 [external.build]
 

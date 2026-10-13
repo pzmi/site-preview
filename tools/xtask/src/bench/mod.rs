@@ -9,7 +9,7 @@
 //! The results are recorded in `doc/performance.md`.
 
 mod report;
-mod server;
+pub(crate) mod server;
 mod site;
 mod stats;
 mod sys;

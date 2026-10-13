@@ -377,45 +377,22 @@ jobs:
         uses: ./.github/actions/setup-rust
         with:
           job: artifact-smoke
+          tools: cargo-about
 
-      # The release binary runs outside the repository, in a clean environment (no cargo, node
-      # or npm on PATH), on a copy of the fixture site: `serve --json --port 0` prints `ready`,
-      # the page is served with the reload client, SIGTERM exits 0, and serving left the
-      # fixture tree unchanged. OPS-05 replaces this with `cargo xtask release-check`.
-      - name: Build the release binary
-        run: cargo build --release --locked -p preview-cli --bin site-preview
-
-      - name: Run it outside the repository
-        env:
-          SMOKE_ROOT: ${{ runner.temp }}
+      # The Linux release archives are musl builds (plan section 11 M5): the standard library of
+      # the target and the distribution's musl linker driver.
+      - name: Install the musl target
         run: |
-          set -euo pipefail
-          work="$(mktemp -d "$SMOKE_ROOT/smoke.XXXXXX")"
-          cp target/release/site-preview "$work/site-preview"
-          cp -R tests/fixtures/site "$work/site"
-          cd "$work/site"
-          tree_hash() { find . -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum; }
-          before="$(tree_hash)"
-          env -i PATH=/usr/bin:/bin HOME="$work" "$work/site-preview" serve --json --port 0 \
-            > "$work/stdout.log" 2> "$work/stderr.log" &
-          pid=$!
-          for _ in $(seq 1 100); do
-            [ -s "$work/stdout.log" ] && break
-            sleep 0.1
-          done
-          ready="$(head -n 1 "$work/stdout.log")"
-          echo "ready: $ready"
-          [ "$(printf '%s' "$ready" | jq -r .event)" = ready ]
-          url="$(printf '%s' "$ready" | jq -r .url)"
-          curl --fail --silent --show-error --max-time 10 "$url" > "$work/index.html"
-          grep -qi '<html' "$work/index.html"
-          grep -q '__site_preview' "$work/index.html"
-          kill -TERM "$pid"
-          status=0
-          wait "$pid" || status=$?
-          echo "exit status after SIGTERM: $status"
-          [ "$status" -eq 0 ]
-          [ "$(tree_hash)" = "$before" ]
+          rustup target add x86_64-unknown-linux-musl
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends musl-tools
+
+      # Builds the musl release binary, packages site-preview-<target>.tar.gz with the
+      # THIRD-PARTY-NOTICES that cargo-about generates, extracts it into a fresh directory and
+      # runs the extracted binary with `env -i PATH=/usr/bin:/bin` on a copy of the fixture
+      # (OPS-05, ADR 0076). OPS-06's release workflow runs the same command per native runner.
+      - name: Package and smoke the release archive
+        run: cargo xtask release-check --target x86_64-unknown-linux-musl
 
       - name: Keep the smoke logs of a failed run
         if: failure()
@@ -423,7 +400,7 @@ jobs:
         with:
           name: artifact-smoke-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            ${{ runner.temp }}/smoke.*/*.log
+            target/release-check/*/logs/*.log
           if-no-files-found: warn
           retention-days: 30
 
