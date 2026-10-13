@@ -121,7 +121,11 @@ jobs:
         uses: ./.github/actions/setup-rust
         with:
           job: integration
-          tools: cargo-nextest
+          tools: cargo-nextest cargo-deny
+
+      # xtask's security fixture tests run the real cargo-deny, Gitleaks and actionlint.
+      - name: Install Gitleaks and actionlint
+        uses: ./.github/actions/install-scanners
 
       - name: Integration
         run: cargo xtask check --only integration-tests
@@ -204,7 +208,11 @@ jobs:
         uses: ./.github/actions/setup-rust
         with:
           job: coverage
-          tools: cargo-nextest cargo-llvm-cov
+          tools: cargo-nextest cargo-llvm-cov cargo-deny
+
+      # xtask's security fixture tests run the real cargo-deny, Gitleaks and actionlint.
+      - name: Install Gitleaks and actionlint
+        uses: ./.github/actions/install-scanners
 
       # The conformance stages run the locked Quint; npx never fetches it (ADR 0052, ADR 0060).
       # Node is the runner's preinstalled one (22 or newer, tools/versions.toml).
