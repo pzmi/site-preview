@@ -1,0 +1,1 @@
+doc/adr/0004-beta.md:1: ADR number 0004 is also used by doc/adr/0004-alpha.md

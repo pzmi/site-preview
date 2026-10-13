@@ -40,7 +40,7 @@ This directory holds the decisions behind site-preview, one file per decision, i
 | [0034](0034-cargo-bylaw-qualification.md) | cargo-bylaw is not qualified; semantic rules use syn | Proposed |
 | [0035](0035-semantic-rules-scope-and-resolution.md) | Semantic rules: what is analysed and how names resolve | Proposed |
 | [0036](0036-hygiene-and-test-quality-rules.md) | Hygiene and test-quality rules and their exceptions | Proposed |
-| [0037](0037-host-origin-parsing-and-core-net.md) | Host and Origin parsing details; `core::net` in the domain | Proposed |
+| [0037](0037-host-origin-parsing-and-core-net.md) | Host and Origin parsing details; `core::net` value types in the domain | Proposed |
 | [0038](0038-application-port-shapes.md) | Application port shapes: synchronous content, async change source, no adapter types | Proposed |
 | [0039](0039-request-resolution-outcomes.md) | Request resolution outcomes: no existence leak, snapshot before open | Proposed |
 | [0040](0040-change-coordinator-recovery-and-exhaustion.md) | Change coordinator: recovery signal, reconcile requests and revision exhaustion | Proposed |
@@ -58,31 +58,25 @@ This directory holds the decisions behind site-preview, one file per decision, i
 | [0052](0052-quint-toolchain-and-lifecycle-model.md) | Quint toolchain: lockfile-only evaluator; the lifecycle model's two step relations | Proposed |
 | [0053](0053-conformance-harness.md) | Conformance harness: an explicit ITF replay path; Quint Connect not adopted yet | Proposed |
 | [0054](0054-watcher-model.md) | The watcher model: abstraction, a settled-state encoding of no lost change, a full reload at recovery, root deletion | Proposed |
-| [0056](0056-lifecycle-conformance-driver.md) | Lifecycle conformance driver: composition seams, scripted named traces, a sampling relation | Proposed |
-| [0057](0057-reload-conformance-driver.md) | Reload conformance driver: in-process SSE bodies, the client's choice read from the model | Proposed |
-| [0058](0058-watcher-conformance-driver.md) | Watcher conformance driver: the coordinator in process, the environment from the trace | Proposed |
-| [0059](0059-conformance-negative-controls.md) | Conformance negative controls: faults behind the drivers' seams, a publish seam in the reload driver | Proposed |
-| [0060](0060-conformance-stage-and-trace-corpus.md) | The `conformance` stage in `check`: regression manifest and freshness, a generated-trace manifest, replay once per gate, `formal.yml` | Proposed. Amended by 0069 |
-| [0061](0061-apalache-formal-verify-scheduled-lane.md) | Apalache in a scheduled `formal-verify` lane: pinned release, raised JVM stack, invariants checked after each step, shallow bounded depths | Proposed. Amended (SHA-256 pin) |
 | [0056](0056-lifecycle-conformance-driver.md) | Lifecycle conformance driver: composition seams, scripted named traces, a sampling relation | Proposed. Amended by 0070 |
 | [0057](0057-reload-conformance-driver.md) | Reload conformance driver: in-process SSE bodies, the client's choice read from the model | Proposed. Amended by 0070 |
 | [0058](0058-watcher-conformance-driver.md) | Watcher conformance driver: the coordinator in process, the environment from the trace | Proposed. Amended by 0070 |
 | [0059](0059-conformance-negative-controls.md) | Conformance negative controls: faults behind the drivers' seams, a publish seam in the reload driver | Proposed. Amended by 0060, 0070 |
-| [0060](0060-conformance-stage-and-trace-corpus.md) | The `conformance` stage in `check`: regression manifest and freshness, a generated-trace manifest, replay once per gate, `formal.yml` | Proposed |
-| [0061](0061-apalache-formal-verify-scheduled-lane.md) | Apalache in a scheduled `formal-verify` lane: pinned release, raised JVM stack, invariants checked after each step, shallow bounded depths | Proposed |
-| [0062](0062-coverage-stage-scope-and-floors.md) | The `coverage` stage: workspace-wide LLVM line coverage including conformance and xtask, floors in `coverage-floor.toml` | Proposed. Amended by 0066 |
+| [0060](0060-conformance-stage-and-trace-corpus.md) | The `conformance` stage in `check`, the trace corpus manifests and `formal.yml` | Proposed. Amended by 0069 |
+| [0061](0061-apalache-formal-verify-scheduled-lane.md) | Apalache in a scheduled `formal-verify` lane | Proposed. Amended (SHA-256 pin) |
+| [0062](0062-coverage-stage-scope-and-floors.md) | The `coverage` stage: what is measured, and the floors | Proposed. Amended by 0066 |
 | [0063](0063-fuzz-crate-and-architecture-fuzz-only.md) | The fuzz crate: a separate workspace, a `fuzz_only` category and the `xtask fuzz` command | Proposed |
-| [0064](0064-changed-line-gate-in-check.md) | The changed-line gate: merge-base with `origin/main` else `HEAD~1`, a stamped LCOV report, the `changed-lines` stage in `check` | Proposed. Amended by 0069 |
-| [0065](0065-fuzz-targets-beyond-the-domain-and-fuzz-lockfile-audit.md) | Fuzz targets beyond the domain (application, HTTP adapter) and the `deny-fuzz` audit of `fuzz/Cargo.lock` | Proposed |
-| [0066](0066-coverage-overall-floor-over-crates-only.md) | The overall coverage floor over `crates/` only; `xtask` measured and reported without a floor | Proposed |
+| [0064](0064-changed-line-gate-in-check.md) | The changed-line gate: base, report freshness, and its place in `check` | Proposed. Amended by 0069 |
+| [0065](0065-fuzz-targets-beyond-the-domain-and-fuzz-lockfile-audit.md) | Fuzz targets beyond the domain, and the audit of the fuzz lockfile | Proposed |
+| [0066](0066-coverage-overall-floor-over-crates-only.md) | The overall coverage floor over `crates/` only; `xtask` report only | Proposed |
 | [0067](0067-root-removal-and-watcher-review-fixes.md) | A removed root degrades the watcher for good; start-up failures first; start-up readiness only from `Starting`; composition's hidden seams | Proposed. Amended by 0073 |
 | [0068](0068-mutation-scope-and-lane.md) | Mutation testing: scope, test selection and the weekly lane | Proposed |
-| [0069](0069-tooling-review-fixes-fuzz-lint-and-gate-bases.md) | Fuzz targets formatted and linted, the changed-line base of a push, the formal lane's concurrency | Proposed |
-| [0071](0071-miri-lane-for-domain-and-application.md) | The Miri lane: domain and application tests, forwarded proptest settings, `compile_fail` excluded | Proposed |
 | [0069](0069-tooling-review-fixes-fuzz-lint-and-gate-bases.md) | Fuzz targets formatted and linted, the changed-line base of a push, the formal lane's concurrency | Proposed. Amended by 0072 |
-| [0072](0072-ci-job-topology-and-stage-parity.md) | CI job topology: one job per level, `check --only` parity, restore-only PR caches, `formal.yml` and `security.yml` scheduled only | Proposed |
 | [0070](0070-conformance-harness-review-fixes.md) | Conformance harness review fixes: a declared model view, the pipeline's shared decision step, the stop outcome, per-field sensitivity | Proposed |
-| [0073](0073-root-removal-through-the-parent-watch.md) | A root's removal is notified through a watch on its parent (Linux), since the held root descriptor hides it from the root's own watch | Proposed |
-| [0074](0074-native-platform-matrix.md) | Native platform matrix: a `platform` job on four runners and the non-gate `platform-tests` stage | Proposed |
-| [0075](0075-macos-single-recursive-stream.md) | macOS: one recursive FSEvents stream; ignored subtrees dropped in the watcher bridge | Proposed |
+| [0071](0071-miri-lane-for-domain-and-application.md) | The Miri lane: domain and application tests, forwarded proptest settings, no compile-fail | Proposed |
+| [0072](0072-ci-job-topology-and-stage-parity.md) | CI job topology: one job per level, `check --only` parity, restore-only PR caches | Proposed |
+| [0073](0073-root-removal-through-the-parent-watch.md) | A root's removal is notified through a watch on its parent | Proposed |
+| [0074](0074-native-platform-matrix.md) | Native platform matrix: a `platform` job on four runners, one extra non-gate stage | Proposed |
+| [0075](0075-macos-single-recursive-stream.md) | macOS: one recursive FSEvents stream, ignored subtrees dropped in the bridge | Proposed |
 | [0076](0076-release-check-archive-and-notices.md) | `release-check`: one archive layout, notices from `cargo about`, a smoke of the extracted binary | Proposed |
+| [0077](0077-documentation-consistency-stage.md) | Documentation consistency stage: a warning-code registry and the `docs` checks | Proposed |

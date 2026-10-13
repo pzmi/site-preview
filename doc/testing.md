@@ -258,7 +258,7 @@ and may need `musl-tools`). Logs of the run are in `target/release-check/<T>/log
 ## Checks the gate runs
 
 `cargo xtask list-checks` marks the stages `check` runs with `"in_check": true`. Today those are
-`fmt-check`, `fuzz-fmt`, `clippy`, `unit-tests`, `integration-tests`, `doctests`, `client-js`, `browser`, `architecture` (with its `ARCH-*` rules),
+`fmt-check`, `fuzz-fmt`, `clippy`, `docs` (the documentation against the code, [ADR 0077](adr/0077-documentation-consistency-stage.md)), `unit-tests`, `integration-tests`, `doctests`, `client-js`, `browser`, `architecture` (with its `ARCH-*` rules),
 the seven `conformance` stages (`formal-typecheck` to `conformance-controls`), `coverage`, `changed-lines`, `deny`, `deny-fuzz`, `secrets`, `workflows` and `action-pins`. (`security` is the umbrella command for the last five, not a stage of its own.) `check` runs each stage once; a stage that
 is in the catalog but not yet implemented is absent from the run, not skipped.
 
@@ -272,7 +272,7 @@ an unknown name exits 2 and lists the stage names). The same command reproduces 
 | Job | `check --only` stages | Tools it installs | Artifacts |
 |:--|:--|:--|:--|
 | `architecture` (Architecture and policy) | `architecture` | none | none |
-| `static` (Static quality) | `fmt-check,fuzz-fmt,clippy` | none | none |
+| `static` (Static quality) | `fmt-check,fuzz-fmt,clippy,docs` | none | none |
 | `fast-tests` (Fast tests) | `unit-tests,doctests,client-js` | `cargo-nextest` | JUnit on failure |
 | `integration` (Integration) | `integration-tests` | `cargo-nextest` | JUnit on failure |
 | `conformance` (Conformance (Quint)) | the seven `formal-*` and `conformance-*` stages | `cargo-nextest`, Quint (`npm ci --prefix formal`) | generated ITF traces and JUnit on failure |

@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use preview_adapter_http::WarningSink;
-use preview_domain::InstanceId;
+use preview_domain::{InstanceId, warning_code};
 
 use crate::bootstrap::{RootRefusal, WatchStart, start_watcher};
 use crate::config::{BindRefusal, ServeConfig};
@@ -249,7 +249,7 @@ pub fn run(
 /// README "Warnings"). That nothing can be watched is the lifecycle's `Degraded` effect.
 pub(crate) fn report_watch_problems(watch: &WatchStart, warnings: &dyn WarningSink) {
     for problem in &watch.problems {
-        warnings.warn("watch-registration-failed", problem);
+        warnings.warn(warning_code::WATCH_REGISTRATION_FAILED, problem);
     }
 }
 

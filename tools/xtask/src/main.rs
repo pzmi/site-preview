@@ -11,6 +11,7 @@ mod check;
 mod cli;
 mod conformance;
 mod coverage;
+mod docs;
 mod formal_verify;
 mod fuzz;
 mod mutation;

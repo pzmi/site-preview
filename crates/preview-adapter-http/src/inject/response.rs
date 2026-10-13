@@ -26,7 +26,7 @@ use crate::stream::stream_body;
 use crate::warnings::{OncePerPath, SilentWarnings, WarningSink};
 
 /// The warning code for a page the rewriter refused (plan.md §6 step 6).
-const REWRITE_FAILED: &str = "html-rewrite-failed";
+const REWRITE_FAILED: &str = preview_domain::warning_code::HTML_REWRITE_FAILED;
 
 /// What HTML serving needs beyond the content port: where warnings go and the memory budget.
 ///

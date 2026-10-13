@@ -99,6 +99,13 @@ pub const CATALOG: &[Check] = &[
         "E2E-04",
         true,
     ),
+    row(
+        "docs",
+        "static",
+        "cargo xtask check --only docs",
+        "DOC-05",
+        true,
+    ),
     row("fmt", "tooling", "cargo xtask fmt", "FND-03", false),
     row("quick", "gate", "cargo xtask quick", "FND-03", false),
     row(

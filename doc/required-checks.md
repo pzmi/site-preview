@@ -24,7 +24,7 @@ pull requests.
 | Job id | Display name | Runs (`cargo xtask ...`) |
 |:--|:--|:--|
 | `architecture` | Architecture and policy | `check --only architecture` |
-| `static` | Static quality | `check --only fmt-check,fuzz-fmt,clippy` |
+| `static` | Static quality | `check --only fmt-check,fuzz-fmt,clippy,docs` |
 | `fast-tests` | Fast tests | `check --only unit-tests,doctests,client-js` |
 | `integration` | Integration | `check --only integration-tests` |
 | `platform` | Platform (ubuntu-24.04) | `test --only platform-tests` |

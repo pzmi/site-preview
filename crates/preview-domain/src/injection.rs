@@ -22,6 +22,8 @@
 
 use core::fmt;
 
+use crate::warning_code;
+
 /// The largest HTML body the adapter rewrites: 8 MiB, inclusive (plan.md §6 step 3).
 ///
 /// A larger page is served unchanged with a warning. Pinned by
@@ -165,8 +167,8 @@ impl InjectionWarning {
     #[must_use]
     pub const fn code(self) -> &'static str {
         match self {
-            Self::HtmlTooLarge => "html-too-large",
-            Self::HtmlNotUtf8 => "html-not-utf8",
+            Self::HtmlTooLarge => warning_code::HTML_TOO_LARGE,
+            Self::HtmlNotUtf8 => warning_code::HTML_NOT_UTF8,
         }
     }
 }

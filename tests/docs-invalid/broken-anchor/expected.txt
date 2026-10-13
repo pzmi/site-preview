@@ -1,0 +1,2 @@
+guide.md:5: broken anchor `#teardown`: `guide.md` has no heading `#teardown`
+guide.md:5: broken anchor `other.md#nothing-here`: `other.md` has no heading `#nothing-here`

@@ -25,7 +25,9 @@ use preview_adapter_http::WarningSink;
 use preview_application::{
     ChangeBatch, ChangeCoordinator, ChangeSource, Clock, Received, SettleOutcome, SourceFailure,
 };
-use preview_domain::{ChangeEvent, DegradeReason, DomainEvent, Tick, WatcherHealthRefusal};
+use preview_domain::{
+    ChangeEvent, DegradeReason, DomainEvent, Tick, WatcherHealthRefusal, warning_code,
+};
 
 use crate::server::{DegradedReason, WatcherEvents, WatcherState};
 use tokio::runtime::{Handle, RuntimeFlavor};
@@ -118,7 +120,7 @@ pub(crate) fn warning_for(
     match reason {
         DegradeReason::RegistrationFailed => None,
         DegradeReason::RuntimeFailure => Some((
-            "watch-failed",
+            warning_code::WATCH_FAILED,
             format!(
                 "{}; live reload may miss changes until site-preview is restarted, pages are \
                  still served",
@@ -126,13 +128,13 @@ pub(crate) fn warning_for(
             ),
         )),
         DegradeReason::RevisionExhausted => Some((
-            "reload-exhausted",
+            warning_code::RELOAD_EXHAUSTED,
             "the revision counter is exhausted; live reload has stopped until site-preview is \
              restarted, pages are still served"
                 .to_owned(),
         )),
         DegradeReason::RootRemoved => Some((
-            "root-removed",
+            warning_code::ROOT_REMOVED,
             "the site root was deleted, moved or replaced; live reload is unavailable and the \
              server still serves the directory it opened: restart site-preview to serve the \
              directory now at that path"
@@ -477,7 +479,8 @@ impl<S: WatchControl, C: Clock> WatchPipeline<S, C> {
             match report {
                 WatchReport::Event(event) => self.report_event(&event),
                 WatchReport::Problem(problem) => {
-                    self.warnings.warn("watch-registration-failed", &problem);
+                    self.warnings
+                        .warn(warning_code::WATCH_REGISTRATION_FAILED, &problem);
                 }
                 WatchReport::ReadinessRefused(_) => {}
             }

@@ -49,7 +49,7 @@ use preview_adapter_http::{
 };
 use preview_application::{ChangeCoordinator, ReloadState};
 use preview_domain::{
-    BoundAddr, HostPolicy, Lifecycle, LifecycleEffect, LifecycleInput, LifecycleState,
+    BoundAddr, HostPolicy, Lifecycle, LifecycleEffect, LifecycleInput, LifecycleState, warning_code,
 };
 use tokio::net::TcpListener;
 use tokio::runtime::{Builder, Runtime};
@@ -464,8 +464,10 @@ impl<W: WatchControl, F: FnOnce(&OpenedRoot) -> (W, WatchStart)> Startup<'_, F> 
             LifecycleEffect::StartWatcher => Ok(Some(self.start_watcher())),
             LifecycleEffect::Degraded => {
                 if let Some(reason) = self.watch.as_ref().and_then(|w| w.unavailable.as_ref()) {
-                    self.warnings
-                        .warn("watch-unavailable", &unavailable_warning(reason));
+                    self.warnings.warn(
+                        warning_code::WATCH_UNAVAILABLE,
+                        &unavailable_warning(reason),
+                    );
                 }
                 Ok(None)
             }

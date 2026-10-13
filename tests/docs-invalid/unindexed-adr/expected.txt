@@ -1,0 +1,1 @@
+doc/adr/0002-second.md:1: ADR 0002 is not listed in doc/adr/README.md

@@ -94,6 +94,7 @@ step.
 | Level | Stages |
 |:--|:--|
 | Static | `fmt-check`, `fuzz-fmt` |
+| Documentation | `docs` (the ADR index, rule ids, xtask commands, `serve` flags, warning codes, relative links and the `AGENTS.md` commands against the code; [ADR 0077](adr/0077-documentation-consistency-stage.md)) |
 | Architecture | `architecture` (the policy, the semantic rules and each rule's negative fixture; the catalog lists one `ARCH-*` entry per rule) |
 | Static | `clippy` |
 | Unit and integration | `unit-tests`, `integration-tests`, `doctests`, `client-js` |

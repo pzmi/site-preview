@@ -10,6 +10,7 @@ use std::process::{Command, Stdio};
 use std::thread;
 
 use preview_adapter_http::WarningSink;
+use preview_domain::warning_code;
 
 /// Opens a URL in the user's browser.
 pub trait UrlOpener: Send + Sync {
@@ -71,7 +72,7 @@ impl UrlOpener for SystemOpener {
 pub(crate) fn launch(opener: &dyn UrlOpener, url: &str, warnings: &dyn WarningSink) {
     if let Err(error) = opener.open(url) {
         warnings.warn(
-            "open-failed",
+            warning_code::OPEN_FAILED,
             &format!("could not open a browser ({error}); open {url} yourself"),
         );
     }

@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use preview_composition::{
     DegradedReason, Ready, StartupReporter, WarningSink, WatchStatus, WatcherEvents, WatcherState,
+    warning_code,
 };
 
 /// One warning line in the ADR 0020 format: `site-preview: warning[<code>]: <message>`.
@@ -46,7 +47,7 @@ fn remote_warning(host: IpAddr) -> String {
         "listening on {host} with no authentication: anyone who can reach this address can \
          read the site; do not use it on an untrusted network"
     );
-    format!("{}\n", warning_line("remote-binding", &message))
+    format!("{}\n", warning_line(warning_code::REMOTE_BINDING, &message))
 }
 
 /// The shutdown notice, the same in both output modes: it goes to stderr, so stdout in

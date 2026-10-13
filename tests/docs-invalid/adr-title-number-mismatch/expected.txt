@@ -1,0 +1,1 @@
+doc/adr/0006-sixth.md:1: title says ADR 0007 but the file name says 0006

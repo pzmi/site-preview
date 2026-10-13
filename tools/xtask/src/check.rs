@@ -8,7 +8,7 @@
 //! cannot run shows `UNAVAILABLE`.
 
 use crate::process::{Stage, finish, run_report};
-use crate::{changed_lines, conformance, coverage, quick, security, test, tools};
+use crate::{changed_lines, conformance, coverage, docs, quick, security, test, tools};
 
 /// The stages `check` runs, in order. Their names are catalog ids with `in_check` set.
 pub fn stages() -> Vec<Stage> {
@@ -16,6 +16,7 @@ pub fn stages() -> Vec<Stage> {
         .into_iter()
         .filter(|s| !matches!(s.name, "unit-tests" | "doctests"))
         .collect();
+    stages.push(docs::stage());
     stages.extend(test::stages());
     stages.extend(conformance::stages(false));
     stages.push(coverage::stage());

@@ -64,7 +64,7 @@ jobs:
           job: static
 
       - name: Static quality
-        run: cargo xtask check --only fmt-check,fuzz-fmt,clippy
+        run: cargo xtask check --only fmt-check,fuzz-fmt,clippy,docs
 
       - name: Save caches (main only)
         uses: ./.github/actions/save-rust-cache

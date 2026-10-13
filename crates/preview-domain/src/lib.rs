@@ -30,6 +30,7 @@ pub use request_policy::{
 pub mod eligibility;
 pub mod injection;
 pub mod path;
+pub mod warning_code;
 
 pub use injection::{
     FetchDest, InjectionDecision, InjectionInput, InjectionWarning, MAX_INJECTION_INPUT_BYTES,
