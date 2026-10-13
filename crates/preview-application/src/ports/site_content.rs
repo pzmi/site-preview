@@ -228,4 +228,44 @@ mod tests {
         // then
         assert_eq!(texts, ["File(3)", "Directory { index: None }"]);
     }
+
+    #[test]
+    fn should_render_the_category_text_when_refusal_is_displayed() {
+        // given
+        let refusals = [
+            ContentRefusal::NotFound,
+            ContentRefusal::Forbidden(ForbiddenReason::Symlink),
+            ContentRefusal::Forbidden(ForbiddenReason::NotRegular),
+            ContentRefusal::Forbidden(ForbiddenReason::PermissionDenied),
+            ContentRefusal::Io(ErrorKind::InvalidData),
+        ];
+
+        // when
+        let texts = refusals.map(|r| r.to_string());
+
+        // then
+        assert_eq!(
+            texts,
+            [
+                "not found",
+                "forbidden: symbolic link",
+                "forbidden: not a regular file or directory",
+                "forbidden: permission denied",
+                "io error: invalid data",
+            ]
+        );
+    }
+
+    #[test]
+    fn should_be_empty_only_when_file_length_is_zero() {
+        // given
+        let empty = Bytes(Cursor::new(Vec::new()));
+        let full = Bytes(Cursor::new(vec![1]));
+
+        // when
+        let verdicts = [empty.is_empty(), full.is_empty()];
+
+        // then
+        assert_eq!(verdicts, [true, false]);
+    }
 }

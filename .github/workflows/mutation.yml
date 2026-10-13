@@ -1,0 +1,70 @@
+name: Mutation
+
+# Weekly cargo-mutants run over the scope of .cargo/mutants.toml (foundation.md sections 5.3
+# and 10, ADR 0068). It reports the score and the missed mutants; it gates nothing, and it is
+# not part of `cargo xtask check`. The baseline and its triage are in doc/mutation-baseline.md.
+
+on:
+  schedule:
+    - cron: "43 4 * * 0"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mutation-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  mutation:
+    name: Mutation (cargo-mutants)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install toolchain from rust-toolchain.toml
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - name: Cache cargo registry and tools
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/bin
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: mutation-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'tools/versions.toml') }}
+          restore-keys: |
+            mutation-${{ runner.os }}-
+
+      - name: Install pinned dev tools
+        run: cargo xtask install-tools cargo-nextest cargo-mutants
+
+      - name: Mutation
+        run: cargo xtask mutation
+
+      - name: Publish the summary
+        if: always()
+        run: |
+          if [ -f target/mutants/summary.md ]; then
+            cat target/mutants/summary.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Keep the report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: mutation-report-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            target/mutants/summary.md
+            target/mutants/mutants.out/
+          if-no-files-found: warn
+          retention-days: 90

@@ -69,3 +69,4 @@ This directory holds the decisions behind site-preview, one file per decision, i
 | [0064](0064-changed-line-gate-in-check.md) | The changed-line gate: merge-base with `origin/main` else `HEAD~1`, a stamped LCOV report, the `changed-lines` stage in `check` | Proposed |
 | [0065](0065-fuzz-targets-beyond-the-domain-and-fuzz-lockfile-audit.md) | Fuzz targets beyond the domain (application, HTTP adapter) and the `deny-fuzz` audit of `fuzz/Cargo.lock` | Proposed |
 | [0066](0066-coverage-overall-floor-over-crates-only.md) | The overall coverage floor over `crates/` only; `xtask` measured and reported without a floor | Proposed |
+| [0068](0068-mutation-scope-and-lane.md) | Mutation testing: scope, test selection and the weekly lane | Proposed |

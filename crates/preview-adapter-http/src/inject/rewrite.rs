@@ -707,4 +707,70 @@ mod tests {
         // then
         assert_eq!(policies, ["a", "c"]);
     }
+
+    #[test]
+    fn should_not_take_another_script_for_the_client_when_page_loads_a_script() {
+        // given
+        let html = "<html><body><script src=\"/app.js\"></script></body></html>";
+
+        // when
+        let output = injected(html);
+
+        // then
+        assert_eq!(output, expected_before(html, "</body></html>"));
+    }
+
+    #[test]
+    fn should_reject_an_insertion_elsewhere_when_output_has_the_right_length() {
+        // given
+        let input = b"<p>ab</p>";
+        let tag = b"<s>";
+
+        // when
+        let other_tag = is_single_insertion(input, b"<p>a<x>b</p>", tag);
+
+        // then
+        assert!(!other_tag);
+    }
+
+    #[test]
+    fn should_return_the_parts_between_ranges_when_outside_is_taken() {
+        // given
+        let html = b"0123456789";
+
+        // when
+        let parts = outside(html, &[2..4, 6..7]);
+        let unordered = outside(html, &[6..7, 2..4]);
+        let beyond = outside(html, std::slice::from_ref(&(2..40)));
+
+        // then
+        let expected: Vec<&[u8]> = vec![b"01", b"45", b"789"];
+        assert_eq!(parts, Some(expected));
+        assert_eq!(unordered, None);
+        assert_eq!(beyond, None);
+        assert_eq!(outside(html, &[]), Some(vec![&html[..]]));
+    }
+
+    #[test]
+    fn should_describe_each_failure_when_rewrite_failure_is_displayed() {
+        // given
+        let failures = [
+            RewriteFailure::ParsingAmbiguity,
+            RewriteFailure::MemoryLimitExceeded,
+            RewriteFailure::Parser,
+            RewriteFailure::NotAnElement,
+            RewriteFailure::UnexpectedOutput,
+        ];
+
+        // when
+        let texts = failures.map(|f| f.to_string());
+
+        // then
+        let distinct: std::collections::BTreeSet<_> = texts.iter().collect();
+        assert_eq!(distinct.len(), 5, "{texts:?}");
+        assert_eq!(
+            texts[4],
+            "the rewritten page differs from the original elsewhere"
+        );
+    }
 }

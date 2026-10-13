@@ -507,3 +507,45 @@ async fn should_hold_budget_until_body_is_consumed_when_html_served() {
     );
     assert_eq!(budget.available_bytes(), full);
 }
+
+#[tokio::test]
+async fn should_inject_when_html_is_exactly_the_limit() {
+    // given: a page of exactly 8 MiB, the largest that is still rewritten
+    let head = "<!doctype html><html><head></head><body>";
+    let tail = "</body></html>";
+    let padding = " ".repeat(8 * 1024 * 1024 - head.len() - tail.len());
+    let page = format!("{head}{padding}{tail}");
+    assert_eq!(page.len(), 8 * 1024 * 1024);
+    let server = Server::new(InMemorySite::new().with_file("limit.html", page.as_bytes()));
+
+    // when
+    let response = server.send("GET", "/limit.html", Some("document")).await;
+    let served = String::from_utf8(body(response).await).expect("utf-8");
+
+    // then
+    assert!(served.contains("/__site_preview/client.js"), "not injected");
+    assert_eq!(server.warnings.warnings(), []);
+}
+
+#[tokio::test]
+async fn should_name_the_meta_charset_in_the_warning_only_when_it_declares_another_encoding() {
+    // given
+    let sjis = b"<!doctype html><meta charset=shift_jis><body><p>ascii</p></body>";
+    let latin1 = b"<!doctype html><body><p>caf\xe9</p></body>";
+    let server = Server::new(
+        InMemorySite::new()
+            .with_file("sjis.html", sjis)
+            .with_file("old.html", latin1),
+    );
+
+    // when
+    server.send("GET", "/sjis.html", Some("document")).await;
+    server.send("GET", "/old.html", Some("document")).await;
+
+    // then
+    let warnings = server.warnings.warnings();
+    assert_eq!(warnings.len(), 2, "{warnings:?}");
+    let note = "its <meta> charset names another encoding";
+    assert!(warnings[0].1.contains(note), "{warnings:?}");
+    assert!(!warnings[1].1.contains(note), "{warnings:?}");
+}

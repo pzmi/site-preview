@@ -288,4 +288,16 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn should_describe_the_closure_when_reload_closed_is_displayed() {
+        // given
+        let error = ReloadClosed;
+
+        // when
+        let text = error.to_string();
+
+        // then
+        assert_eq!(text, "the reload state was dropped");
+    }
 }

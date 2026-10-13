@@ -239,4 +239,39 @@ mod tests {
             prop_assert!(watched.reconcile(&desired).is_empty());
         }
     }
+
+    #[test]
+    fn should_count_directories_when_set_is_built() {
+        // given
+        let empty = WatchSet::new();
+        let two: WatchSet = set(&["", "css"]).into_iter().collect();
+
+        // when
+        let counts = (empty.len(), two.len());
+
+        // then
+        assert_eq!(counts, (0, 2));
+        assert!(empty.is_empty());
+        assert!(!two.is_empty());
+    }
+
+    #[test]
+    fn should_report_emptiness_when_only_one_side_of_a_diff_is_set() {
+        // given
+        let none = WatchDiff::default();
+        let add_only = WatchDiff {
+            add: set(&["css"]),
+            remove: BTreeSet::new(),
+        };
+        let remove_only = WatchDiff {
+            add: BTreeSet::new(),
+            remove: set(&["css"]),
+        };
+
+        // when
+        let verdicts = [none.is_empty(), add_only.is_empty(), remove_only.is_empty()];
+
+        // then
+        assert_eq!(verdicts, [true, false, false]);
+    }
 }

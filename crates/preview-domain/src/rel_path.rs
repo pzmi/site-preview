@@ -113,4 +113,19 @@ mod tests {
         // then
         assert_eq!(joined, rel(&["a", "b"]));
     }
+
+    #[test]
+    fn should_build_a_nonempty_path_when_components_are_given_and_an_empty_root() {
+        // given
+        let root = RelPath::root();
+        let css = rel(&["css"]);
+
+        // when
+        let ordering = root.cmp(&css);
+
+        // then
+        assert_eq!(root, RelPath::new(Vec::new()));
+        assert_ne!(root, css);
+        assert_eq!(ordering, std::cmp::Ordering::Less);
+    }
 }

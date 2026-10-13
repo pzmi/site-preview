@@ -52,8 +52,19 @@ pub enum Command {
     Security,
     /// The full blocking PR-quality gate.
     Check,
-    /// Longer source mutation analysis.
-    Mutation,
+    /// Longer source mutation analysis (cargo-mutants over `.cargo/mutants.toml`).
+    Mutation {
+        /// Try only the mutants on lines changed since REV (merge-base with HEAD, working
+        /// tree included).
+        #[arg(long, value_name = "REV")]
+        in_diff: Option<String>,
+        /// Mutate one workspace package only.
+        #[arg(long, value_name = "CRATE")]
+        package: Option<String>,
+        /// Mutants tried in parallel (default: half the cores).
+        #[arg(long, value_name = "N", value_parser = clap::value_parser!(u32).range(1..))]
+        jobs: Option<u32>,
+    },
     /// Bounded fuzz run or reproduction.
     Fuzz {
         /// The target, a file name in `fuzz/fuzz_targets/` without `.rs`.
@@ -92,7 +103,7 @@ impl Command {
             Self::Coverage { .. } => "coverage",
             Self::Security => "security",
             Self::Check => "check",
-            Self::Mutation => "mutation",
+            Self::Mutation { .. } => "mutation",
             Self::Fuzz { .. } => "fuzz",
             Self::FormalVerify => "formal-verify",
             Self::ReleaseCheck => "release-check",

@@ -198,7 +198,7 @@ pub const CATALOG: &[Check] = &[
     row(
         "mutation",
         "mutation",
-        "cargo xtask mutation",
+        "cargo xtask mutation [--in-diff <rev>] [--package <crate>] [--jobs N]",
         "TEST-08",
         false,
     ),

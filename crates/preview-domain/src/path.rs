@@ -584,4 +584,34 @@ mod tests {
             assert_eq!(decode_request_path(text).as_ref(), Ok(path), "{text}");
         }
     }
+
+    #[test]
+    fn should_tell_root_from_nested_when_path_is_decoded() {
+        // given
+        let root = decode_request_path("/").expect("decodes");
+        let nested = decode_request_path("/a").expect("decodes");
+
+        // when
+        let verdicts = (root.is_root(), nested.is_root());
+
+        // then
+        assert_eq!(verdicts, (true, false));
+    }
+
+    #[test]
+    fn should_give_the_name_when_component_is_viewed_as_a_str_and_refusals_display() {
+        // given
+        let component = Component::new("a.css").expect("valid");
+
+        // when
+        let viewed: &str = component.as_ref();
+
+        // then
+        assert_eq!(viewed, "a.css");
+        assert_eq!(PathRefusal::Malformed.to_string(), "malformed request path");
+        assert_eq!(
+            PathRefusal::Traversal.to_string(),
+            "request path escapes its components"
+        );
+    }
 }

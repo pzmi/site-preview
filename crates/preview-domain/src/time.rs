@@ -237,4 +237,16 @@ mod tests {
         assert_eq!(text, "150ms");
         assert!(error.contains("10ms to 10s"));
     }
+
+    #[test]
+    fn should_return_the_origin_offset_when_tick_is_read() {
+        // given
+        let tick = Tick::from_millis(1234);
+
+        // when
+        let millis = tick.as_millis();
+
+        // then
+        assert_eq!(millis, 1234);
+    }
 }

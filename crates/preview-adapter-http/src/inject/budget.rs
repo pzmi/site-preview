@@ -183,4 +183,34 @@ mod tests {
         assert!(permit.is_some());
         assert_eq!(budget.available_bytes(), 0);
     }
+
+    #[test]
+    fn should_hold_128_mib_when_budget_is_the_default() {
+        // given
+        let budget = HtmlBudget::default();
+
+        // when
+        let available = budget.available_bytes();
+
+        // then
+        assert_eq!(available, 128 * 1024 * 1024);
+        assert_eq!(DEFAULT_HTML_BUDGET_BYTES, available);
+    }
+
+    #[tokio::test]
+    async fn should_send_64_kib_chunks_when_page_is_larger() {
+        // given
+        let budget = HtmlBudget::new(1024 * UNIT);
+        let permit = budget.reserve(UNIT).await.expect("fits");
+        let mut body = buffered_body(vec![b'x'; 2 * 64 * 1024 + 1], permit);
+
+        // when
+        let mut sizes = Vec::new();
+        while let Some(frame) = body.frame().await {
+            sizes.push(frame.expect("infallible").into_data().expect("data").len());
+        }
+
+        // then
+        assert_eq!(sizes, [64 * 1024, 64 * 1024, 1]);
+    }
 }

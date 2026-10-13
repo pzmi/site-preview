@@ -512,4 +512,16 @@ mod tests {
             assert_eq!(result, Eligibility::Eligible, "{p}");
         }
     }
+
+    #[test]
+    fn should_report_hidden_when_name_is_only_the_swap_suffix() {
+        // given
+        let name = Component::new(".swp").expect("valid component");
+
+        // when
+        let verdict = component(&name, ComponentKind::File, Level::Nested);
+
+        // then
+        assert_eq!(verdict, Eligibility::Denied(DenyReason::Hidden));
+    }
 }

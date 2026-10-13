@@ -1,0 +1,23 @@
+# cargo-mutants configuration (foundation.md section 5.3, ADR 0068). `cargo xtask mutation`
+# runs it; the pinned version is in tools/versions.toml.
+
+# Scope: the pure and application logic whose tests are fast and exact, and the HTML
+# injection code. Everything else (adapters, composition, CLI) is covered by integration,
+# conformance and browser suites that are not selected here.
+examine_globs = [
+    "crates/preview-domain/src/**/*.rs",
+    "crates/preview-application/src/**/*.rs",
+    "crates/preview-adapter-http/src/inject/**/*.rs",
+]
+
+# cargo-mutants tests only the package that owns the mutated file, so the preview-cli
+# black-box tests, preview-conformance and the Playwright browser suite never run. Within a
+# package the nextest filter drops the trybuild compile-fail binaries (a nested cargo build
+# per mutant, and they cannot see a behavioural change) and the OS watcher tests.
+test_tool = "nextest"
+additional_cargo_test_args = ["-E", "not binary(compile_fail) and not test(/^os_watcher::/)"]
+
+# A mutant that loops forever is a timeout, not a hang. The limit is this multiple of the
+# unmutated suite's time, never below the minimum (seconds).
+timeout_multiplier = 5.0
+minimum_test_timeout = 60.0

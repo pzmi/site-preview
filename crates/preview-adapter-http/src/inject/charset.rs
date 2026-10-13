@@ -216,4 +216,29 @@ mod tests {
             assert_eq!(charset, expected, "{content}");
         }
     }
+
+    #[test]
+    fn should_stop_the_value_at_a_semicolon_when_content_has_more_parameters() {
+        // given
+        let content = "text/html; charset=utf-8; x=y";
+        let spaced = "text/html; charset=utf-8 ; x=y";
+
+        // when
+        let values = (charset_from_content(content), charset_from_content(spaced));
+
+        // then
+        assert_eq!(values, (Some("utf-8"), Some("utf-8")));
+    }
+
+    #[test]
+    fn should_describe_the_early_stop_when_found_is_displayed() {
+        // given
+        let stop = Found;
+
+        // when
+        let text = stop.to_string();
+
+        // then
+        assert_eq!(text, "charset declaration found");
+    }
 }

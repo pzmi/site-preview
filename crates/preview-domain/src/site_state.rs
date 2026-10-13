@@ -316,4 +316,35 @@ mod tests {
         // then
         assert_eq!(built.as_str(), "42-1700000000123");
     }
+
+    #[test]
+    fn should_expose_the_number_when_revision_is_read() {
+        // given
+        let revision = Revision::from(7);
+
+        // when
+        let value = revision.get();
+
+        // then
+        assert_eq!((Revision::ZERO.get(), value), (0, 7));
+    }
+
+    #[test]
+    fn should_describe_the_refusal_when_an_error_is_displayed() {
+        // given
+        let errors = [
+            InstanceIdError::Empty.to_string(),
+            InstanceIdError::TooLong.to_string(),
+            InstanceIdError::InvalidCharacter.to_string(),
+            RevisionExhausted.to_string(),
+        ];
+
+        // when
+        let distinct: std::collections::BTreeSet<_> = errors.iter().collect();
+
+        // then
+        assert_eq!(distinct.len(), 4, "{errors:?}");
+        assert_eq!(errors[3], "revision counter is exhausted");
+        assert_eq!(errors[0], "instance id is empty");
+    }
 }

@@ -736,4 +736,23 @@ mod tests {
             prop_assert!(!decoded.has_trailing_slash());
         }
     }
+
+    #[test]
+    fn should_not_be_empty_when_only_the_full_reason_is_set() {
+        // given
+        let mut only_full = ChangeSet::new();
+        only_full.mark_full(FullReason::Rescan);
+        let mut only_path = ChangeSet::new();
+        only_path.accumulate(&event(ChangeKind::Modify, &["a.css"]));
+
+        // when
+        let verdicts = [
+            ChangeSet::new().is_empty(),
+            only_full.is_empty(),
+            only_path.is_empty(),
+        ];
+
+        // then
+        assert_eq!(verdicts, [true, false, false]);
+    }
 }

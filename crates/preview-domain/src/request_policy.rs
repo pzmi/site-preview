@@ -955,4 +955,29 @@ mod tests {
             ]
         );
     }
+
+    #[test]
+    fn should_use_the_default_port_when_bracketed_ipv6_host_has_no_port() {
+        // given
+        let raw = "[::1]";
+
+        // when
+        let (_, port) = parse_authority(raw).expect("a bracketed address alone is valid");
+
+        // then
+        assert_eq!(port, DEFAULT_HTTP_PORT);
+    }
+
+    #[test]
+    fn should_accept_port_zero_and_reject_leading_zeros_when_port_is_parsed() {
+        // given
+        let zero = "0";
+        let padded = "00";
+
+        // when
+        let results = (parse_port(zero), parse_port(padded));
+
+        // then
+        assert_eq!(results, (Ok(0), Err(HostReject::Malformed)));
+    }
 }

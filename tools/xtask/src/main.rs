@@ -11,6 +11,7 @@ mod conformance;
 mod coverage;
 mod formal_verify;
 mod fuzz;
+mod mutation;
 mod process;
 mod quick;
 mod repo;
@@ -50,6 +51,11 @@ fn main() -> ExitCode {
             time,
             reproduce,
         } => fuzz::run(target, *time, reproduce.as_deref()),
+        Command::Mutation {
+            in_diff,
+            package,
+            jobs,
+        } => mutation::run(in_diff.as_deref(), package.as_deref(), *jobs),
         Command::Doctor => tools::doctor(),
         Command::InstallTools { tools } => tools::install(tools),
         other => not_available(other.id()),
