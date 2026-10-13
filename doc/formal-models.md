@@ -162,9 +162,10 @@ scheduled lane: see "Verification baseline" for what was tried.
 
 Quint 0.33.0 is locked in `formal/package-lock.json` and runs with `--backend typescript`
 (ADR 0052). Install it with `npm ci --prefix formal`. One seed serves the whole run and is
-printed; `QUINT_SEED=<seed> cargo xtask conformance` repeats it. `.github/workflows/formal.yml`
-runs the same command on every push to `main` and every pull request, and nightly with a fresh seed. A
-failed run keeps `formal/traces/generated/` as an artifact.
+printed; `QUINT_SEED=<seed> cargo xtask conformance` repeats it. The `conformance` job of
+`.github/workflows/ci.yml` runs the same stages (`cargo xtask check --only <them>`) on every push
+to `main` and every pull request, and `.github/workflows/formal.yml` repeats them nightly with a
+fresh seed (ADR 0072). A failed run of either keeps `formal/traces/generated/` as an artifact.
 
 ## The scheduled lane: `formal-verify`
 

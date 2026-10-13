@@ -34,7 +34,7 @@ fn main() -> ExitCode {
     let code = match &cli.command {
         Command::Quick => quick::run(),
         Command::Test { only } => test::run(only.as_deref()),
-        Command::Check => check::run(),
+        Command::Check { only } => check::run(only),
         Command::Conformance { typecheck } => conformance::run(*typecheck),
         Command::Coverage { changed_since } => match changed_since {
             None => coverage::command(),

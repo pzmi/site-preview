@@ -24,29 +24,45 @@ pub fn stages() -> Vec<Stage> {
     stages_with(std::env::var("PROPTEST_CASES").ok().as_deref())
 }
 
+/// A nextest stage under the `ci` profile: the workspace without the conformance replay
+/// (ADR 0060), narrowed by `filter`, with the proptest floor and the unknown-key guard.
+fn nextest_stage(name: &'static str, filter: &str, developer_cases: Option<&str>) -> Stage {
+    Stage::new(
+        name,
+        "cargo",
+        &[
+            "nextest",
+            "run",
+            "--workspace",
+            "--locked",
+            "--profile",
+            "ci",
+            // The conformance replay runs once, in `conformance` (ADR 0060).
+            "--exclude",
+            "preview-conformance",
+            "-E",
+            filter,
+        ],
+    )
+    .needs("cargo-nextest")
+    // nextest 0.9.148 has no profile-level env table, so the case count is set here.
+    .env("PROPTEST_CASES", &proptest_cases(developer_cases))
+    // A config key nextest ignores is a silent no-op; fail closed on it.
+    .deny_stderr("ignoring unknown configuration key")
+}
+
 /// [`stages`] with the developer's `PROPTEST_CASES`, if any, given.
+///
+/// The workspace's nextest run is split in two by test kind so that CI can run the halves as
+/// separate jobs (OPS-02, ADR 0072): `unit-tests` is every test compiled into a library or
+/// binary (`not kind(test)`), `integration-tests` every `tests/*.rs` binary (`kind(test)`:
+/// black-box, real filesystem and HTTP, and compile-fail). Together they are the whole
+/// workspace run; `coverage` still measures that whole run in one pass. Pinned by
+/// `should_split_the_workspace_run_by_test_kind_when_test_is_built`.
 fn stages_with(developer_cases: Option<&str>) -> Vec<Stage> {
     vec![
-        Stage::new(
-            "unit-tests",
-            "cargo",
-            &[
-                "nextest",
-                "run",
-                "--workspace",
-                "--locked",
-                "--profile",
-                "ci",
-                // The conformance replay runs once, in `conformance` (ADR 0060).
-                "--exclude",
-                "preview-conformance",
-            ],
-        )
-        .needs("cargo-nextest")
-        // nextest 0.9.148 has no profile-level env table, so the case count is set here.
-        .env("PROPTEST_CASES", &proptest_cases(developer_cases))
-        // A config key nextest ignores is a silent no-op; fail closed on it.
-        .deny_stderr("ignoring unknown configuration key"),
+        nextest_stage("unit-tests", "not kind(test)", developer_cases),
+        nextest_stage("integration-tests", "kind(test)", developer_cases),
         Stage::new(
             "doctests",
             "cargo",
@@ -101,7 +117,16 @@ mod tests {
         let names: Vec<_> = stages.iter().map(|s| s.name).collect();
 
         // then
-        assert_eq!(names, ["unit-tests", "doctests", "client-js", "browser"]);
+        assert_eq!(
+            names,
+            [
+                "unit-tests",
+                "integration-tests",
+                "doctests",
+                "client-js",
+                "browser"
+            ]
+        );
         assert!(format!("{:?}", stages[0].action).contains("\"ci\""));
         assert_eq!(stages[0].tool, Some("cargo-nextest"));
     }
@@ -134,6 +159,26 @@ mod tests {
         // then
         assert_eq!(cases, ["1024", "1024", "4096", "1024", "1024"]);
         assert!(stage.contains("(\"PROPTEST_CASES\", \"4096\")"), "{stage}");
+    }
+
+    #[test]
+    fn should_split_the_workspace_run_by_test_kind_when_test_is_built() {
+        // given
+        let stages = stages();
+
+        // when
+        let unit = format!("{:?}", stages[0].action);
+        let integration = format!("{:?}", stages[1].action);
+
+        // then
+        assert!(unit.contains("\"not kind(test)\""), "{unit}");
+        assert!(integration.contains("\"kind(test)\""), "{integration}");
+        assert!(!integration.contains("not kind"), "{integration}");
+        for debug in [&unit, &integration] {
+            assert!(debug.contains("preview-conformance"), "{debug}");
+            assert!(debug.contains("(\"PROPTEST_CASES\", \"1024\")"), "{debug}");
+        }
+        assert_eq!(stages[1].tool, Some("cargo-nextest"));
     }
 
     #[test]

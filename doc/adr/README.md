@@ -73,3 +73,5 @@ This directory holds the decisions behind site-preview, one file per decision, i
 | [0068](0068-mutation-scope-and-lane.md) | Mutation testing: scope, test selection and the weekly lane | Proposed |
 | [0069](0069-tooling-review-fixes-fuzz-lint-and-gate-bases.md) | Fuzz targets formatted and linted, the changed-line base of a push, the formal lane's concurrency | Proposed |
 | [0071](0071-miri-lane-for-domain-and-application.md) | The Miri lane: domain and application tests, forwarded proptest settings, `compile_fail` excluded | Proposed |
+| [0069](0069-tooling-review-fixes-fuzz-lint-and-gate-bases.md) | Fuzz targets formatted and linted, the changed-line base of a push, the formal lane's concurrency | Proposed. Amended by 0072 |
+| [0072](0072-ci-job-topology-and-stage-parity.md) | CI job topology: one job per level, `check --only` parity, restore-only PR caches, `formal.yml` and `security.yml` scheduled only | Proposed |

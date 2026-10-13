@@ -15,16 +15,16 @@ is one of its entries, or a planned one it lists as not yet available.
 |:--|:--|:--|:--|:--|
 | Unit | Pure logic and boundary examples | `#[cfg(test)] mod tests` beside the module, e.g. `crates/preview-domain/src/`, `crates/preview-adapter-fs/src/` | `unit-tests` (`cargo nextest run`) | in place |
 | Doctest | Examples in `///` and `//!` compile and pass | Doc comments; e.g. the `wait_until` example in `crates/preview-testkit/src/poll.rs` | `doctests` | in place |
-| Property | Invariants over generated values, with persisted counterexamples | `proptest!` inside `crates/preview-domain/src/` and `crates/preview-application/src/`; black-box properties in `crates/preview-domain/tests/properties.rs` | `unit-tests`; the `ci` profile raises the case count | in place |
-| Component | Real application code over testkit fakes, no external services | `crates/preview-application/tests/`, `crates/preview-adapter-http/tests/` (router, files, directory, host, client and the SSE stream in `sse.rs` and `stream.rs`, over `InMemorySite`) | `unit-tests` | in place |
-| Contract | Each fake and each real adapter of a port meets one shared harness | `crates/preview-testkit/src/contracts/`; runs in `crates/preview-testkit/tests/{site_content_fake,change_source_fake}.rs` and `crates/preview-adapter-fs/tests/{site_content_contract,change_source_contract}.rs` | `unit-tests` | in place for `SiteContent` and `ChangeSource` (TEST-05) |
+| Property | Invariants over generated values, with persisted counterexamples | `proptest!` inside `crates/preview-domain/src/` and `crates/preview-application/src/`; black-box properties in `crates/preview-domain/tests/properties.rs` | `unit-tests` and `integration-tests`; the `ci` profile raises the case count | in place |
+| Component | Real application code over testkit fakes, no external services | `crates/preview-application/tests/`, `crates/preview-adapter-http/tests/` (router, files, directory, host, client and the SSE stream in `sse.rs` and `stream.rs`, over `InMemorySite`) | `integration-tests` | in place |
+| Contract | Each fake and each real adapter of a port meets one shared harness | `crates/preview-testkit/src/contracts/`; runs in `crates/preview-testkit/tests/{site_content_fake,change_source_fake}.rs` and `crates/preview-adapter-fs/tests/{site_content_contract,change_source_contract}.rs` | `unit-tests` and `integration-tests` | in place for `SiteContent` and `ChangeSource` (TEST-05) |
 | Architecture | Crate, dependency, lint and test-hygiene rules, and each rule's negative control | `tools/xtask/src/architecture/`; fixtures in `tests/architecture-valid/` and `tests/architecture-invalid/`; `tools/xtask/tests/architecture_fixtures.rs` | `architecture` (inside `quick` and `check`) | in place |
-| Security fixtures | The dependency policy, secret scanning and workflow lint reject a seeded bad input | `tools/xtask/tests/security_fixtures.rs` | `unit-tests` | in place |
-| Integration | Real tempdir filesystem, threads, the root capability under a concurrent symlink swap | `crates/preview-adapter-fs/tests/` (`root.rs`, `capability.rs`, `symlink_race.rs`) | `unit-tests` | in place; the OS watcher tests (`os_watcher::`, `crates/preview-adapter-fs/src/watcher/os_watcher_tests.rs`) run in the `os-watcher` nextest group |
-| CLI black box | The built binary's flags, output and exit codes through `assert_cmd` | `crates/preview-cli/tests/cli_meta.rs` (version, help), `serve_slice.rs` (the served slice), `flags.rs` (port, host and `--allow-remote` flags, warnings, exit codes) | `unit-tests` | in place |
-| E2E | The built binary's HTTP and security behaviour over a real socket against a copy of the hostile fixture site, and that serving leaves the tree unchanged | `crates/preview-cli/tests/http_security.rs`, with `crates/preview-cli/tests/support/mod.rs` | `unit-tests` | in place (E2E-01); injection and SSE black-box suite `injection_sse.rs` (E2E-02); watcher suite `watcher.rs` and `watch_reload.rs` (E2E-03) |
+| Security fixtures | The dependency policy, secret scanning and workflow lint reject a seeded bad input | `tools/xtask/tests/security_fixtures.rs` | `integration-tests` | in place |
+| Integration | Real tempdir filesystem, threads, the root capability under a concurrent symlink swap | `crates/preview-adapter-fs/tests/` (`root.rs`, `capability.rs`, `symlink_race.rs`) | `integration-tests` | in place; the OS watcher tests (`os_watcher::`, `crates/preview-adapter-fs/src/watcher/os_watcher_tests.rs`) run in the `os-watcher` nextest group |
+| CLI black box | The built binary's flags, output and exit codes through `assert_cmd` | `crates/preview-cli/tests/cli_meta.rs` (version, help), `serve_slice.rs` (the served slice), `flags.rs` (port, host and `--allow-remote` flags, warnings, exit codes) | `integration-tests` | in place |
+| E2E | The built binary's HTTP and security behaviour over a real socket against a copy of the hostile fixture site, and that serving leaves the tree unchanged | `crates/preview-cli/tests/http_security.rs`, with `crates/preview-cli/tests/support/mod.rs` | `integration-tests` | in place (E2E-01); injection and SSE black-box suite `injection_sse.rs` (E2E-02); watcher suite `watcher.rs` and `watch_reload.rs` (E2E-03) |
 | Browser E2E | The real binary under `--json --port 0` driven by Chromium through Playwright (`@playwright/test` 1.56.1, locked): harness fixtures `site` and `preview`, `startPreview`, `trackNavigations` | `tests/e2e/browser/` (`support/preview.ts`, `playwright.config.ts`, `*.spec.ts`) | `browser` (`cargo xtask test --only browser`) | harness and smoke spec in place (E2E-04); load, edit, assets and widths spec `reload.spec.ts` (E2E-05); reconnect and restart recovery spec `reconnect.spec.ts` (E2E-06); hot-reload spec `hot.spec.ts` for CSS swap, asset cache-bust, script reload with scroll restore and the accept API (E2E-09); agent workflow spec `agent-workflow.spec.ts` (E2E-07: plays the agent of `AGENTS.md` and fails when its commands or ready example drift from behaviour) |
-| Compile-fail | An invalid API use does not compile (`trybuild`) | `crates/preview-domain/tests/compile_fail.rs`, `crates/preview-adapter-fs/tests/compile_fail.rs` | `unit-tests` | in place (ARCH-08) |
+| Compile-fail | An invalid API use does not compile (`trybuild`) | `crates/preview-domain/tests/compile_fail.rs`, `crates/preview-adapter-fs/tests/compile_fail.rs` | `integration-tests` | in place (ARCH-08) |
 | Client JavaScript | The reload client's `node:test` suite, with no npm dependency | `crates/preview-adapter-http/assets/client.test.mjs` | `client-js` (`node --test crates/*/assets/*.test.mjs`) | in place (HTTP-09) |
 | Conformance | Quint models: typecheck, named scenarios and invariant simulation; model traces replayed against the real code, compared after every step | `formal/lifecycle.qnt`, `formal/watcher.qnt`, `formal/reload.qnt`, `formal/scenarios.qnt`, `formal/lifecycle_traces.qnt`, `formal/watcher_traces.qnt`, `formal/reload_traces.qnt` (Quint 0.33.0 locked in `formal/package-lock.json`, [ADR 0052](adr/0052-quint-toolchain-and-lifecycle-model.md)); `crates/preview-conformance`: the ITF replay core ([ADR 0053](adr/0053-conformance-harness.md)), the lifecycle driver over the composition `Server` (`src/drivers/lifecycle.rs`, `tests/lifecycle_conformance.rs`, [ADR 0056](adr/0056-lifecycle-conformance-driver.md)), the reload driver over the real `ReloadState` and SSE handler in process (`src/drivers/reload.rs`, `tests/reload_conformance.rs`, [ADR 0057](adr/0057-reload-conformance-driver.md)) and the watcher driver over the `ChangeCoordinator` (`src/drivers/watcher.rs`, `tests/watcher_conformance.rs`, [ADR 0058](adr/0058-watcher-conformance-driver.md)); negative controls, faulty implementations behind the drivers' seams, each caught at an asserted trace, step, action and field (`tests/negative_controls.rs`, [ADR 0059](adr/0059-conformance-negative-controls.md)); named traces in `formal/traces/regression/{lifecycle,watcher,reload}-*.itf.json`, regenerated from `formal/traces/regression/manifest.toml`; seeded ones generated into `formal/traces/generated/` with `manifest.json` | `formal-typecheck`, `formal-scenarios`, `formal-simulate`, `formal-freshness`, `formal-generate`, `conformance-replay`, `conformance-controls` (`cargo xtask conformance`, in `check`; `unit-tests` excludes `preview-conformance`, [ADR 0060](adr/0060-conformance-stage-and-trace-corpus.md)) | in place (FORMAL-01 to FORMAL-09); models, stimuli, observations, invariants, scope and promoting a counterexample in [`formal-models.md`](formal-models.md) |
 | Coverage | Line coverage floor and changed-line coverage | `cargo llvm-cov nextest --workspace`: every in-process suite including conformance and xtask, floors in `coverage-floor.toml` (the overall floor over `crates/` only, `xtask` report only, [ADR 0066](adr/0066-coverage-overall-floor-over-crates-only.md)), LCOV at `target/coverage/lcov.info` ([ADR 0018](adr/0018-coverage-gates.md), [ADR 0062](adr/0062-coverage-stage-scope-and-floors.md)); ≥95% of the instrumented lines changed in `crates/**/src/**/*.rs` since the merge-base with `origin/main` (else `HEAD~1`) covered ([ADR 0064](adr/0064-changed-line-gate-in-check.md)) | `coverage` and `changed-lines` (`cargo xtask coverage [--changed-since [REV]]`, both in `check`) | in place (TEST-06, TEST-07) |
@@ -180,10 +180,11 @@ Per level:
 cargo fmt --all --check                                   # fmt-check: formatting
 rustfmt --check --edition 2024 fuzz/fuzz_targets/*.rs     # fuzz-fmt: the fuzz targets, outside the workspace
 cargo clippy --locked --workspace --all-targets -- -D warnings   # clippy
-cargo nextest run --workspace --locked --profile ci       # unit-tests: the catalog command
+cargo nextest run --workspace --locked --profile ci -E 'not kind(test)'   # unit-tests: tests inside libraries and binaries
+cargo nextest run --workspace --locked --profile ci -E 'kind(test)'       # integration-tests: every tests/*.rs binary (CI runs them as two jobs)
 cargo test --locked --workspace --doc                     # doctests (nextest does not run them)
 cargo xtask architecture                                  # rules, fixtures, test hygiene
-cargo xtask test                                          # unit-tests under the ci profile, doctests, client-js, then browser
+cargo xtask test                                          # unit-tests and integration-tests under the ci profile, doctests, client-js, then browser
 cargo xtask security                                      # deny, deny-fuzz, secrets, workflows, action pins
 node --test crates/*/assets/*.test.mjs                    # client-js: the reload client's tests
 cargo xtask test --only browser                           # browser: build, npm ci, npx playwright test (needs Node 22 and Chromium 1194)
@@ -210,7 +211,7 @@ cargo nextest run -p preview-conformance --test lifecycle_conformance   # replay
 cargo nextest run -p preview-conformance --test negative_controls       # faulty implementations, each caught at its exact step
 ```
 
-The `unit-tests` stage and `quick` exclude `preview-conformance`; `check` runs it in
+The `unit-tests` and `integration-tests` stages and `quick` exclude `preview-conformance`; `check` runs it in
 `conformance-replay` and `conformance-controls` (ADR 0060). Each committed trace is regenerated
 from `formal/traces/regression/manifest.toml`, and the `formal-freshness` stage fails with
 `stale regression trace <file>` when one differs. [`formal-models.md`](formal-models.md) says how
@@ -254,6 +255,41 @@ cargo xtask release-check  # OPS-05
 ## Checks the gate runs
 
 `cargo xtask list-checks` marks the stages `check` runs with `"in_check": true`. Today those are
-`fmt-check`, `fuzz-fmt`, `clippy`, `unit-tests`, `doctests`, `client-js`, `browser`, `architecture` (with its `ARCH-*` rules),
+`fmt-check`, `fuzz-fmt`, `clippy`, `unit-tests`, `integration-tests`, `doctests`, `client-js`, `browser`, `architecture` (with its `ARCH-*` rules),
 the seven `conformance` stages (`formal-typecheck` to `conformance-controls`), `coverage`, `changed-lines`, `deny`, `deny-fuzz`, `secrets`, `workflows` and `action-pins`. (`security` is the umbrella command for the last five, not a stage of its own.) `check` runs each stage once; a stage that
 is in the catalog but not yet implemented is absent from the run, not skipped.
+
+## CI jobs and failure evidence
+
+`.github/workflows/ci.yml` runs one job per level, each calling `cargo xtask check --only <stages>`,
+which runs the named stages through the same stage list as the full `check` (in the gate's order;
+an unknown name exits 2 and lists the stage names). The same command reproduces a job locally
+([ADR 0072](adr/0072-ci-job-topology-and-stage-parity.md)).
+
+| Job | `check --only` stages | Tools it installs | Artifacts |
+|:--|:--|:--|:--|
+| `architecture` (Architecture and policy) | `architecture` | none | none |
+| `static` (Static quality) | `fmt-check,fuzz-fmt,clippy` | none | none |
+| `fast-tests` (Fast tests) | `unit-tests,doctests,client-js` | `cargo-nextest` | JUnit on failure |
+| `integration` (Integration) | `integration-tests` | `cargo-nextest` | JUnit on failure |
+| `conformance` (Conformance (Quint)) | the seven `formal-*` and `conformance-*` stages | `cargo-nextest`, Quint (`npm ci --prefix formal`) | generated ITF traces and JUnit on failure |
+| `coverage` (Coverage) | `coverage,changed-lines` | `cargo-nextest`, `cargo-llvm-cov`, Quint | `lcov.info` always, JUnit on failure |
+| `security` (Security) | `deny,deny-fuzz,secrets,workflows,action-pins` | `cargo-deny`, Gitleaks, actionlint | none |
+| `browser` (Browser) | `browser` | Playwright and Chromium | Playwright `test-results/` (traces, screenshots) on failure |
+| `artifact-smoke` (Artifact smoke) | none: a release build run outside the repository on a copy of the fixture (`serve --json --port 0`, `ready`, GET `/`, SIGTERM, exit 0, tree unchanged); OPS-05 replaces it with `release-check` | none | logs on failure |
+| `required` (Required) | none | none | none |
+
+`required` needs every other job and fails unless each finished `success` (a failed, cancelled or
+skipped job fails it): it is the one result to watch. The unit test
+`should_cover_each_in_check_stage_once_when_ci_jobs_are_read` fails when an `in_check` stage is in
+no job or in two, so a stage cannot be dropped silently. Node is the runner's preinstalled one.
+
+Caches are keyed by job, OS, `rust-toolchain.toml`, `Cargo.lock`, `tools/versions.toml` and the
+job's tool list. Every run restores them; only a push to `main` saves one, so a pull request never
+displaces `main`'s entries. `coverage` and `changed-lines` need the full history
+(`fetch-depth: 0`); on a push the changed-line gate starts from `github.event.before`
+([ADR 0069](adr/0069-tooling-review-fixes-fuzz-lint-and-gate-bases.md)).
+
+`formal.yml` (nightly conformance with a fresh seed, plus the Apalache lane) and `security.yml`
+(weekly) run on a schedule or by dispatch only; their blocking runs are the `conformance` and
+`security` jobs above.

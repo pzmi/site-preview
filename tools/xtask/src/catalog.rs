@@ -34,7 +34,7 @@ const fn row(
 }
 
 /// All rows. `quick` runs the stage rows `fmt-check`, `fuzz-fmt`, `architecture`, `clippy`,
-/// `unit-tests` and `doctests`.
+/// `unit-tests` (the whole workspace there, unfiltered) and `doctests`.
 pub const CATALOG: &[Check] = &[
     row(
         "fmt-check",
@@ -60,8 +60,15 @@ pub const CATALOG: &[Check] = &[
     row(
         "unit-tests",
         "unit",
-        "cargo nextest run --workspace --locked --profile ci --exclude preview-conformance",
+        "cargo nextest run --workspace --locked --profile ci --exclude preview-conformance -E not kind(test)",
         "TEST-01",
+        true,
+    ),
+    row(
+        "integration-tests",
+        "integration",
+        "cargo nextest run --workspace --locked --profile ci --exclude preview-conformance -E kind(test)",
+        "OPS-02",
         true,
     ),
     row(

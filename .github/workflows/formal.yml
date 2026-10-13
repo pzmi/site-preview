@@ -1,14 +1,12 @@
 name: Formal
 
-# The Quint models and their replay against the real code (foundation.md sections 6.4 and 10,
-# ADR 0060). `cargo xtask check` in ci.yml runs the same stages; this workflow is the named
-# `Conformance (Quint)` lane, keeps the failing traces as artifacts, and runs nightly with a
-# fresh seed.
+# The nightly lanes of the Quint models (foundation.md sections 6.4 and 10, ADR 0060, ADR 0072).
+# The blocking `Conformance (Quint)` job is in ci.yml, where it runs on every push and pull
+# request through `cargo xtask check --only <the conformance stages>`; this workflow only
+# repeats it nightly with a fresh seed, keeps the failing traces as artifacts, and runs the
+# deep Apalache lane.
 
 on:
-  push:
-    branches: [main]
-  pull_request:
   schedule:
     - cron: "17 3 * * *"
   workflow_dispatch:
@@ -16,11 +14,9 @@ on:
 permissions:
   contents: read
 
-# The scheduled and dispatched runs (the 120-minute Apalache lane) get a group of their own, so
-# a push to main never queues behind one, nor one behind a push (ADR 0069).
 concurrency:
-  group: formal-${{ github.ref }}-${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'deep' || 'gate' }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: formal-${{ github.ref }}
+  cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
@@ -28,7 +24,7 @@ env:
 
 jobs:
   conformance:
-    name: Conformance (Quint)
+    name: Conformance (Quint, nightly)
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:

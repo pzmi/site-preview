@@ -51,7 +51,13 @@ pub enum Command {
     /// Dependency policy, secrets and workflow checks.
     Security,
     /// The full blocking PR-quality gate.
-    Check,
+    Check {
+        /// Run only these stages (catalog ids such as `coverage`), in the gate's order and
+        /// through the same stage code as the full run. Repeat or separate with commas. An
+        /// unknown name exits 2 and lists the stage names (OPS-02, ADR 0072).
+        #[arg(long, value_name = "STAGE", action = clap::ArgAction::Append, value_delimiter = ',')]
+        only: Vec<String>,
+    },
     /// Longer source mutation analysis (cargo-mutants over `.cargo/mutants.toml`).
     Mutation {
         /// Try only the mutants on lines changed since REV (merge-base with HEAD, working
@@ -108,7 +114,7 @@ impl Command {
             Self::Conformance { .. } => "conformance",
             Self::Coverage { .. } => "coverage",
             Self::Security => "security",
-            Self::Check => "check",
+            Self::Check { .. } => "check",
             Self::Mutation { .. } => "mutation",
             Self::Fuzz { .. } => "fuzz",
             Self::FormalVerify { .. } => "formal-verify",

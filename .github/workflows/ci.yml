@@ -1,5 +1,12 @@
 name: CI
 
+# The blocking gate, one job per level of foundation.md section 10, each running
+# `cargo xtask check --only <stages>` so a job and the same command on a laptop run the same
+# stage code (OPS-02, ADR 0072). `required` needs every job and is the one result to watch.
+# tools/xtask/src/check.rs (should_cover_each_in_check_stage_once_when_ci_jobs_are_read) fails
+# when an `in_check` stage of the catalog is in no job or in two, so no stage is dropped
+# silently. Every job installs only the tools its stages need.
+
 on:
   push:
     branches: [main]
@@ -17,58 +24,383 @@ env:
   CARGO_INCREMENTAL: "0"
 
 jobs:
-  check:
-    name: Check
+  architecture:
+    name: Architecture and policy
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
-    env:
-      # The pinned tools the gate needs (tools/versions.toml); coverage and changed-lines need
-      # cargo-llvm-cov. The list is part of the cache key, so changing it saves a new
-      # ~/.cargo/bin instead of reusing one cached without the new tool.
-      DEV_TOOLS: cargo-nextest cargo-deny cargo-llvm-cov
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          fetch-depth: 0 # the security stage scans the whole history
 
-      - name: Install toolchain from rust-toolchain.toml
-        run: rustup show active-toolchain || rustup toolchain install
-
-      - name: Cache cargo registry, build output and tools
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Set up Rust
+        id: rust
+        uses: ./.github/actions/setup-rust
         with:
+          job: architecture
+
+      - name: Architecture and policy
+        run: cargo xtask check --only architecture
+
+      - name: Save caches (main only)
+        uses: ./.github/actions/save-rust-cache
+        with:
+          key: ${{ steps.rust.outputs.cache-key }}
+          hit: ${{ steps.rust.outputs.cache-hit }}
+
+  static:
+    name: Static quality
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Rust
+        id: rust
+        uses: ./.github/actions/setup-rust
+        with:
+          job: static
+
+      - name: Static quality
+        run: cargo xtask check --only fmt-check,fuzz-fmt,clippy
+
+      - name: Save caches (main only)
+        uses: ./.github/actions/save-rust-cache
+        with:
+          key: ${{ steps.rust.outputs.cache-key }}
+          hit: ${{ steps.rust.outputs.cache-hit }}
+
+  fast-tests:
+    name: Fast tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Rust
+        id: rust
+        uses: ./.github/actions/setup-rust
+        with:
+          job: fast-tests
+          tools: cargo-nextest
+
+      - name: Fast tests
+        run: cargo xtask check --only unit-tests,doctests,client-js
+
+      - name: Keep the JUnit report of a failed run
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: junit-fast-tests-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            ~/.cargo/bin
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git/db
-            target
-          key: check-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'tools/versions.toml') }}-${{ env.DEV_TOOLS }}
-          restore-keys: |
-            check-${{ runner.os }}-
+            target/nextest/ci/junit.xml
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Save caches (main only)
+        uses: ./.github/actions/save-rust-cache
+        with:
+          key: ${{ steps.rust.outputs.cache-key }}
+          hit: ${{ steps.rust.outputs.cache-hit }}
+
+  integration:
+    name: Integration
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Rust
+        id: rust
+        uses: ./.github/actions/setup-rust
+        with:
+          job: integration
+          tools: cargo-nextest
+
+      - name: Integration
+        run: cargo xtask check --only integration-tests
+
+      - name: Keep the JUnit report of a failed run
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: junit-integration-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            target/nextest/ci/junit.xml
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Save caches (main only)
+        uses: ./.github/actions/save-rust-cache
+        with:
+          key: ${{ steps.rust.outputs.cache-key }}
+          hit: ${{ steps.rust.outputs.cache-hit }}
+
+  conformance:
+    name: Conformance (Quint)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Rust
+        id: rust
+        uses: ./.github/actions/setup-rust
+        with:
+          job: conformance
+          tools: cargo-nextest
+
+      # The conformance stages run the locked Quint; npx never fetches it (ADR 0052, ADR 0060).
+      # Node is the runner's preinstalled one (22 or newer, tools/versions.toml).
+      - name: Install Quint
+        run: npm ci --prefix formal
+
+      - name: Conformance (Quint)
+        run: cargo xtask check --only formal-typecheck,formal-scenarios,formal-simulate,formal-freshness,formal-generate,conformance-replay,conformance-controls
+
+      - name: Keep the traces and report of a failed run
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: conformance-traces-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            formal/traces/generated/
+            target/nextest/ci/junit.xml
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Save caches (main only)
+        uses: ./.github/actions/save-rust-cache
+        with:
+          key: ${{ steps.rust.outputs.cache-key }}
+          hit: ${{ steps.rust.outputs.cache-hit }}
+
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      # On a push, the changed-line gate starts from the commit the branch was at before it
+      # (every commit of the push counts, not only the last); a pull request and a new branch
+      # (the all-zeros SHA) use the merge-base with origin/main (ADR 0069). The SHA reaches the
+      # xtask as an environment variable, never interpolated into a script.
+      CHANGED_LINES_BASE: ${{ github.event_name == 'push' && github.event.before || '' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0 # the changed-line gate needs the merge-base and the pushed range
+
+      - name: Set up Rust
+        id: rust
+        uses: ./.github/actions/setup-rust
+        with:
+          job: coverage
+          tools: cargo-nextest cargo-llvm-cov
+
+      # The conformance stages run the locked Quint; npx never fetches it (ADR 0052, ADR 0060).
+      # Node is the runner's preinstalled one (22 or newer, tools/versions.toml).
+      - name: Install Quint
+        run: npm ci --prefix formal
+
+      - name: Coverage
+        run: cargo xtask check --only coverage,changed-lines
+
+      - name: Keep the LCOV report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: lcov-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            target/coverage/lcov.info
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Keep the JUnit report of a failed run
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: junit-coverage-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            target/nextest/ci/junit.xml
+            target/llvm-cov-target/nextest/ci/junit.xml
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Save caches (main only)
+        uses: ./.github/actions/save-rust-cache
+        with:
+          key: ${{ steps.rust.outputs.cache-key }}
+          hit: ${{ steps.rust.outputs.cache-hit }}
+
+  security:
+    name: Security
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0 # the secrets stage scans the whole history
+
+      - name: Set up Rust
+        id: rust
+        uses: ./.github/actions/setup-rust
+        with:
+          job: security
+          tools: cargo-deny
 
       - name: Install Gitleaks and actionlint
         uses: ./.github/actions/install-scanners
 
-      - name: Install pinned dev tools
-        run: cargo xtask install-tools ${{ env.DEV_TOOLS }}
+      - name: Security
+        run: cargo xtask check --only deny,deny-fuzz,secrets,workflows,action-pins
+
+      - name: Save caches (main only)
+        uses: ./.github/actions/save-rust-cache
+        with:
+          key: ${{ steps.rust.outputs.cache-key }}
+          hit: ${{ steps.rust.outputs.cache-hit }}
+
+  browser:
+    name: Browser
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Rust
+        id: rust
+        uses: ./.github/actions/setup-rust
+        with:
+          job: browser
 
       # The browser stage never downloads a browser itself (D9); CI provides Chromium here.
       - name: Install Chromium for Playwright
         working-directory: tests/e2e/browser
         run: npm ci && npx playwright install --with-deps chromium
 
-      # The conformance stages of check run the locked Quint (ADR 0060); npx never
-      # fetches it (ADR 0052).
-      - name: Install Quint for the conformance stages
-        run: npm ci --prefix formal
+      - name: Browser
+        run: cargo xtask check --only browser
 
-      # On a push, the changed-line gate starts from the commit the branch was at before it
-      # (every commit of the push counts, not only the last); a pull request and a new branch
-      # (the all-zeros SHA) use the merge-base with origin/main (ADR 0069). The SHA reaches the
-      # xtask as an environment variable, never interpolated into a script.
-      - name: Full gate
+      - name: Keep the Playwright traces of a failed run
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: playwright-traces-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            tests/e2e/browser/test-results/
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Save caches (main only)
+        uses: ./.github/actions/save-rust-cache
+        with:
+          key: ${{ steps.rust.outputs.cache-key }}
+          hit: ${{ steps.rust.outputs.cache-hit }}
+
+  artifact-smoke:
+    name: Artifact smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Rust
+        id: rust
+        uses: ./.github/actions/setup-rust
+        with:
+          job: artifact-smoke
+
+      # The release binary runs outside the repository, in a clean environment (no cargo, node
+      # or npm on PATH), on a copy of the fixture site: `serve --json --port 0` prints `ready`,
+      # the page is served with the reload client, SIGTERM exits 0, and serving left the
+      # fixture tree unchanged. OPS-05 replaces this with `cargo xtask release-check`.
+      - name: Build the release binary
+        run: cargo build --release --locked -p preview-cli --bin site-preview
+
+      - name: Run it outside the repository
         env:
-          CHANGED_LINES_BASE: ${{ github.event_name == 'push' && github.event.before || '' }}
-        run: cargo xtask check
+          SMOKE_ROOT: ${{ runner.temp }}
+        run: |
+          set -euo pipefail
+          work="$(mktemp -d "$SMOKE_ROOT/smoke.XXXXXX")"
+          cp target/release/site-preview "$work/site-preview"
+          cp -R tests/fixtures/site "$work/site"
+          cd "$work/site"
+          tree_hash() { find . -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum; }
+          before="$(tree_hash)"
+          env -i PATH=/usr/bin:/bin HOME="$work" "$work/site-preview" serve --json --port 0 \
+            > "$work/stdout.log" 2> "$work/stderr.log" &
+          pid=$!
+          for _ in $(seq 1 100); do
+            [ -s "$work/stdout.log" ] && break
+            sleep 0.1
+          done
+          ready="$(head -n 1 "$work/stdout.log")"
+          echo "ready: $ready"
+          [ "$(printf '%s' "$ready" | jq -r .event)" = ready ]
+          url="$(printf '%s' "$ready" | jq -r .url)"
+          curl --fail --silent --show-error --max-time 10 "$url" > "$work/index.html"
+          grep -qi '<html' "$work/index.html"
+          grep -q '__site_preview' "$work/index.html"
+          kill -TERM "$pid"
+          status=0
+          wait "$pid" || status=$?
+          echo "exit status after SIGTERM: $status"
+          [ "$status" -eq 0 ]
+          [ "$(tree_hash)" = "$before" ]
+
+      - name: Keep the smoke logs of a failed run
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: artifact-smoke-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/smoke.*/*.log
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Save caches (main only)
+        uses: ./.github/actions/save-rust-cache
+        with:
+          key: ${{ steps.rust.outputs.cache-key }}
+          hit: ${{ steps.rust.outputs.cache-hit }}
+
+  # The one result to watch (and, in OPS-04, to require). It runs even when a needed job failed
+  # or was cancelled and fails then; a needed job that was skipped fails it too, so a job can
+  # never drop out of the gate by not running.
+  required:
+    name: Required
+    if: ${{ always() }}
+    needs:
+      - architecture
+      - static
+      - fast-tests
+      - integration
+      - conformance
+      - coverage
+      - security
+      - browser
+      - artifact-smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Every needed job succeeded
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          echo "$NEEDS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          echo "$NEEDS" | jq -e 'all(.[]; .result == "success")' > /dev/null

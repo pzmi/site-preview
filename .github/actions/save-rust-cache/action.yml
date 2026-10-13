@@ -1,0 +1,26 @@
+name: Save the Rust cache of a CI job
+description: >-
+  Saves the cache that setup-rust restored, under the exact key it computed, on a push to main
+  and only when that key was not already there. Pull requests never save (ADR 0072). Run it as
+  the last step of a job that succeeded.
+inputs:
+  key:
+    description: The `cache-key` output of setup-rust.
+    required: true
+  hit:
+    description: The `cache-hit` output of setup-rust.
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Save cargo registry, build output and tools
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main' && inputs.hit != 'true'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: |
+          ~/.cargo/bin
+          ~/.cargo/registry/index
+          ~/.cargo/registry/cache
+          ~/.cargo/git/db
+          target
+        key: ${{ inputs.key }}

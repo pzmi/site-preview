@@ -24,16 +24,49 @@ pub fn stages() -> Vec<Stage> {
     stages
 }
 
-/// Runs `check`, prints the stage table and returns the exit code.
-pub fn run() -> i32 {
-    finish(&run_report(&stages(), &tools::require))
+/// The stages to run: all, or those named by `--only`, in the gate's own order (so `coverage`
+/// precedes `changed-lines` however the flags are ordered). An unknown name is an error that
+/// lists the valid ones, never an empty green run.
+fn select(all: Vec<Stage>, only: &[String]) -> Result<Vec<Stage>, String> {
+    if only.is_empty() {
+        return Ok(all);
+    }
+    let unknown: Vec<_> = only
+        .iter()
+        .filter(|name| !all.iter().any(|s| s.name == name.as_str()))
+        .map(String::as_str)
+        .collect();
+    if !unknown.is_empty() {
+        let names: Vec<_> = all.iter().map(|s| s.name).collect();
+        return Err(format!(
+            "no check stage named {}; choose from {}",
+            unknown.join(", "),
+            names.join(", ")
+        ));
+    }
+    Ok(all
+        .into_iter()
+        .filter(|s| only.iter().any(|name| name == s.name))
+        .collect())
+}
+
+/// Runs `check` (or the stages named by `--only`), prints the stage table and returns the
+/// exit code: 2 for an unknown stage name.
+pub fn run(only: &[String]) -> i32 {
+    match select(stages(), only) {
+        Ok(stages) => finish(&run_report(&stages, &tools::require)),
+        Err(err) => {
+            eprintln!("xtask: {err}");
+            2
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::catalog;
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeMap, BTreeSet};
 
     #[test]
     fn should_run_exactly_the_in_check_stages_when_check_is_built() {
@@ -81,6 +114,7 @@ mod tests {
             "architecture",
             "clippy",
             "unit-tests",
+            "integration-tests",
             "doctests",
             "formal-typecheck",
             "formal-scenarios",
@@ -98,5 +132,168 @@ mod tests {
         ] {
             assert!(names.contains(&want), "{want} missing from {names:?}");
         }
+    }
+
+    #[test]
+    fn should_keep_every_stage_in_check_order_when_only_names_some() {
+        // given
+        let only = ["changed-lines".to_owned(), "coverage".to_owned()];
+
+        // when
+        let picked = select(stages(), &only).unwrap();
+
+        // then
+        let names: Vec<_> = picked.iter().map(|s| s.name).collect();
+        assert_eq!(names, ["coverage", "changed-lines"]);
+    }
+
+    #[test]
+    fn should_run_every_stage_when_only_is_empty() {
+        // given
+        let total = stages().len();
+
+        // when
+        let picked = select(stages(), &[]).unwrap();
+
+        // then
+        assert_eq!(picked.len(), total);
+    }
+
+    #[test]
+    fn should_list_valid_stages_when_only_names_an_unknown_one() {
+        // given
+        let only = ["coverage".to_owned(), "nope".to_owned()];
+
+        // when
+        let err = select(stages(), &only).unwrap_err();
+
+        // then
+        assert!(
+            err.contains("nope") && err.contains("clippy") && err.contains("coverage"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn should_exit_two_when_only_names_an_unknown_stage() {
+        // given
+        let only = ["nope".to_owned()];
+
+        // when
+        let code = run(&only);
+
+        // then
+        assert_eq!(code, 2);
+    }
+
+    #[test]
+    fn should_parse_only_flags_repeated_and_comma_separated_when_check_is_invoked() {
+        use crate::cli::{Cli, Command};
+        use clap::Parser;
+
+        // given
+        let args = ["xtask", "check", "--only", "a,b", "--only", "c"];
+
+        // when
+        let cli = Cli::try_parse_from(args).unwrap();
+
+        // then
+        let Command::Check { only } = cli.command else {
+            panic!("not check")
+        };
+        assert_eq!(only, ["a", "b", "c"]);
+    }
+
+    /// The `cargo xtask check --only` stages of each job of `ci.yml`, and each job's `needs`.
+    fn ci_jobs() -> (BTreeMap<String, Vec<String>>, BTreeMap<String, Vec<String>>) {
+        let text = std::fs::read_to_string(crate::repo::root().join(".github/workflows/ci.yml"))
+            .expect("ci.yml");
+        let mut stages: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        let mut needs: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        let mut in_jobs = false;
+        let mut job = String::new();
+        let mut in_needs = false;
+        for line in text.lines() {
+            if line == "jobs:" {
+                in_jobs = true;
+            } else if in_jobs && !line.starts_with(' ') && !line.is_empty() {
+                in_jobs = false;
+            }
+            if !in_jobs {
+                continue;
+            }
+            if let Some(id) = line
+                .strip_prefix("  ")
+                .and_then(|l| l.strip_suffix(':'))
+                .filter(|l| !l.starts_with([' ', '#']))
+            {
+                job = id.to_owned();
+                stages.entry(job.clone()).or_default();
+                needs.entry(job.clone()).or_default();
+                in_needs = false;
+            } else if let Some(args) = line.split("cargo xtask check --only ").nth(1) {
+                // `--only a,b` and `--only a --only b` both name stages
+                let args = args.replace("--only ", "");
+                let list = stages.get_mut(&job).unwrap();
+                list.extend(
+                    args.split(|c: char| c == ',' || c.is_whitespace())
+                        .filter(|n| !n.is_empty())
+                        .map(str::to_owned),
+                );
+            } else if line.trim() == "needs:" {
+                in_needs = true;
+            } else if in_needs && let Some(name) = line.trim().strip_prefix("- ") {
+                needs.get_mut(&job).unwrap().push(name.to_owned());
+            } else {
+                in_needs = false;
+            }
+        }
+        (stages, needs)
+    }
+
+    #[test]
+    fn should_cover_each_in_check_stage_once_when_ci_jobs_are_read() {
+        // given
+        let (jobs, _) = ci_jobs();
+        let mut count: BTreeMap<&str, usize> = catalog::CATALOG
+            .iter()
+            .filter(|c| c.in_check)
+            .map(|c| (c.id, 0))
+            .collect();
+
+        // when
+        let mut unknown = Vec::new();
+        for (job, names) in &jobs {
+            for name in names {
+                match count.get_mut(name.as_str()) {
+                    Some(n) => *n += 1,
+                    None => unknown.push(format!("{job}: {name}")),
+                }
+            }
+        }
+
+        // then
+        assert!(unknown.is_empty(), "not in_check stages: {unknown:?}");
+        let wrong: Vec<_> = count.iter().filter(|(_, n)| **n != 1).collect();
+        assert!(
+            wrong.is_empty(),
+            "stages not in exactly one ci.yml job: {wrong:?}"
+        );
+    }
+
+    #[test]
+    fn should_need_every_other_job_when_required_job_is_read() {
+        // given
+        let (jobs, needs) = ci_jobs();
+
+        // when
+        let mut want: Vec<_> = jobs.keys().filter(|j| *j != "required").cloned().collect();
+        let mut got = needs.get("required").cloned().unwrap_or_default();
+        want.sort();
+        got.sort();
+
+        // then
+        assert!(jobs.contains_key("required"), "{jobs:?}");
+        assert_eq!(got, want);
     }
 }
