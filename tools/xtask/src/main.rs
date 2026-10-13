@@ -3,6 +3,7 @@
 mod action_pins;
 mod apalache;
 mod architecture;
+mod bench;
 mod browser;
 mod catalog;
 mod changed_lines;
@@ -57,6 +58,7 @@ fn main() -> ExitCode {
             package,
             jobs,
         } => mutation::run(in_diff.as_deref(), package.as_deref(), *jobs),
+        Command::Bench => bench::run(),
         Command::Doctor => tools::doctor(),
         Command::InstallTools { tools } => tools::install(tools),
         other => not_available(other.id()),

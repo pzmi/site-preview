@@ -84,6 +84,8 @@ pub enum Command {
     },
     /// Clean packaged artifact tests.
     ReleaseCheck,
+    /// Non-blocking performance and soak measurement; writes `target/bench/report.json`.
+    Bench,
     /// Print the check catalog as JSON.
     ListChecks,
     /// Report missing or wrong-version dev tools.
@@ -111,6 +113,7 @@ impl Command {
             Self::Fuzz { .. } => "fuzz",
             Self::FormalVerify { .. } => "formal-verify",
             Self::ReleaseCheck => "release-check",
+            Self::Bench => "bench",
             Self::ListChecks => "list-checks",
             Self::Doctor => "doctor",
             Self::InstallTools { .. } => "install-tools",

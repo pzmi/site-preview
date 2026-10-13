@@ -237,6 +237,7 @@ pub const CATALOG: &[Check] = &[
         "FORMAL-10",
         false,
     ),
+    row("bench", "performance", "cargo xtask bench", "E2E-08", false),
     row(
         "formal-verify-miri",
         "formal-scheduled",
