@@ -275,6 +275,7 @@ user or browser (plan.md §7.1).
 | Control | Where | Pinned by |
 |:--|:--|:--|
 | `cargo-deny`: vulnerabilities and yanked crates fail at any depth; an unmaintained direct dependency fails; licences limited to MIT, Apache-2.0, BSD-2/3-Clause, ISC, Unicode-3.0, Zlib; unknown registries and git sources are denied; wildcard requirements are denied | `deny.toml`, `cargo xtask security` (stage `deny`), ADR 0041 | `should_fail_sources_check_when_a_crate_depends_on_a_git_source`, `should_pass_sources_check_when_a_crate_has_no_dependencies` (`tools/xtask/tests/security_fixtures.rs`) |
+| The fuzz crate's own lockfile, `fuzz/Cargo.lock`, which the root run does not see: the same policy plus NCSA for `libfuzzer-sys` only (fuzz-only, never in the product) | `fuzz/deny.toml`, `cargo xtask security` (stage `deny-fuzz`), ADR 0065 | `should_match_root_policy_when_fuzz_exception_is_removed` (`tools/xtask/src/security.rs`) |
 | MPL-2.0 is allowed for exactly four crates (`cssparser`, `cssparser-macros`, `dtoa-short`, `selectors`), pulled in by the HTML rewriter; any other MPL-2.0 crate fails | `deny.toml` `[[licenses.exceptions]]`, ADR 0043 | the `deny` stage |
 | Gitleaks over the full history; refuses to run on a shallow or empty clone | `.gitleaks.toml`, `cargo xtask security`, ADR 0041 | `should_fail_secret_scan_when_history_holds_an_aws_style_key`, `should_fail_secret_scan_when_key_was_removed_but_stays_in_history`, `should_pass_secret_scan_when_history_holds_no_secret` |
 | `actionlint` over the workflows | `cargo xtask security` | `should_fail_workflow_lint_when_expression_is_invalid` |
@@ -336,12 +337,50 @@ Not yet enforced; do not rely on them until the task lands. Nothing is planned a
 
 ## Fuzzing
 
-The `fuzz/` crate (ADR 0063) is outside the workspace and builds only with the pinned nightly.
-Its `decode_path` target feeds arbitrary bytes to `decode_request_path` and asserts: no panic;
-every accepted path has only single-entry components (no `.`, `..`, empty, `/`, `\` or control
-character); `eligibility::path` agrees with the component walk and with an independent oracle
-of the deny rules; decoding is deterministic and a re-encoded path decodes to itself. Run it
-with `cargo xtask fuzz decode_path --time 60`, replay a crash with
-`cargo xtask fuzz decode_path --reproduce fuzz/artifacts/decode_path/<file>`. SEC-05 adds the
-rewriter, Host header and change-sequence targets, the scheduled `fuzz.yml` workflow and the
-triage steps, which will be written here.
+The `fuzz/` crate (ADR 0063, ADR 0065) is outside the workspace and builds only with the pinned
+nightly. Each target calls the real code and asserts properties, so a crash is either a panic
+in the code under test or a broken property.
+
+| Target | Code under test | Properties |
+|:--|:--|:--|
+| `decode_path` | `decode_request_path`, `eligibility::path` (domain) | No panic. Every accepted path has only single-entry components (no `.`, `..`, empty, `/`, `\` or control character); `eligibility::path` agrees with the component walk and with an independent oracle of the deny rules; decoding is deterministic and a re-encoded path decodes to itself. |
+| `rewrite_html` | `inject::rewrite` (`preview-adapter-http`) over arbitrary bytes | No panic. On `Injected`, the output is the input with the tag inserted at one offset (removing it gives back the input bytes) and a separate strict `lol_html` parse sees exactly one client `<script>`. On `AlreadyPresent`, every client tag carries the snapshot attributes. |
+| `host_header` | `HostPolicy::check`, `OriginPolicy::check` (domain), over eight listener addresses, both `--allow-remote` settings and any port | No panic. Any `Allow` has the bound port; `localhost` only on a loopback listener; an allowed address is never unspecified and is the bound one, or any one on a wildcard listener with `--allow-remote`; the decision is deterministic; the Origin a browser sends for an accepted authority is allowed. |
+| `change_sequence` | `ChangeCoordinator` (`preview-application`) with its real debouncer and `ReloadState`, fed change batches, overflows, failures, readiness, reconciles, clock steps and settles | No panic. The revision changes only on a publish, by exactly one; nothing is published unless a non-ignored event, an overflow or a recovery came since the last publish; a published change set has at most 64 entries, a non-full one only css, js or asset entries, and a rescan is always full. |
+
+Each target's input layout is documented at the top of its file, and its committed seeds are in
+`fuzz/seeds/<target>/` (a xtask unit test fails when a target has no seeds, no `[[bin]]` entry
+or no place in the `fuzz.yml` matrix). Run one locally with
+`cargo xtask fuzz <target> --time 60`; it needs `cargo-fuzz` and the pinned nightly
+(`cargo xtask install-tools cargo-fuzz nightly`). The generated corpus goes to the ignored
+`fuzz/corpus/<target>/`.
+
+`.github/workflows/fuzz.yml` runs every target nightly and on demand (`workflow_dispatch`, with
+a time per target from 1 to 3600 seconds, 600 by default), resumes from the corpus the previous
+run cached, and uploads a crash input as the artifact `fuzz-crash-<target>-<run>-<attempt>`.
+The fuzz crate's own lockfile is audited by the `deny-fuzz` stage (see Supply chain).
+
+### Triage
+
+A fresh fuzz run must leave no untriaged crash (foundation.md section 12, phase 5).
+
+1. **Get the input.** Download the workflow artifact (or take the file libFuzzer named in
+   `fuzz/artifacts/<target>/` locally): `crash-*` is a panic or failed assertion, `oom-*` an
+   allocation over the RSS limit, `timeout-*` an input that ran too long.
+2. **Reproduce.** `cargo xtask fuzz <target> --reproduce <file>` runs that one input and prints
+   the panic message, which names the broken property. A crash that does not reproduce is
+   still a finding: note the nightly and the run, and rerun the target with the corpus.
+3. **Minimise.** `cargo +<nightly> fuzz tmin <target> <file>` (the nightly from
+   `tools/versions.toml`, run in `fuzz/`) shrinks it; read the layout comment of the target to
+   decode the bytes.
+4. **Decide whose bug it is.** A panic in the code under test, or a property the code breaks,
+   is a product bug. A property the documented behaviour does not promise is a target bug: fix
+   the target and say why in the commit. A security consequence (a path, Host or injection
+   rule that does not hold) is reported privately first, as `SECURITY.md` says.
+5. **Fix with a regression test.** Add a unit test with the minimised input to the crate that
+   owns the code (`should_<outcome>_when_<condition>`), see it fail, then fix. A lifecycle,
+   watcher or reload behaviour change updates the Quint model, its scenarios and the
+   conformance driver first (foundation.md section 6.2). Add the minimised input to
+   `fuzz/seeds/<target>/` so every later run starts from it.
+6. **Never** silence a crash by loosening a property, catching the panic in the target, or
+   dropping a seed.

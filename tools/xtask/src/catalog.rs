@@ -173,6 +173,13 @@ pub const CATALOG: &[Check] = &[
         true,
     ),
     row(
+        "deny-fuzz",
+        "security",
+        "cargo deny --manifest-path fuzz/Cargo.toml --config fuzz/deny.toml --locked check",
+        "SEC-05",
+        true,
+    ),
+    row(
         "secrets",
         "security",
         "gitleaks git --no-banner --redact over the full history (after a git preflight)",

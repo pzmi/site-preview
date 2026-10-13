@@ -7,6 +7,7 @@ name = "preview-fuzz"
 version = "0.0.0"
 edition = "2024"
 publish = false
+license = "MIT OR Apache-2.0"
 description = "Fuzz targets for the preview server's security-critical parsers (never published)."
 
 [package.metadata]
@@ -14,11 +15,35 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4.13"
+lol_html = { version = "3.0.1", default-features = false }
+preview-adapter-http = { path = "../crates/preview-adapter-http" }
+preview-application = { path = "../crates/preview-application" }
 preview-domain = { path = "../crates/preview-domain" }
 
 [[bin]]
 name = "decode_path"
 path = "fuzz_targets/decode_path.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "rewrite_html"
+path = "fuzz_targets/rewrite_html.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "host_header"
+path = "fuzz_targets/host_header.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "change_sequence"
+path = "fuzz_targets/change_sequence.rs"
 test = false
 doc = false
 bench = false

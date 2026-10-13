@@ -242,6 +242,48 @@ mod tests {
     }
 
     #[test]
+    fn should_declare_a_bin_when_a_target_exists() {
+        // given
+        let root = repo::root();
+        let manifest: toml::Table = std::fs::read_to_string(root.join("fuzz/Cargo.toml"))
+            .unwrap()
+            .parse()
+            .unwrap();
+
+        // when
+        let mut bins: Vec<String> = manifest["bin"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|bin| bin["name"].as_str().unwrap().to_owned())
+            .collect();
+        bins.sort();
+
+        // then
+        assert_eq!(bins, available_targets(&root).unwrap());
+    }
+
+    #[test]
+    fn should_schedule_every_target_when_fuzz_workflow_is_read() {
+        // given
+        let root = repo::root();
+        let text = std::fs::read_to_string(root.join(".github/workflows/fuzz.yml")).unwrap();
+        let docs = yaml_rust2::YamlLoader::load_from_str(&text).unwrap();
+
+        // when
+        let mut scheduled: Vec<String> = docs[0]["jobs"]["fuzz"]["strategy"]["matrix"]["target"]
+            .as_vec()
+            .expect("fuzz.yml has a target matrix")
+            .iter()
+            .map(|t| t.as_str().unwrap().to_owned())
+            .collect();
+        scheduled.sort();
+
+        // then
+        assert_eq!(scheduled, available_targets(&root).unwrap());
+    }
+
+    #[test]
     fn should_have_a_seed_directory_when_a_target_exists() {
         // given
         let root = repo::root();

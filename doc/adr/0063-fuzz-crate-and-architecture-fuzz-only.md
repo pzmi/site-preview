@@ -4,7 +4,9 @@ Date: 2026-10-12
 
 ## Status
 
-Proposed (planner default — owner may override)
+Proposed (planner default — owner may override). Amended by ADR 0065: the fuzz crate may also
+depend on `preview-application` and `preview-adapter-http`, and `fuzz/Cargo.lock` is audited by
+the `deny-fuzz` stage.
 
 ## Context
 

@@ -30,8 +30,8 @@ preview-conformance = [
   "preview-adapter-fs", "preview-adapter-http", "preview-composition",
 ]
 xtask = []
-# A fuzz crate may reach only the workspace crates listed here (ADR 0063).
-preview-fuzz = ["preview-domain"]
+# A fuzz crate may reach only the workspace crates listed here (ADR 0063, ADR 0065).
+preview-fuzz = ["preview-domain", "preview-application", "preview-adapter-http"]
 
 # Workspace build-dependencies; none are allowed unless listed here.
 [dependencies.build]
@@ -49,7 +49,7 @@ preview-composition = { axum = ["http1"], hyper = ["server", "http1"], hyper-uti
 preview-cli = { clap = ["default", "derive", "std", "help", "usage", "error-context"], serde_json = ["std"] }
 preview-conformance = { axum = [], serde_json = ["std"], tokio = ["rt", "time", "test-util"], tower = ["util"] }
 xtask = { cargo_metadata = ["default"], clap = ["default", "derive"], proc-macro2 = ["span-locations"], serde = ["default", "derive"], syn = ["parsing", "full", "visit", "clone-impls"], toml = ["default"], yaml-rust2 = [] }
-preview-fuzz = { libfuzzer-sys = [] }
+preview-fuzz = { libfuzzer-sys = [], lol_html = [] }
 
 [external.dev]
 preview-adapter-fs = { tempfile = ["default"], trybuild = ["default"] }

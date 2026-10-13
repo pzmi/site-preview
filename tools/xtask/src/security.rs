@@ -1,7 +1,8 @@
 //! `cargo xtask security`: the supply-chain stages (foundation.md section 8, D23).
 //!
-//! Four stages: `deny` runs `cargo deny --locked check` against the root `deny.toml`
-//! (advisories, licences, bans, sources), `secrets` runs Gitleaks over the whole git history,
+//! Five stages: `deny` runs `cargo deny --locked check` against the root `deny.toml`
+//! (advisories, licences, bans, sources), `deny-fuzz` runs the same check over the fuzz crate's
+//! own lockfile with `fuzz/deny.toml` (ADR 0065), `secrets` runs Gitleaks over the whole git history,
 //! `workflows` runs `actionlint`, and `action-pins` checks that every `uses:` is pinned to a
 //! full commit SHA. A missing pinned tool is `UNAVAILABLE`, never a pass (D9).
 //!
@@ -21,6 +22,7 @@ use crate::{repo, tools};
 pub fn stages() -> Vec<Stage> {
     vec![
         deny_stage(),
+        deny_fuzz_stage(),
         Stage::in_process(
             "secrets",
             "gitleaks git --no-banner --redact over the full history (after a git preflight)",
@@ -38,6 +40,31 @@ pub fn stages() -> Vec<Stage> {
 
 fn deny_stage() -> Stage {
     Stage::new("deny", "cargo", &["deny", "--locked", "check"]).needs("cargo-deny")
+}
+
+/// The fuzz crate's manifest and its cargo-deny policy, relative to the repository root.
+const FUZZ_MANIFEST: &str = "fuzz/Cargo.toml";
+const FUZZ_DENY_CONFIG: &str = "fuzz/deny.toml";
+
+/// `cargo deny` over `fuzz/Cargo.lock`, which the root run never sees (ADR 0063, ADR 0065).
+///
+/// The paths are relative to the repository root, where `check` and `security` run, like the
+/// `deny` stage's default `deny.toml`.
+fn deny_fuzz_stage() -> Stage {
+    Stage::new(
+        "deny-fuzz",
+        "cargo",
+        &[
+            "deny",
+            "--manifest-path",
+            FUZZ_MANIFEST,
+            "--config",
+            FUZZ_DENY_CONFIG,
+            "--locked",
+            "check",
+        ],
+    )
+    .needs("cargo-deny")
 }
 
 /// Runs `git -C dir args` and returns its trimmed standard output.
@@ -189,12 +216,64 @@ mod tests {
         let rendered = format!("{:?}", stages[0].action);
 
         // then
-        assert_eq!(stages.len(), 4);
+        assert_eq!(stages.len(), 5);
         assert_eq!(stages[0].name, "deny");
         assert_eq!(stages[0].tool, Some("cargo-deny"));
         for want in ["\"deny\"", "\"--locked\"", "\"check\""] {
             assert!(rendered.contains(want), "{want} missing from {rendered}");
         }
+    }
+
+    #[test]
+    fn should_check_fuzz_lockfile_with_its_own_policy_when_security_is_built() {
+        // given
+        let stages = stages();
+
+        // when
+        let stage = &stages[1];
+
+        // then
+        assert_eq!(stage.name, "deny-fuzz");
+        assert_eq!(stage.tool, Some("cargo-deny"));
+        let rendered = format!("{:?}", stage.action);
+        for want in [
+            "\"--manifest-path\", \"fuzz/Cargo.toml\"",
+            "\"--config\", \"fuzz/deny.toml\"",
+            "\"--locked\", \"check\"",
+        ] {
+            assert!(rendered.contains(want), "{want} missing from {rendered}");
+        }
+    }
+
+    /// `fuzz/deny.toml` minus its one `libfuzzer-sys` exception must equal the root policy, so
+    /// the fuzz graph is held to the same rules (ADR 0065).
+    #[test]
+    fn should_match_root_policy_when_fuzz_exception_is_removed() {
+        // given
+        let read = |path: &str| -> toml::Table {
+            let text = std::fs::read_to_string(repo::root().join(path)).expect("read policy");
+            text.parse().expect("parse policy")
+        };
+        let root = read("deny.toml");
+        let mut fuzz = read(FUZZ_DENY_CONFIG);
+
+        // when
+        let exceptions = fuzz
+            .get_mut("licenses")
+            .and_then(|l| l.get_mut("exceptions"))
+            .and_then(toml::Value::as_array_mut)
+            .expect("fuzz policy has licence exceptions");
+        let before = exceptions.len();
+        exceptions
+            .retain(|e| e.get("crate").and_then(toml::Value::as_str) != Some("libfuzzer-sys"));
+        let removed = before - exceptions.len();
+
+        // then
+        assert_eq!(
+            removed, 1,
+            "fuzz/deny.toml must hold one libfuzzer-sys exception"
+        );
+        assert_eq!(fuzz, root, "fuzz/deny.toml drifted from deny.toml");
     }
 
     #[test]

@@ -66,3 +66,4 @@ This directory holds the decisions behind site-preview, one file per decision, i
 | [0063](0063-fuzz-crate-and-architecture-fuzz-only.md) | The fuzz crate: a separate workspace, a `fuzz_only` category and the `xtask fuzz` command | Proposed |
 | [0062](0062-coverage-stage-scope-and-floors.md) | The `coverage` stage: workspace-wide LLVM line coverage including conformance and xtask, floors in `coverage-floor.toml` | Proposed |
 | [0064](0064-changed-line-gate-in-check.md) | The changed-line gate: merge-base with `origin/main` else `HEAD~1`, a stamped LCOV report, the `changed-lines` stage in `check` | Proposed |
+| [0065](0065-fuzz-targets-beyond-the-domain-and-fuzz-lockfile-audit.md) | Fuzz targets beyond the domain (application, HTTP adapter) and the `deny-fuzz` audit of `fuzz/Cargo.lock` | Proposed |

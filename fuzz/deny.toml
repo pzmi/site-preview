@@ -1,0 +1,82 @@
+# cargo-deny policy for the fuzz crate's own lockfile, `fuzz/Cargo.lock` (ADR 0065). The root
+# run never sees that graph (ADR 0063), so `cargo xtask security` runs a second stage,
+# `deny-fuzz`, with this file. It is the root `deny.toml` plus exactly one exception, below;
+# a unit test in tools/xtask/src/security.rs fails when the two drift apart in any other way.
+#
+# cargo-deny policy (foundation.md section 8, D23). Run through `cargo xtask security`.
+# Loosening anything here needs a reviewed reason in a comment, and an ADR when it is a
+# policy change.
+
+[graph]
+all-features = true
+
+[advisories]
+# A vulnerability or a yanked crate fails the stage at any depth. `unmaintained` is a scope
+# (cargo-deny 0.18 and later): "workspace" fails on an unmaintained crate that a workspace
+# member depends on directly, and does not report one reached only transitively (ADR 0041).
+# Each ignore needs the advisory id, the reason and an ADR.
+unmaintained = "workspace"
+yanked = "deny"
+ignore = []
+
+[licenses]
+# This repository's own `MIT OR Apache-2.0` must be accepted. Add a licence only with a
+# comment saying which dependency needs it. A first run found only MIT, Apache-2.0 and
+# Unicode-3.0 in use; the BSD, ISC and Zlib entries are the permissive licences foundation.md
+# pre-approves, and cargo-deny reports them as not yet encountered.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+]
+confidence-threshold = 0.8
+
+# MPL-2.0 (file-level copyleft) is accepted only for these unmodified crates, which lol_html
+# (plan.md section 6, the HTML injection rewriter) needs for its CSS selector engine. Scoped
+# per crate so no other MPL-2.0 dependency slips in unreviewed (ADR 0043).
+[[licenses.exceptions]]
+crate = "cssparser"
+allow = ["MPL-2.0"]
+
+[[licenses.exceptions]]
+crate = "cssparser-macros"
+allow = ["MPL-2.0"]
+
+[[licenses.exceptions]]
+crate = "dtoa-short"
+allow = ["MPL-2.0"]
+
+[[licenses.exceptions]]
+crate = "selectors"
+allow = ["MPL-2.0"]
+
+# CC0-1.0 (a public-domain dedication with a permissive fallback) is accepted only for `notify`,
+# the native file watcher plan.md section 2 names; scoped to the crate so no other CC0
+# dependency slips in unreviewed (ADR 0047).
+[[licenses.exceptions]]
+crate = "notify"
+allow = ["CC0-1.0"]
+
+# NCSA (the LLVM project's pre-2019 permissive licence, OSI approved) is accepted only for
+# `libfuzzer-sys`, which bundles libFuzzer's C++ sources. It is fuzz-only: no production
+# crate reaches it, and the root policy does not list it (ADR 0065).
+[[licenses.exceptions]]
+crate = "libfuzzer-sys"
+allow = ["NCSA"]
+
+[bans]
+multiple-versions = "warn"
+# A path dependency must carry a version (preview-cli's does), so a wildcard requirement
+# is a real finding; allow-wildcard-paths only covers unpublished path crates.
+wildcards = "deny"
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

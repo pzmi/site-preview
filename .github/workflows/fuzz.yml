@@ -1,0 +1,98 @@
+name: Fuzz
+
+# The scheduled fuzz lane (foundation.md sections 5 and 10, ADR 0026, ADR 0063, ADR 0065):
+# every target of the fuzz/ crate runs for a bounded time with the pinned nightly, starting
+# from its committed seeds and the corpus the previous nightly run left in the cache. A crash
+# fails the job and its input is uploaded; doc/security.md "Fuzzing" says how to triage it.
+# The fuzz crate's lockfile is audited by the `deny-fuzz` stage of `cargo xtask security`
+# (security.yml and `cargo xtask check`), not here.
+
+on:
+  schedule:
+    - cron: "41 2 * * *"
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: Fuzzing time per target, in seconds (1 to 3600)
+        required: false
+        default: "600"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fuzz-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  fuzz:
+    name: Fuzz (${{ matrix.target }})
+    runs-on: ubuntu-24.04
+    # The build plus at most one hour of fuzzing.
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        # Keep equal to the files of fuzz/fuzz_targets/; a xtask unit test checks it.
+        target: [decode_path, rewrite_html, host_header, change_sequence]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install toolchain from rust-toolchain.toml
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - name: Cache cargo registry, build output and tools
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/bin
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+            fuzz/target
+          key: fuzz-${{ runner.os }}-${{ matrix.target }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'fuzz/Cargo.lock', 'tools/versions.toml') }}
+          restore-keys: |
+            fuzz-${{ runner.os }}-${{ matrix.target }}-
+
+      # The corpus grows from night to night: each run saves a new entry and restores the
+      # newest one. It is generated data, never committed; the seeds are.
+      - name: Restore the corpus of earlier runs
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            fuzz-corpus-${{ matrix.target }}-
+
+      - name: Install cargo-fuzz and the pinned nightly
+        run: cargo xtask install-tools cargo-fuzz nightly
+
+      - name: Fuzz
+        env:
+          TARGET: ${{ matrix.target }}
+          SECONDS_REQUESTED: ${{ inputs.seconds || '600' }}
+        run: |
+          set -euo pipefail
+          if ! [[ "$SECONDS_REQUESTED" =~ ^[0-9]+$ ]] || (( SECONDS_REQUESTED < 1 || SECONDS_REQUESTED > 3600 )); then
+            echo "::error::seconds must be a whole number from 1 to 3600"
+            exit 2
+          fi
+          cargo xtask fuzz "$TARGET" --time "$SECONDS_REQUESTED"
+
+      # The crashing, leaking or timing-out input; replay it with
+      # `cargo xtask fuzz <target> --reproduce <file>`.
+      - name: Upload the crash input
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fuzz-crash-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: fuzz/artifacts/${{ matrix.target }}/
+          if-no-files-found: warn
+          retention-days: 30
