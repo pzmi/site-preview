@@ -16,6 +16,9 @@ pub enum SourceFailure {
     RegistrationFailed,
     /// The OS watcher reported a runtime failure (plan.md section 8.4).
     RuntimeFailure,
+    /// The served root directory is no longer at its path: deleted, moved away or replaced
+    /// (ADR 0067). Found by a reconcile; permanent.
+    RootRemoved,
 }
 
 impl From<SourceFailure> for DegradeReason {
@@ -25,6 +28,7 @@ impl From<SourceFailure> for DegradeReason {
         match failure {
             SourceFailure::RegistrationFailed => Self::RegistrationFailed,
             SourceFailure::RuntimeFailure => Self::RuntimeFailure,
+            SourceFailure::RootRemoved => Self::RootRemoved,
         }
     }
 }
@@ -130,6 +134,7 @@ mod tests {
         let failures = [
             SourceFailure::RegistrationFailed,
             SourceFailure::RuntimeFailure,
+            SourceFailure::RootRemoved,
         ];
         // when
         let reasons = failures.map(DegradeReason::from);
@@ -138,7 +143,8 @@ mod tests {
             reasons,
             [
                 DegradeReason::RegistrationFailed,
-                DegradeReason::RuntimeFailure
+                DegradeReason::RuntimeFailure,
+                DegradeReason::RootRemoved
             ]
         );
     }

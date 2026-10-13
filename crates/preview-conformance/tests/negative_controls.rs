@@ -372,6 +372,9 @@ struct FaultyCoordinator {
     fault: WatcherFault,
     inner: ChangeCoordinator,
     reload: ReloadState,
+    window: DebounceWindow,
+    /// The change batches received since the debouncer was last clean, with their times.
+    pending: Vec<(ChangeBatch<ChangeEvent>, Tick)>,
 }
 
 impl FaultyCoordinator {
@@ -380,6 +383,30 @@ impl FaultyCoordinator {
             fault,
             inner: ChangeCoordinator::new(window, reload.clone()),
             reload,
+            window,
+            pending: Vec::new(),
+        }
+    }
+
+    /// A recovery that marks nothing. `ChangeCoordinator::watcher_ready` accepts start-up
+    /// readiness only (FORMAL-10), so the fault is built from the public commands: a fresh
+    /// coordinator on the same reload state reports start-up readiness, which marks
+    /// nothing, and is given again the changes the degraded one held, at their times, so it
+    /// holds exactly them; the recovery event is reported as the real one would.
+    fn recover_unmarked(&mut self, dirs: usize) -> Result<Vec<DomainEvent>, WatcherHealthRefusal> {
+        let mut fresh = ChangeCoordinator::new(self.window, self.reload.clone());
+        fresh.watcher_ready(dirs)?;
+        for (batch, at) in &self.pending {
+            let _received = fresh.receive(batch.clone(), *at);
+        }
+        self.inner = fresh;
+        Ok(vec![DomainEvent::WatcherRecovered])
+    }
+
+    /// Forgets the changes received once the debouncer is clean again.
+    fn forget_settled(&mut self) {
+        if self.inner.deadline().is_none() {
+            self.pending.clear();
         }
     }
 }
@@ -412,12 +439,17 @@ impl Coordinator for FaultyCoordinator {
                     events: Vec::new(),
                 })
             }
+            (WatcherFault::UnmarkedRecovery, ChangeBatch::Events(_) | ChangeBatch::Overflow) => {
+                self.pending.push((batch.clone(), now));
+                self.inner.receive(batch, now)
+            }
             _ => self.inner.receive(batch, now),
         }
     }
 
     fn settle(&mut self, now: Tick) -> SettleOutcome {
         let mut outcome = self.inner.settle(now);
+        self.forget_settled();
         if self.fault == WatcherFault::NoRescanFlag
             && let Some(settled) = &mut outcome.settled
         {
@@ -435,8 +467,10 @@ impl Coordinator for FaultyCoordinator {
         dirs: usize,
         now: Tick,
     ) -> Result<Vec<DomainEvent>, WatcherHealthRefusal> {
-        if self.fault == WatcherFault::UnmarkedRecovery {
-            return self.inner.watcher_ready(dirs);
+        if self.fault == WatcherFault::UnmarkedRecovery
+            && matches!(self.inner.health(), WatcherHealth::Degraded { .. })
+        {
+            return self.recover_unmarked(dirs);
         }
         self.inner.watcher_reconciled(dirs, now)
     }

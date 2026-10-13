@@ -204,7 +204,7 @@ model = "watcher_traces.qnt"
 main = "watcherTraces"
 init = "initUnwatchable"
 step = "recoveryAloneReloads"
-max_steps = 10
+max_steps = 8
 seed = "0x5ce1"
 invariant = "allInvariants"
 
@@ -245,5 +245,35 @@ main = "watcherTraces"
 init = "init"
 step = "shutdownDropsPending"
 max_steps = 5
+seed = "0x5ce1"
+invariant = "allInvariants"
+
+[[trace]]
+file = "watcher-startupFailureBeforeOverflow.itf.json"
+model = "watcher_traces.qnt"
+main = "watcherTraces"
+init = "initUnwatchable"
+step = "startupFailureBeforeOverflow"
+max_steps = 9
+seed = "0x5ce1"
+invariant = "allInvariants"
+
+[[trace]]
+file = "watcher-startupCapDefersReadiness.itf.json"
+model = "watcher_traces.qnt"
+main = "watcherTraces"
+init = "initCapped"
+step = "startupCapDefersReadiness"
+max_steps = 6
+seed = "0x5ce1"
+invariant = "allInvariants"
+
+[[trace]]
+file = "watcher-rootRemovalEscalates.itf.json"
+model = "watcher_traces.qnt"
+main = "watcherTraces"
+init = "initUnwatchable"
+step = "rootRemovalEscalates"
+max_steps = 6
 seed = "0x5ce1"
 invariant = "allInvariants"

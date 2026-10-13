@@ -4,7 +4,9 @@ Date: 2026-10-12
 
 ## Status
 
-Proposed (planner default — owner may override)
+Proposed (planner default — owner may override). The order of `next` is amended by
+[ADR 0067](0067-root-removal-and-watcher-review-fixes.md): the start-up registration failure
+comes first, before `Overflow`.
 
 ## Context
 

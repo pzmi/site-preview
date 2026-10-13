@@ -41,8 +41,11 @@ without a model change fails it too, wherever the model observes the difference.
 - **Watcher:** the operating system's notifications (modify, create, delete, rename, atomic
   save, temp-file writes, `.git` changes, directory and root deletion and recreation,
   duplicates, reordering, queue overflow, runtime failure) come from the trace's own
-  environment. The driver turns the bridge's delivery into `receive(k, capped)`, a due
-  deadline into `settle`, and a reconcile into `watcher_reconciled` or `watcher_failed`.
+  environment, and so does the start-up (every directory watched, `d` unwatchable, or `d`'s
+  registration past the relisting cap). The driver turns the bridge's delivery into
+  `receive(k, capped)`, a due deadline into `settle`, and a reconcile into
+  `watcher_reconciled`, `watcher_failed(RegistrationFailed)` or, with the root gone,
+  `watcher_failed(RootRemoved)` ([ADR 0067](adr/0067-root-removal-and-watcher-review-fixes.md)).
 - **Reload:** `publish` and `publishHot` (synthetic change sets per kind), `connect`, `send`,
   `disconnect`, `userReload`, `receive`, `stopServer` and `startServer` (a new instance).
 
@@ -76,8 +79,9 @@ Everything is read from the real code and projected into the model's terms:
 | watcher | `onlyEligibleTriggerReload` | Only notifications naming a served entry, or an overflow, make a reload pending |
 | watcher | `noLostEligibleChange` | A settled pipeline has published every change it saw; once `Watching`, nothing is pending |
 | watcher | `boundedReloadsPerBurst` | One revision per burst, after a quiet window, however many duplicates it absorbs |
-| watcher | `failureIsExplicit` | Live reload is claimed only with every eligible directory watched; each degradation and recovery is announced once |
+| watcher | `failureIsExplicit` | Live reload is claimed only with every eligible directory watched; a registration failure is claimed only while a directory is outstanding; each degradation and recovery is announced once, the one escalation to a root removal included |
 | watcher | `overflowRescans` | An overflow leads to a full reconcile and a full revision |
+| watcher | `noLiveClaimWithoutRoot` | Once the source has delivered a root's deletion or replacement, the watcher is degraded with `RootRemoved`, and never otherwise (ADR 0067) |
 | reload | `monotonicRevision` | Revisions and instances only move forward, on the server and on every connection |
 | reload | `noUncommittedClaim` | No event or baseline claims a state or change set that was not committed |
 | reload | `atMostOneReloadPerChange` | A client reacts at most once per change, and never to an unchanged server |
@@ -85,6 +89,21 @@ Everything is read from the real code and projected into the model's terms:
 | reload | `htmlChangeIsFull` | A change to an HTML or other page is a full reload everywhere |
 | reload | `hotApplyAdvancesBaseline` | A hot apply moves the baseline to what it applied; otherwise only navigation moves it |
 | reload | `drainedClientIsCurrent` | A client that handled every event is at the last state its connection announced |
+
+Some conjuncts hold by the model's own construction, and only the replay gives them teeth:
+they are model-internal consistency checks, kept because the replay compares the real code
+against the state they constrain after every step.
+
+- `overflowRescans`' `last.firedRescan implies last.fullDone`: `settle` sets `fullDone` from
+  the same `reconciledFully` flag that decides whether it runs the full reconcile, so a model
+  cannot violate it. The driver replays the reconcile from the real `settle` outcome's
+  `rescan` flag, and the `NoRescanFlag` control shows a coordinator that drops it is caught.
+- `boundedReloadsPerBurst`'s `revision <= cycles`, `cycles <= revision + 1` and
+  `(cycles == revision + 1) == deb.dirty`: `cycles` is counted at the debouncer's own
+  clean-to-dirty transitions, and a revision cleans it. The replay compares the real
+  revision and `dirty` flag with the model's, and the `LeadingEdge` and
+  `NoDuplicateSuppression` controls show a real coordinator that publishes more than once per
+  burst is caught. The conjunct with teeth in the model is `last.fired implies last.firedQuiet`.
 
 The reload model states its liveness separately: `reconnectObservesNewer` under `fairness`
 and `channelAvailable` (`liveness`). Simulation does not check it, and neither does the
@@ -95,10 +114,21 @@ scheduled lane: see "Verification baseline" for what was tried.
 - **Lifecycle:** the drain, and the forced exit at a second signal, inside `JoinTasks`
   (ADR 0045); the domain machine's stop-during-start-up states, unreachable through `Server`
   (ADR 0051), so `lifecycleMachineScenarios` runs under `quint test` but is not replayed.
+- **Lifecycle:** `Failed` is terminal. It is the state of one `Server` whose bind failed:
+  `Server::start` returns the error and no handle, so nothing can restart it, and the binary
+  exits 1. A library caller that calls `Server::start` again gets a new machine from
+  `Stopped` with nothing held (`failedStartupHoldsNothing`), whose states are those the
+  model reaches from `init`; modelling it would only lengthen traces.
+- **Lifecycle:** the binary's signal path is not modelled: `preview-cli` turning SIGINT and
+  SIGTERM into a stop request, its exit codes, and the second signal's forced exit. The
+  model's `stopServer` is `Server::stop`; the signal path is pinned by the CLI's process tests
+  (`crates/preview-cli/tests/lifecycle.rs`) and composition's
+  `should_stop_at_once_when_second_stop_arrives_during_drain`.
 - **Watcher:** revision exhaustion, the 64-path cap, nesting below one directory level, a
   watcher that cannot be created, and `Closed` before shutdown. The adapter, the bridge and
   the pipeline task are restated by the driver, not driven. Their own tests and the
-  lifecycle driver cover them.
+  lifecycle driver cover them. How a root removal is detected (the root descriptor's identity
+  against the path) is the adapter's; the model has the outcome only.
 - **Reload:** the composition's `instance_id` (the driver numbers instances itself), and the
   browser client (its decision is read from the model; the client's `node:test` suite and the
   browser E2E tests cover it).
@@ -166,7 +196,7 @@ seed `0xf10`. Durations are Quint's own report and are an upper bound for a quie
 | lifecycle | `step` | 4 | no violation | 292 s |
 | lifecycle | `serverStep` | 2 | no violation | 228 s |
 | reload | `step` | 4 | no violation | 303 s |
-| watcher | `step` | 2 | no violation | 386 s |
+| watcher | `step` | 2 | no violation | 386 s (572 s after FORMAL-10's changes, re-measured alone) |
 
 Every conjunct of the model's `allInvariants` held in every state reachable within the depth,
 for every choice of every nondeterministic value (the conjuncts of `allInvariants`: lifecycle 6,
@@ -174,6 +204,25 @@ reload 7, watcher 5; Apalache splits the nested `and`s further). The whole bound
 simulation (seeds `0xf10`, `0x9e3779b97f4a8b25`, `0x3c6ef372fe95073a`; 5000 traces of 50 steps
 each, all five relations) found no violation either: 106 to 251 s per run, 638 s for the stage.
 No counterexample was found, so none was promoted.
+
+### What each bounded depth reaches
+
+A pass at depth `n` says nothing about states first reached after `n` steps. The shortest
+path to each witness (`val reaches*` in the model; the bounded relation's steps, `init` not
+counted), measured by simulating at increasing depths and checked against the named runs:
+
+| Model | Relation | Depth | Reached within the depth | Not reached |
+|:--|:--|--:|:--|:--|
+| lifecycle | `step` | 4 | `reachesStopAwaitingBind`, `reachesFailed` (2), `reachesServingWatched`, `reachesServingDegraded`, `reachesStopAwaitingWatcher` (3), `reachesOpenStream` (4) | none |
+| lifecycle | `serverStep` | 2 | `reachesServingWatched`, `reachesServingDegraded`, `reachesFailed` (1), `reachesOpenStream` (2) | `reachesStopAwaiting*` (unreachable under `serverStep`, ADR 0051) |
+| reload | `step` | 4 | `reachesRestart` (2), `reachesReload` (4) | `reachesCoalescedGap` (5), `reachesHotApply` (6) |
+| watcher | `step` | 2 | `reachesOverflow`, `reachesDegraded`, `reachesExcusedChange`, `reachesRootDeleted`, `reachesCappedStartupWatching` (1), `reachesSettledWithUnseenChange`, `reachesRootRemoved` (2) | `reachesRecovered`, `reachesRootRemovalEscalated` (3), `reachesPublish`, `reachesSettledAfterPublish` (4), `reachesRecoveredCaughtUp` (6) |
+
+So the watcher's bounded run never reaches a published revision, let alone a settled state
+after one, a recovery or a caught-up recovery: `noLostEligibleChange`'s interesting cases and
+every conjunct about a fired revision are checked there only on states before any publish.
+They are checked by the simulation (`formal-verify-simulate`, 50 steps) and the replay, not
+by Apalache. The same holds for the reload model's coalesced gaps and hot applies.
 
 The depths are shallow on purpose: Apalache's search grows about tenfold per step on these
 models (reload: 24 s at 3 steps, 246 s at 4; watcher: 227 s at 1 step, 483 s at 2, over 600 s

@@ -55,7 +55,9 @@ impl<'a> WatchStatus<'a> {
     pub(crate) fn of(start: &'a WatchStart) -> Self {
         match &start.unavailable {
             Some(reason) => Self::Unavailable { reason },
-            None if start.is_complete() => Self::Watching { dirs: start.dirs },
+            // A registration left to the full reconcile the source reports first is not
+            // partial: no directory failed, and nothing is warned about.
+            None if start.problems.is_empty() => Self::Watching { dirs: start.dirs },
             None => Self::Partial { dirs: start.dirs },
         }
     }
@@ -71,6 +73,9 @@ pub enum DegradedReason {
     RuntimeFailure,
     /// The revision counter is exhausted: live reload cannot resume until a restart.
     RevisionExhausted,
+    /// The site root was deleted, moved away or replaced: what is served no longer follows
+    /// its path, and live reload cannot resume until a restart (ADR 0067).
+    RootRemoved,
 }
 
 impl DegradedReason {
@@ -82,6 +87,7 @@ impl DegradedReason {
             Self::RegistrationFailed => "registration-failed",
             Self::RuntimeFailure => "runtime-failure",
             Self::RevisionExhausted => "revision-exhausted",
+            Self::RootRemoved => "root-removed",
         }
     }
 }
@@ -309,6 +315,7 @@ mod tests {
             dirs,
             problems: problems.iter().map(|p| (*p).to_owned()).collect(),
             unavailable: unavailable.map(str::to_owned),
+            deferred: false,
         };
         let complete = start(3, &[], None);
         let partial = start(

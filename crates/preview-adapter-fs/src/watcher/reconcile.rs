@@ -42,8 +42,14 @@
 //!   reconcile probes again. The set is complete only when that record is empty. A failure is
 //!   reported once, when it first appears or changes reason. A directory that vanished before
 //!   it could be watched is not a failure: its removal is a change of its own.
+//! - **The root itself.** Every reconcile first checks that the root path still names the
+//!   directory the root capability holds ([`root_removed`]). When it does not (the root was
+//!   deleted, moved away, or replaced by another directory at its path), nothing is walked or
+//!   registered, and the report says `root_removed`: a watch on the path would follow a
+//!   directory that is not served, and none can follow the served one (ADR 0067).
 
 use std::collections::BTreeSet;
+use std::path::Path;
 
 use preview_domain::{RelPath, WatchSet};
 
@@ -79,6 +85,28 @@ pub struct ReconcileReport {
     /// Whether every eligible directory is watched afterwards: no directory is outstanding
     /// from this or an earlier registration.
     pub complete: bool,
+    /// The root path no longer names the served directory (deleted, moved away or replaced):
+    /// nothing was reconciled, and live reload cannot work again until a restart (ADR 0067).
+    pub root_removed: bool,
+}
+
+/// Whether `display_root` no longer names the directory `root` holds: the directory was
+/// deleted (no link to it is left), or the path now names another object, or nothing. Pinned
+/// by `should_report_root_removed_when_root_is_deleted` and
+/// `should_report_root_removed_when_root_is_replaced_at_its_path`.
+///
+/// Identity is the device and inode pair, and a deleted directory is told by its link count:
+/// a file system may give a new directory the freed inode number at once, so the pair alone
+/// would take a root deleted and recreated for the original.
+pub(crate) fn root_removed(root: &RootDir, display_root: &Path) -> bool {
+    let Ok(held) = rustix::fs::fstat(root.as_fd()) else {
+        return false;
+    };
+    if held.st_nlink == 0 {
+        return true;
+    }
+    !rustix::fs::stat(display_root)
+        .is_ok_and(|named| (named.st_dev, named.st_ino) == (held.st_dev, held.st_ino))
 }
 
 /// The planned work of one call.
@@ -131,6 +159,7 @@ impl NotifyWatcher {
             watching: self.watched.len(),
             errors,
             complete: self.failed.is_empty() && !self.rescan_needed,
+            root_removed: false,
         }
     }
 

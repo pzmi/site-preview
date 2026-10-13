@@ -9,8 +9,11 @@
 //! and wakes the consumer; a runtime error is queued as a failure, and if that too finds the
 //! channel full a failure flag is set beside the overflow flag.
 //!
-//! [`NotifyChangeSource::next`] reports in this order: `Closed` once closed; `Overflow` while
-//! the overflow flag is set (clearing it); `Failed` while the failure flag is set; then the
+//! [`NotifyChangeSource::next`] reports in this order: `Closed` once closed; the start-up
+//! registration failure, once, before anything else (a loss reported first would run a full
+//! reconcile that may watch everything, and the stale failure after it would degrade a
+//! watcher with nothing outstanding, FORMAL-10); `Overflow` while the overflow flag is set
+//! (clearing it); `Failed` while the failure flag is set; then the
 //! queued messages, consecutive changes merged into one batch and a queued failure delivered
 //! on its own. A message received while the overflow flag is set may postdate the loss, so it
 //! is held back until the `Overflow` has been delivered: a loss is reported before any change
@@ -33,7 +36,7 @@ use tokio::sync::Notify;
 use tokio::sync::mpsc::{self, error::TryRecvError, error::TrySendError};
 
 use super::display_rel;
-use super::reconcile::{ReconcileHint, ReconcileReport};
+use super::reconcile::{ReconcileHint, ReconcileReport, root_removed};
 use super::registration::{NotifyWatcher, RegistrationError, WatchFault};
 use super::translate::{relative, translate};
 use crate::capability::RootDir;
@@ -81,13 +84,26 @@ pub struct StartReport {
     pub errors: Vec<RegistrationError>,
     /// Set when the native watcher could not be created at all; nothing is watched then.
     pub unavailable: Option<WatchFault>,
+    /// Set when the registration stopped at its relisting cap: eligible directories may be
+    /// unwatched until the full reconcile that the first batch (`Overflow`) asks for. Not a
+    /// failure: nothing is reported for it, but the watch set is not complete yet.
+    pub deferred: bool,
 }
 
 impl StartReport {
-    /// Whether every eligible directory is watched.
+    /// Whether every eligible directory is watched: no directory failed, the watcher exists,
+    /// and no registration was left to a full reconcile, as for [`ReconcileReport::complete`].
+    /// Pinned by `should_report_incomplete_start_without_failure_when_registration_passes_the_relisting_cap`.
     #[must_use]
     pub fn is_complete(&self) -> bool {
-        self.errors.is_empty() && self.unavailable.is_none()
+        !self.has_failures() && !self.deferred
+    }
+
+    /// Whether a directory could not be walked or watched, or the watcher could not be
+    /// created: the failures the first batch reports as `Failed(RegistrationFailed)`.
+    #[must_use]
+    pub fn has_failures(&self) -> bool {
+        !self.errors.is_empty() || self.unavailable.is_some()
     }
 }
 
@@ -173,6 +189,8 @@ impl notify::EventHandler for Bridge {
 pub struct NotifyChangeSource {
     receiver: mpsc::Receiver<Message>,
     flags: Arc<Flags>,
+    /// The start-up registration failure, not delivered yet; it goes before everything.
+    startup_failure: bool,
     held: Option<Message>,
     watcher: Option<NotifyWatcher>,
     closed: bool,
@@ -211,28 +229,38 @@ impl NotifyChangeSource {
         display_root: &Path,
         capacity: NonZeroUsize,
     ) -> (Self, StartReport) {
-        let (bridge, mut source) = Self::channel(display_root, capacity);
-        let report = match NotifyWatcher::start(root, display_root, bridge) {
+        let (bridge, source) = Self::channel(display_root, capacity);
+        source.adopt(NotifyWatcher::start(root, display_root, bridge))
+    }
+
+    /// Takes the native watcher start-up produced, or its failure, and reports what it set
+    /// up: a registration failure becomes the first batch, and a registration past the
+    /// relisting cap an `Overflow` (deferred, not failed).
+    pub(crate) fn adopt(
+        mut self,
+        started: Result<(NotifyWatcher, Vec<RegistrationError>), WatchFault>,
+    ) -> (Self, StartReport) {
+        let report = match started {
             Ok((watcher, errors)) => {
                 let report = StartReport {
                     watching: watcher.watched().len(),
                     errors,
                     unavailable: None,
+                    deferred: watcher.rescan_needed,
                 };
-                source.watcher = Some(watcher);
-                source.request_rescan_if_needed();
+                self.watcher = Some(watcher);
+                self.request_rescan_if_needed();
                 report
             }
             Err(fault) => StartReport {
                 watching: 0,
                 errors: Vec::new(),
                 unavailable: Some(fault),
+                deferred: false,
             },
         };
-        if !report.is_complete() {
-            source.held = Some(Message::Failed(SourceFailure::RegistrationFailed, None));
-        }
-        (source, report)
+        self.startup_failure = report.has_failures();
+        (self, report)
     }
 
     /// A source and the bridge that feeds it, with no watcher yet.
@@ -247,6 +275,7 @@ impl NotifyChangeSource {
         let source = Self {
             receiver,
             flags,
+            startup_failure: false,
             held: None,
             watcher: None,
             closed: false,
@@ -261,6 +290,7 @@ impl NotifyChangeSource {
     pub fn close(&mut self) {
         self.watcher = None;
         self.closed = true;
+        self.startup_failure = false;
         self.held = None;
         self.receiver.close();
     }
@@ -277,6 +307,10 @@ impl NotifyChangeSource {
     fn ready(&mut self) -> Option<ChangeBatch<ChangeEvent>> {
         if self.closed {
             return Some(ChangeBatch::Closed);
+        }
+        if core::mem::take(&mut self.startup_failure) {
+            self.last_failure = None;
+            return Some(ChangeBatch::Failed(SourceFailure::RegistrationFailed));
         }
         if self.flags.overflow.swap(false, Ordering::AcqRel) {
             return Some(ChangeBatch::Overflow);
@@ -363,6 +397,12 @@ impl NotifyChangeSource {
         hints: &BTreeSet<ReconcileHint>,
     ) -> ReconcileReport {
         let report = match &mut self.watcher {
+            Some(watcher) if root_removed(root, &watcher.display_root) => ReconcileReport {
+                watching: watcher.watched().len(),
+                errors: Vec::new(),
+                complete: false,
+                root_removed: true,
+            },
             Some(watcher) => watcher.reconcile(root, hints),
             None => ReconcileReport::default(),
         };
@@ -854,7 +894,7 @@ mod tests {
     fn should_deliver_registration_failure_then_closed_when_watcher_is_unavailable() {
         // given
         let (bridge, mut source) = source(8);
-        source.held = Some(Message::Failed(SourceFailure::RegistrationFailed, None));
+        source.startup_failure = true;
 
         // when
         drop(bridge);
@@ -865,6 +905,28 @@ mod tests {
             ChangeBatch::Failed(SourceFailure::RegistrationFailed)
         );
         assert_eq!(ready(&mut source), ChangeBatch::Closed);
+    }
+
+    #[test]
+    fn should_deliver_startup_failure_before_a_loss_when_both_are_pending() {
+        // given: the start-up failure, then a loss and a change before the first `next`
+        let (bridge, mut source) = source(8);
+        source.startup_failure = true;
+        bridge.handle(Ok(Event::new(EventKind::Other).set_flag(Flag::Rescan)));
+        bridge.handle(written("a.html"));
+
+        // when
+        let batches = [ready(&mut source), ready(&mut source), ready(&mut source)];
+
+        // then: the failure first, so the loss's full reconcile can only recover after it
+        assert_eq!(
+            batches,
+            [
+                ChangeBatch::Failed(SourceFailure::RegistrationFailed),
+                ChangeBatch::Overflow,
+                ChangeBatch::Events(vec![modified("a.html")]),
+            ]
+        );
     }
 
     #[test]

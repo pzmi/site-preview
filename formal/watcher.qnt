@@ -42,7 +42,10 @@
  * outstanding retry, so `Changed` and `Full` act alike on this tree), a watcher that cannot be
  * created at all, and `Closed` (only after shutdown here). A root deletion leaves the server
  * on the deleted directory, as the root capability does (plan.md section 5.3): nothing served
- * can change after it, and a directory recreated at the same path is not served.
+ * can change after it, and a directory recreated at the same path is not served. The next
+ * reconcile finds the root path no longer names the served directory and degrades with
+ * `RootRemoved` (ADR 0067), which nothing recovers: live reload is never claimed for a root
+ * that is gone (`noLiveClaimWithoutRoot`).
  */
 module watcher {
   // ---------------------------------------------------------------------------------------
@@ -59,8 +62,9 @@ module watcher {
   /// One raw change, `ChangeEvent`.
   type Notif = { kind: Kind, path: Path }
 
-  /// `SourceFailure`.
-  type Reason = RegistrationFailed | RuntimeFailure
+  /// `SourceFailure`: a registration failure, a runtime failure, or the served root no longer
+  /// at its path (ADR 0067).
+  type Reason = RegistrationFailed | RuntimeFailure | RootRemoved
 
   /// One message in the bridge's channel.
   type Msg = MEvent(Notif) | MFailed(Reason)
@@ -128,6 +132,8 @@ module watcher {
     fullSinceFire: bool,
     degradedEvents: int,
     recoveredEvents: int,
+    // Degradations reported while already degraded: the escalation to `RootRemoved`.
+    escalations: int,
   }
 
   /// What the last action did.
@@ -239,14 +245,21 @@ module watcher {
     | _ => false
   }
 
-  /// `ChangeCoordinator::degrade`: the first failure degrades and reports once; a further
-  /// failure while degraded is absorbed.
+  /// `ChangeCoordinator::degrade` (`WatcherHealth::step`): the first failure degrades and
+  /// reports once; a further failure while degraded is absorbed, except a root removal, which
+  /// escalates once (the user learns why live reload cannot come back) and then absorbs
+  /// everything (ADR 0067).
   pure def degrade(w: World, r: Reason): World =
-    if (isDegraded(w.health)) w
+    if (w.health == HDegraded(RootRemoved)) w
+    else if (isDegraded(w.health) and r != RootRemoved) w
     else {
       ...w,
       health: HDegraded(r),
-      ghost: { ...w.ghost, degradedEvents: w.ghost.degradedEvents + 1 },
+      ghost: {
+        ...w.ghost,
+        degradedEvents: w.ghost.degradedEvents + 1,
+        escalations: w.ghost.escalations + (if (isDegraded(w.health)) 1 else 0),
+      },
       last: { ...w.last, events: w.last.events.append(EvDegraded(r)) },
     }
 
@@ -256,9 +269,11 @@ module watcher {
   /// `ChangeCoordinator::watcher_reconciled`: a recovery after a failure is reported once,
   /// and the next revision is full (ADR 0054): a change made in a directory while it could
   /// not be watched was never notified, so only a full reload catches it up. Readiness from
-  /// `Starting` marks nothing (no spurious reload at start-up).
+  /// `Starting` marks nothing (no spurious reload at start-up). Readiness after a root
+  /// removal is refused (`WatcherHealth::step`): the health is unchanged.
   pure def ready(w: World): World =
-    if (isDegraded(w.health)) {
+    if (w.health == HDegraded(RootRemoved)) w
+    else if (isDegraded(w.health)) {
       ...w,
       health: HWatching,
       deb: markRecovered(w.deb, w.now),
@@ -297,6 +312,12 @@ module watcher {
 
   pure def emit(w: World, ns: List[Notif]): World = ns.foldl(w, (acc, n) => emitOne(acc, n))
 
+  /// A registration failure reported at start-up that the pipeline has not received yet. Only
+  /// start-up queues one, first, and nothing moves a failure (`duplicate` and `reorder` touch
+  /// changes only), so it is always the head of the queue.
+  pure def registrationFailureQueued(s: Src): bool =
+    s.queue.length() > 0 and s.queue[0] == MFailed(RegistrationFailed)
+
   /// How many event messages head the queue before a failure.
   pure def leadingEvents(q: List[Msg]): int =
     q.foldl({ n: 0, open: true }, (acc, m) => match m {
@@ -310,11 +331,17 @@ module watcher {
       | MFailed(_) => acc
     })
 
-  /// `NotifyChangeSource::next`: the overflow flag, then the failure flag, then a queued
-  /// failure alone or up to `k` consecutive queued changes as one batch (fewer than are
-  /// queued when the rest has not arrived yet).
+  /// `NotifyChangeSource::next`: the start-up registration failure first (held apart from
+  /// the channel in the code; here the head of the queue, the only place it can be), then the
+  /// overflow flag, then the failure flag, then a queued failure alone or up to `k`
+  /// consecutive queued changes as one batch (fewer than are queued when the rest has not
+  /// arrived yet). The start-up failure goes first so that an overflow's reconcile cannot
+  /// report readiness before it and leave it to degrade a watcher with every directory
+  /// watched (FORMAL-10).
   pure def nextBatch(s: Src, k: int): (Batch, Src) =
-    if (s.overflow) (BOverflow, { ...s, overflow: false })
+    if (registrationFailureQueued(s))
+      (BFailed(RegistrationFailed), { ...s, queue: s.queue.slice(1, s.queue.length()) })
+    else if (s.overflow) (BOverflow, { ...s, overflow: false })
     else if (s.failure) (BFailed(RuntimeFailure), { ...s, failure: false })
     else if (s.queue.length() == 0) (BNone, s)
     else match s.queue[0] {
@@ -328,10 +355,6 @@ module watcher {
         )
       }
     }
-
-  /// A registration failure reported at start-up that the pipeline has not received yet.
-  pure def registrationFailureQueued(s: Src): bool =
-    s.queue.indices().exists(i => s.queue[i] == MFailed(RegistrationFailed))
 
   // ---------------------------------------------------------------------------------------
   // The reconcile (ADR 0050) and how composition reports it.
@@ -348,8 +371,10 @@ module watcher {
 
   /// `WatchControl::reconcile`: `d` is dropped when gone, registered when it exists without
   /// a watch, kept outstanding (reported once) when it cannot be watched; `capped` is a
-  /// registration that passed the relisting cap. With the root gone nothing can be watched:
-  /// no readiness and no problem.
+  /// registration that passed the relisting cap. With the root gone (deleted, or replaced by
+  /// another directory at its path) nothing is walked or registered, and the watcher degrades
+  /// with `RootRemoved` (ADR 0067): the served descriptor is no longer the root path, so no
+  /// watch could ever report what is served again.
   pure def reconcile(w0: World, full: bool, capped: bool): World = {
     val w = {
       ...w0,
@@ -357,7 +382,7 @@ module watcher {
       ghost: { ...w0.ghost, fullSinceFire: w0.ghost.fullSinceFire or full },
     }
     val s = w.src
-    if (not(w.fs.rootPresent)) w
+    if (not(w.fs.rootPresent)) degrade(w, RootRemoved)
     else if (not(w.fs.dPresent))
       reconciled(w, s.watched.exclude(Set(DirD)), s.outstanding.exclude(Set(DirD)), false, false)
     else if (s.watched.contains(DirD))
@@ -533,8 +558,13 @@ module watcher {
   /// After start-up (`start_watcher`, then `watcher_ready` when complete): the root and `d`
   /// are watched and the health is `Watching`; or `d` could not be watched, the health is
   /// still `Starting` and the source's first message is `Failed(RegistrationFailed)` (held
-  /// ahead of the channel in the code; here it takes one of the `CAP` slots).
-  action initWith(dUnwatchable: bool): bool = {
+  /// ahead of the channel in the code; here it takes one of the `CAP` slots); or (`capped`)
+  /// the registration of `d` passed the relisting cap, so `d` is left to the full reconcile
+  /// of the `Overflow` the source reports first, and the health stays `Starting` until that
+  /// reconcile reports readiness: no failure, and no claim of live reload before every
+  /// directory is watched (`StartReport::is_complete`, FORMAL-10).
+  action initStartup(dUnwatchable: bool, capped: bool): bool = {
+    val deferred = capped and not(dUnwatchable)
     val w0: World = {
       now: 0,
       fs: {
@@ -546,14 +576,14 @@ module watcher {
       },
       src: {
         queue: if (dUnwatchable) [MFailed(RegistrationFailed)] else [],
-        overflow: false,
+        overflow: deferred,
         failure: false,
-        watched: if (dUnwatchable) Set(Root) else Set(Root, DirD),
+        watched: if (dUnwatchable or deferred) Set(Root) else Set(Root, DirD),
         outstanding: if (dUnwatchable) Set(DirD) else Set(),
         osDropping: false,
       },
       deb: CLEAN,
-      health: if (dUnwatchable) HStarting else HWatching,
+      health: if (dUnwatchable or deferred) HStarting else HWatching,
       revision: 0,
       reconciledFully: false,
       cancelled: false,
@@ -566,6 +596,7 @@ module watcher {
         fullSinceFire: false,
         degradedEvents: 0,
         recoveredEvents: 0,
+        escalations: 0,
       },
       last: {
         fired: false,
@@ -585,9 +616,13 @@ module watcher {
     commit(w0)
   }
 
+  /// Start-up without a relisting cap.
+  action initWith(dUnwatchable: bool): bool = initStartup(dUnwatchable, false)
+
   action init = {
     nondet dUnwatchable = oneOf(Set(false, true))
-    initWith(dUnwatchable)
+    nondet capped = oneOf(Set(false, true))
+    initStartup(dUnwatchable, capped)
   }
 
   // ---------------------------------------------------------------------------------------
@@ -896,7 +931,9 @@ module watcher {
 
   /// Duplicates and bursts cannot cause a reload storm: exactly one revision per burst (a
   /// clean-to-dirty cycle of the debouncer, however many changes, duplicates and reorderings
-  /// it absorbs), and a revision only after a quiet window since the latest change.
+  /// it absorbs), and a revision only after a quiet window since the latest change. The three
+  /// `cycles` conjuncts hold by construction (`cycles` counts the debouncer's own clean-to-dirty
+  /// transitions): model-internal checks that the replay gives teeth (doc/formal-models.md).
   val boundedReloadsPerBurst = and {
     revision <= ghost.cycles,
     ghost.cycles <= revision + 1,
@@ -906,13 +943,18 @@ module watcher {
 
   /// A watcher failure goes through explicit error and recovery handling: live reload is
   /// claimed only with every eligible directory watched; a directory that cannot be watched
-  /// is reported (degraded, or the start-up failure is queued); every degradation and every
-  /// recovery is announced exactly once (no silent change of health, no event storm).
+  /// is reported (degraded, or the start-up failure is queued); a registration failure is
+  /// claimed only while a directory is outstanding (never a stale one, delivered after a
+  /// reconcile that watched everything); every degradation and every recovery is announced
+  /// exactly once (no silent change of health, no event storm), the one escalation to a root
+  /// removal included.
   val failureIsExplicit = and {
     health == HWatching implies src.outstanding == Set(),
     (not(cancelled) and src.outstanding != Set()) implies
       (isDegraded(health) or registrationFailureQueued(src)),
-    ghost.degradedEvents == ghost.recoveredEvents + (if (isDegraded(health)) 1 else 0),
+    health == HDegraded(RegistrationFailed) implies src.outstanding != Set(),
+    ghost.degradedEvents == ghost.recoveredEvents + ghost.escalations + (if (isDegraded(health)) 1 else 0),
+    ghost.escalations <= 1,
     (isDegraded(health) and not(isDegraded(last.healthBefore))) implies
       last.events.indices().exists(i => match last.events[i] { | EvDegraded(_) => true | _ => false }),
     (isDegraded(last.healthBefore) and not(isDegraded(health))) implies last.events.indices().exists(i => last.events[i] == EvRecovered),
@@ -921,10 +963,21 @@ module watcher {
 
   /// An overflow means a full rescan and at least one reload: a rescan request keeps the
   /// debouncer dirty with a full set, and its revision is full and preceded by a full
-  /// reconcile.
+  /// reconcile. `fullDone` is set from the flag that decides the reconcile, so its conjunct
+  /// holds by construction and has teeth only in the replay (doc/formal-models.md).
   val overflowRescans = and {
     deb.rescan implies (deb.full and deb.dirty),
     last.firedRescan implies (last.firedFull and last.fullDone),
+  }
+
+  /// Live reload is never claimed for a root that is gone (plan.md section 8.4: the tool
+  /// "must not claim live reload is active when notifications are unavailable"): once the
+  /// source has delivered everything (the root's own removal, or the loss that hid it), a
+  /// deleted or replaced root has degraded the watcher with `RootRemoved`, and it stays so.
+  val noLiveClaimWithoutRoot = and {
+    (not(cancelled) and not(fs.rootPresent) and src.queue == [] and not(src.overflow) and not(src.failure))
+      implies health == HDegraded(RootRemoved),
+    fs.rootPresent implies health != HDegraded(RootRemoved),
   }
 
   /// Every invariant at once.
@@ -934,6 +987,7 @@ module watcher {
     boundedReloadsPerBurst,
     failureIsExplicit,
     overflowRescans,
+    noLiveClaimWithoutRoot,
   }
 
   // ---------------------------------------------------------------------------------------
@@ -953,4 +1007,11 @@ module watcher {
   /// No reachable state satisfies it now (`noLostEligibleChange` forbids it).
   val reachesRecoveredWithStaleChange = settled and health == HWatching and ghost.pending != Set()
   val reachesRootDeleted = not(fs.rootPresent)
+  /// A root removal reported as such.
+  val reachesRootRemoved = health == HDegraded(RootRemoved)
+  /// A root removal reported after another degradation (the escalation).
+  val reachesRootRemovalEscalated = ghost.escalations > 0
+  /// Live after a full reconcile with no degradation since start-up: a start-up whose
+  /// registration passed the relisting cap reaches it in one step (its `Overflow`).
+  val reachesCappedStartupWatching = health == HWatching and ghost.degradedEvents == 0 and reconciledFully
 }

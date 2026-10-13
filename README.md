@@ -96,7 +96,9 @@ same state:
 {"event":"watcher","state":"watching"}
 ```
 
-`reason` is one of `registration-failed`, `runtime-failure` or `revision-exhausted`. A server
+`reason` is one of `registration-failed`, `runtime-failure`, `revision-exhausted` or
+`root-removed` (the site root was deleted, moved or replaced; it never recovers, restart to
+serve the directory now at that path). A server
 whose watcher could not start follows `ready` with a `degraded` event naming
 `registration-failed`. New fields may be added to either event; do not rely on their order.
 
@@ -122,6 +124,7 @@ server keeps serving after each one. Page warnings are printed once per request 
 | `watch-unavailable` | Nothing can be watched (the native watcher could not start, or no directory could be registered): live reload is disabled and `Watching:` says so; pages are still served. |
 | `watch-failed` | The native watcher failed while running: live reload may miss changes until site-preview is restarted; pages are still served. Reported once until the watcher recovers. |
 | `reload-exhausted` | The revision counter ran out (after 2^64 - 1 reloads): live reload stops; pages are still served. |
+| `root-removed` | The site root was deleted, moved away or replaced by another directory at its path: live reload is no longer claimed, for good, and the server keeps serving the directory it opened at start-up (empty once deleted). Restart site-preview to serve what is at the path now. |
 
 ## HTTP contract
 
@@ -269,6 +272,9 @@ See [SECURITY.md](SECURITY.md) for scope and reporting, and [doc/security.md](do
   root are rejected even when they point inside it.
 - There is no polling fallback. Network mounts and some container file shares emit no native
   change events, and OS event queues can overflow; see [doc/runbook.md](doc/runbook.md).
+- The site root is opened once at start-up. Deleting, moving or replacing it stops live
+  reload (`root-removed`) and is not followed: a directory recreated at the same path is
+  served only after a restart.
 - Range requests get a full `200` response.
 - Source files are never modified, but HTML responses are rewritten for preview.
 - Your site's own scripts and assets may make external requests; site-preview itself makes

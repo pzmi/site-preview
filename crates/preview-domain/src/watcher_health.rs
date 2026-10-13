@@ -7,9 +7,11 @@
 //!
 //! Events are bounded: entering `Degraded` emits one `WatcherDegraded`, and further failures
 //! while degraded are absorbed, so a flapping or repeating failure cannot produce an event
-//! storm. The one exception is an escalation to [`DegradeReason::RevisionExhausted`], which is
-//! reported once and is absorbing: with no revision left to publish, live reload can never
-//! recover, so a later `Ready` is refused rather than reported as a recovery. A `Ready` that
+//! storm. The exceptions are the two permanent reasons, each an escalation reported once:
+//! [`DegradeReason::RootRemoved`] (the served root is no longer at its path, ADR 0067), which
+//! then absorbs every failure but exhaustion, and [`DegradeReason::RevisionExhausted`], which
+//! absorbs everything. With either, live reload can never recover, so a later `Ready` is
+//! refused rather than reported as a recovery. A `Ready` that
 //! registered no directory is refused in every state: the root is always watched, so zero
 //! directories means registration did not happen, and `Watching` must never be claimed for
 //! it. Pinned by `should_hold_health_invariants_when_inputs_are_random`.
@@ -96,21 +98,22 @@ impl WatcherHealth {
     ///
     /// Pinned by `should_degrade_once_when_watcher_fails_repeatedly`,
     /// `should_recover_when_ready_after_degraded`,
-    /// `should_refuse_recovery_when_revisions_are_exhausted` and
+    /// `should_refuse_recovery_when_revisions_are_exhausted`,
+    /// `should_escalate_once_and_refuse_recovery_when_root_is_removed` and
     /// `should_refuse_ready_when_no_directory_is_watched`.
     ///
     /// # Errors
     /// [`WatcherHealthRefusal`] for `Ready { dirs: 0 }`, and for any `Ready` once degraded by
-    /// [`DegradeReason::RevisionExhausted`].
+    /// [`DegradeReason::RevisionExhausted`] or [`DegradeReason::RootRemoved`].
     pub fn step(self, input: WatcherInput) -> Result<HealthTransition, WatcherHealthRefusal> {
-        use DegradeReason::RevisionExhausted;
+        use DegradeReason::{RevisionExhausted, RootRemoved};
         let (next, event) = match (self, input) {
             (_, WatcherInput::Ready { dirs: 0 }) => {
                 return Err(WatcherHealthRefusal { state: self, input });
             }
             (
                 Self::Degraded {
-                    reason: RevisionExhausted,
+                    reason: RevisionExhausted | RootRemoved,
                 },
                 WatcherInput::Ready { .. },
             ) => return Err(WatcherHealthRefusal { state: self, input }),
@@ -132,6 +135,18 @@ impl WatcherHealth {
                     reason: RevisionExhausted,
                 },
             ) => degrade(RevisionExhausted),
+            (
+                Self::Degraded {
+                    reason: RootRemoved,
+                },
+                WatcherInput::Failed { .. },
+            ) => (self, None),
+            (
+                Self::Degraded { .. },
+                WatcherInput::Failed {
+                    reason: RootRemoved,
+                },
+            ) => degrade(RootRemoved),
             (Self::Degraded { .. }, WatcherInput::Failed { .. }) => (self, None),
             (Self::Starting | Self::Watching { .. }, WatcherInput::Failed { reason }) => {
                 degrade(reason)
@@ -170,6 +185,7 @@ mod tests {
     const REGISTRATION: DegradeReason = DegradeReason::RegistrationFailed;
     const RUNTIME: DegradeReason = DegradeReason::RuntimeFailure;
     const EXHAUSTED: DegradeReason = DegradeReason::RevisionExhausted;
+    const ROOT_REMOVED: DegradeReason = DegradeReason::RootRemoved;
     const NO_DIRS: WatcherInput = WatcherInput::Ready { dirs: 0 };
     const WATCHING_NOTHING: WatcherHealth = WatcherHealth::Watching { dirs: 0 };
 
@@ -290,6 +306,58 @@ mod tests {
     }
 
     #[test]
+    fn should_escalate_once_and_refuse_recovery_when_root_is_removed() {
+        // given
+        let mut health = WatcherHealth::Degraded {
+            reason: REGISTRATION,
+        };
+        // when
+        let escalated = health.apply(failed(ROOT_REMOVED));
+        let repeated = health.apply(failed(ROOT_REMOVED));
+        let other = health.apply(failed(RUNTIME));
+        let ready = health.apply(WatcherInput::Ready { dirs: 2 });
+        let exhausted = health.apply(failed(EXHAUSTED));
+        // then
+        assert_eq!(
+            escalated.map(|t| t.event),
+            Ok(Some(DomainEvent::WatcherDegraded {
+                reason: ROOT_REMOVED
+            }))
+        );
+        assert_eq!(repeated.map(|t| t.event), Ok(None));
+        assert_eq!(other.map(|t| t.event), Ok(None));
+        assert_eq!(
+            ready,
+            Err(WatcherHealthRefusal {
+                state: WatcherHealth::Degraded {
+                    reason: ROOT_REMOVED
+                },
+                input: WatcherInput::Ready { dirs: 2 }
+            })
+        );
+        assert_eq!(
+            exhausted.map(|t| t.event),
+            Ok(Some(DomainEvent::WatcherDegraded { reason: EXHAUSTED }))
+        );
+    }
+
+    #[test]
+    fn should_degrade_with_root_removed_when_watching() {
+        // given
+        let mut health = WatcherHealth::Watching { dirs: 3 };
+        // when
+        let transition = health.apply(failed(ROOT_REMOVED));
+        // then
+        assert_eq!(
+            transition.map(|t| t.event),
+            Ok(Some(DomainEvent::WatcherDegraded {
+                reason: ROOT_REMOVED
+            }))
+        );
+        assert!(!health.is_live());
+    }
+
+    #[test]
     fn should_claim_live_reload_only_when_watching() {
         // given
         let states = [
@@ -338,7 +406,12 @@ mod tests {
     }
 
     fn any_reason() -> impl Strategy<Value = DegradeReason> {
-        prop_oneof![Just(REGISTRATION), Just(RUNTIME), Just(EXHAUSTED)]
+        prop_oneof![
+            Just(REGISTRATION),
+            Just(RUNTIME),
+            Just(EXHAUSTED),
+            Just(ROOT_REMOVED)
+        ]
     }
 
     fn any_input() -> impl Strategy<Value = WatcherInput> {
@@ -362,10 +435,11 @@ mod tests {
                 let result = health.apply(input);
                 // then
                 let exhausted_before = before == WatcherHealth::Degraded { reason: EXHAUSTED };
+                let removed_before = before == WatcherHealth::Degraded { reason: ROOT_REMOVED };
                 match result {
                     Err(refusal) => {
                         prop_assert!(is_ready(input));
-                        prop_assert!(exhausted_before || input == NO_DIRS);
+                        prop_assert!(exhausted_before || removed_before || input == NO_DIRS);
                         prop_assert_eq!(refusal.state, before);
                         prop_assert_eq!(health, before);
                     }
@@ -375,7 +449,11 @@ mod tests {
                             Some(DomainEvent::WatcherDegraded { reason }) => {
                                 degraded += 1;
                                 prop_assert_eq!(next, WatcherHealth::Degraded { reason });
-                                prop_assert!(!is_degraded(before) || reason == EXHAUSTED);
+                                prop_assert!(
+                                    !is_degraded(before)
+                                        || reason == EXHAUSTED
+                                        || (reason == ROOT_REMOVED && !exhausted_before)
+                                );
                             }
                             Some(DomainEvent::WatcherRecovered) => {
                                 recovered += 1;
@@ -392,8 +470,11 @@ mod tests {
                 if exhausted_before {
                     prop_assert_eq!(health, before);
                 }
+                if removed_before {
+                    prop_assert!(is_degraded(health));
+                }
                 prop_assert!(health != WATCHING_NOTHING);
-                prop_assert!(degraded <= recovered + 2);
+                prop_assert!(degraded <= recovered + 3);
                 prop_assert!(recovered <= degraded);
             }
         }

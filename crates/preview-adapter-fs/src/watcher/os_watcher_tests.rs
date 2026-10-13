@@ -1049,3 +1049,80 @@ fn should_probe_the_watch_limit_again_when_reconciling_fully() {
     assert!(report.complete, "{report:?}");
     assert_eq!(names(watcher.watched().iter().cloned()), ["", "docs"]);
 }
+
+#[test]
+fn should_report_root_removed_when_root_is_deleted() {
+    // given: a running source over a root with a subdirectory
+    let (_base, root) = site();
+    fs::create_dir(root.join("docs")).expect("create docs");
+    let site = open_site_root(&root).expect("open root");
+    let (mut source, report) = NotifyChangeSource::start(&site.dir, &site.display_path);
+    assert!(report.is_complete(), "{report:?}");
+    let before = source.reconcile_full(&site.dir);
+
+    // when: `rm -r` of the root, then the reconcile its removals ask for
+    fs::remove_dir_all(&site.display_path).expect("remove the root");
+    let changed = source.reconcile_changed(&site.dir);
+    let full = source.reconcile_full(&site.dir);
+
+    // then
+    assert!(!before.root_removed && before.complete, "{before:?}");
+    for report in [&changed, &full] {
+        assert!(report.root_removed, "{report:?}");
+        assert!(!report.complete, "{report:?}");
+        assert!(report.errors.is_empty(), "{report:?}");
+    }
+}
+
+#[test]
+fn should_report_root_removed_when_root_is_replaced_at_its_path() {
+    // given
+    let (base, root) = site();
+    let site = open_site_root(&root).expect("open root");
+    let (mut source, _report) = NotifyChangeSource::start(&site.dir, &site.display_path);
+
+    // when: the served directory is moved away and a new one takes its path
+    fs::rename(&site.display_path, base.path().join("moved")).expect("move the root away");
+    fs::create_dir(&site.display_path).expect("a new directory at the root's path");
+    fs::create_dir(site.display_path.join("docs")).expect("a directory inside it");
+    let full = source.reconcile_full(&site.dir);
+
+    // then: the new directory is neither served nor watched
+    assert!(full.root_removed, "{full:?}");
+    assert!(!full.complete, "{full:?}");
+    assert!(watching_none(&source, &["docs"]), "{:?}", source.watched());
+}
+
+#[test]
+fn should_report_incomplete_start_without_failure_when_registration_passes_the_relisting_cap() {
+    // given: `a` gains three children between its listing and its watch, and the second
+    // listings of the start-up registration may queue one of them
+    let (_base, root) = site();
+    fs::create_dir(root.join("a")).expect("create a");
+    let site = open_site_root(&root).expect("open root");
+    let traversal = eligible_dirs(&site.dir, &RelPath::root()).expect("traverse");
+    let (bridge, source) =
+        NotifyChangeSource::channel(&site.display_path, crate::watcher::DEFAULT_CAPACITY);
+    let mut watcher = NotifyWatcher::new(&site.display_path, bridge).expect("create watcher");
+    watcher.relist_cap = 1;
+    let a = site.display_path.join("a");
+    watcher.before_watch = Some(Box::new(move |dir: &RelPath| {
+        if *dir == rel("a") {
+            for n in 0..3 {
+                fs::create_dir_all(a.join(format!("n{n}"))).expect("create in the window");
+            }
+        }
+    }));
+    let errors = watcher.register(&site.dir, traversal);
+
+    // when
+    let (mut source, report) = source.adopt(Ok((watcher, errors)));
+
+    // then: not complete, no failure, and the loss first, so its full reconcile finishes it
+    assert!(report.deferred, "{report:?}");
+    assert!(!report.has_failures(), "{report:?}");
+    assert!(!report.is_complete(), "{report:?}");
+    assert_eq!(poll_next(&mut source), Some(ChangeBatch::Overflow));
+    let full = source.reconcile_full(&site.dir);
+    assert!(full.complete, "{full:?}");
+}

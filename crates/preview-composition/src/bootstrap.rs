@@ -41,12 +41,17 @@ pub(crate) struct WatchStart {
     /// Why nothing is watched: the native watcher could not be created, or not one
     /// directory could be registered.
     pub unavailable: Option<String>,
+    /// The registration stopped at its relisting cap: some directories wait for the full
+    /// reconcile of the source's first batch (`Overflow`). Not a failure.
+    pub deferred: bool,
 }
 
 impl WatchStart {
-    /// Whether every eligible directory is watched.
+    /// Whether every eligible directory is watched, so start-up may report readiness: no
+    /// problem, a watcher, and nothing deferred to a reconcile (FORMAL-10). Pinned by
+    /// `should_report_ready_at_start_only_when_nothing_is_deferred`.
     pub(crate) fn is_complete(&self) -> bool {
-        self.problems.is_empty() && self.unavailable.is_none()
+        self.problems.is_empty() && self.unavailable.is_none() && !self.deferred
     }
 }
 
@@ -110,6 +115,7 @@ pub(crate) fn start_watcher(root: &OpenedRoot) -> (impl WatchControl + use<>, Wa
             }
             None => None,
         },
+        deferred: report.deferred,
     };
     let watch = FsWatch {
         source,
@@ -140,8 +146,10 @@ fn describe(errors: &[RegistrationError]) -> Vec<String> {
 /// `should_report_ready_only_when_reconcile_is_complete`.
 fn reconciled(report: &ReconcileReport) -> Reconciled {
     Reconciled {
-        ready: (report.complete && report.watching > 0).then_some(report.watching),
+        ready: (report.complete && report.watching > 0 && !report.root_removed)
+            .then_some(report.watching),
         problems: describe(&report.errors),
+        root_removed: report.root_removed,
     }
 }
 
@@ -200,20 +208,29 @@ mod tests {
             watching: 3,
             errors: Vec::new(),
             complete: true,
+            root_removed: false,
         };
         let failing = ReconcileReport {
             watching: 2,
             errors: vec![failure("blog")],
             complete: false,
+            root_removed: false,
         };
         let still_incomplete = ReconcileReport {
             watching: 2,
             errors: Vec::new(),
             complete: false,
+            root_removed: false,
+        };
+        let root_gone = ReconcileReport {
+            watching: 2,
+            errors: Vec::new(),
+            complete: false,
+            root_removed: true,
         };
 
         // when
-        let answers = [&complete, &failing, &still_incomplete].map(reconciled);
+        let answers = [&complete, &failing, &still_incomplete, &root_gone].map(reconciled);
 
         // then
         assert_eq!(answers[0].ready, Some(3));
@@ -224,6 +241,30 @@ mod tests {
             ["cannot watch directory `blog`: permission denied"]
         );
         assert_eq!(answers[2], Reconciled::default());
+        assert_eq!(
+            answers[3],
+            Reconciled {
+                root_removed: true,
+                ..Reconciled::default()
+            }
+        );
+    }
+
+    #[test]
+    fn should_report_ready_at_start_only_when_nothing_is_deferred() {
+        // given
+        let start = |deferred| WatchStart {
+            dirs: 2,
+            problems: Vec::new(),
+            unavailable: None,
+            deferred,
+        };
+
+        // when
+        let complete = [start(false), start(true)].map(|s| s.is_complete());
+
+        // then
+        assert_eq!(complete, [true, false]);
     }
 
     #[test]

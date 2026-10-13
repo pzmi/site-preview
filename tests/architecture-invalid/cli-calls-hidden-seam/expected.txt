@@ -1,0 +1,3 @@
+rule: ARCH-hidden-seam
+at: crates/preview-cli/src/lib.rs:2
+contains: preview-cli names `start_with_unavailable_watcher`

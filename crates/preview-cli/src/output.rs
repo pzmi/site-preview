@@ -468,6 +468,7 @@ mod tests {
         let states = [
             WatcherState::Degraded(DegradedReason::RuntimeFailure),
             WatcherState::Degraded(DegradedReason::RevisionExhausted),
+            WatcherState::Degraded(DegradedReason::RootRemoved),
             WatcherState::Watching,
         ];
 
@@ -480,6 +481,7 @@ mod tests {
             [
                 r#"{"event":"watcher","state":"degraded","reason":"runtime-failure"}"#,
                 r#"{"event":"watcher","state":"degraded","reason":"revision-exhausted"}"#,
+                r#"{"event":"watcher","state":"degraded","reason":"root-removed"}"#,
                 r#"{"event":"watcher","state":"watching"}"#,
             ]
         );

@@ -11,7 +11,7 @@
 //!
 //! | Model action | Stimulus |
 //! |:--|:--|
-//! | `init`, `initUnwatchable` | a new coordinator and reload state at 0 ms; `watcher_ready(dirs)` when every directory is watched at start-up |
+//! | `init`, `initUnwatchable`, `initCapped` | a new coordinator and reload state at 0 ms; `watcher_ready(dirs)` when every directory is watched at start-up |
 //! | `receive(k, capped)` | the batch the bridge's `next` delivers from the previous state's `src` (`Overflow`, `Failed`, or up to `k` changes with real names) to [`ChangeCoordinator::receive`]; then the reconcile the outcome asks for |
 //! | `settle(capped)` | [`ChangeCoordinator::settle`]; then a full reconcile for a rescan revision unless one ran since the previous revision |
 //! | `tick` | the [`FakeClock`] moves [`TICK_MS`] |
@@ -20,7 +20,8 @@
 //!
 //! A reconcile reports what the watcher adapter would (ADR 0050, `reconciled` in composition's
 //! bootstrap), from the previous state's `fs` and `src` and the step's `capped`: with the root
-//! gone nothing; `d` gone or watched, or registered now, is readiness
+//! gone a root removal ([`ChangeCoordinator::watcher_failed`] with `RootRemoved`, ADR 0067);
+//! `d` gone or watched, or registered now, is readiness
 //! ([`ChangeCoordinator::watcher_reconciled`]); `d` newly unwatchable is a problem
 //! ([`ChangeCoordinator::watcher_failed`] with `RegistrationFailed`); `d` still unwatchable,
 //! or a registration past the relisting cap, is neither.
@@ -242,6 +243,7 @@ fn reason(value: &Value) -> Result<DegradeReason, ProjectionError> {
     Ok(match value.tag() {
         Some("RegistrationFailed") => DegradeReason::RegistrationFailed,
         Some("RuntimeFailure") => DegradeReason::RuntimeFailure,
+        Some("RootRemoved") => DegradeReason::RootRemoved,
         _ => return Err(ProjectionError(format!("{value} is not a failure reason"))),
     })
 }
@@ -249,6 +251,7 @@ fn reason(value: &Value) -> Result<DegradeReason, ProjectionError> {
 const fn source_failure(reason: DegradeReason) -> SourceFailure {
     match reason {
         DegradeReason::RuntimeFailure => SourceFailure::RuntimeFailure,
+        DegradeReason::RootRemoved => SourceFailure::RootRemoved,
         // The model's failures are a registration or a runtime failure only.
         DegradeReason::RegistrationFailed | DegradeReason::RevisionExhausted => {
             SourceFailure::RegistrationFailed
@@ -283,6 +286,8 @@ enum Reconcile {
     Ready(usize),
     /// A directory newly cannot be watched.
     Problem,
+    /// The root path no longer names the served directory (ADR 0067).
+    RootRemoved,
     /// Neither.
     Nothing,
 }
@@ -332,9 +337,13 @@ impl Env {
         }
     }
 
-    /// The bridge's `next` (`nextBatch` in the model): the overflow flag, then the failure
-    /// flag, then a queued failure alone or up to `k` consecutive queued changes as one batch.
+    /// The bridge's `next` (`nextBatch` in the model): the start-up registration failure (the
+    /// head of the queue), then the overflow flag, then the failure flag, then a queued
+    /// failure alone or up to `k` consecutive queued changes as one batch.
     fn next_batch(&self, k: usize) -> Option<ChangeBatch<ChangeEvent>> {
+        if let Some(Msg::Failed(DegradeReason::RegistrationFailed)) = self.queue.first() {
+            return Some(ChangeBatch::Failed(SourceFailure::RegistrationFailed));
+        }
         if self.overflow {
             return Some(ChangeBatch::Overflow);
         }
@@ -361,7 +370,7 @@ impl Env {
         let d = Entry::DirD;
         let without_d = self.watched.iter().filter(|e| **e != d).count();
         if !self.root_present {
-            Reconcile::Nothing
+            Reconcile::RootRemoved
         } else if !self.d_present {
             Reconcile::Ready(without_d)
         } else if self.watched.contains(&d) {
@@ -501,8 +510,9 @@ impl<C: Coordinator> WatcherDriver<C> {
         self.reconciled_fully = false;
         self.cancelled = false;
         // Start-up reports readiness only when every eligible directory is watched; otherwise
-        // the registration failure waits in the source (the model's first message).
-        if env.outstanding.is_empty() {
+        // the registration failure waits in the source (the model's first message), or the
+        // registration passed the relisting cap and waits for the `Overflow`'s full reconcile.
+        if env.outstanding.is_empty() && (!env.d_present || env.watched.contains(&Entry::DirD)) {
             let events = self
                 .coordinator
                 .watcher_ready(env.watched.len())
@@ -566,6 +576,10 @@ impl<C: Coordinator> WatcherDriver<C> {
                     .watcher_failed(SourceFailure::RegistrationFailed);
                 self.note(events);
             }
+            Reconcile::RootRemoved => {
+                let events = self.coordinator.watcher_failed(SourceFailure::RootRemoved);
+                self.note(events);
+            }
             Reconcile::Nothing => {}
         }
     }
@@ -583,7 +597,7 @@ impl<C: Coordinator> Driver for WatcherDriver<C> {
         };
         let env = self.env(index)?;
         match action {
-            "init" | "initUnwatchable" => {
+            "init" | "initUnwatchable" | "initCapped" => {
                 self.init(&env)?;
                 self.step.revision_before = self.revision();
             }

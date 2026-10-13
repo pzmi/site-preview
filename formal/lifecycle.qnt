@@ -36,6 +36,12 @@
  * exit is pinned by composition tests (`should_stop_at_once_when_second_stop_arrives_during_drain`).
  * A restart is a fresh `InStart` from `Stopped`; the real composition does it with a new
  * `Server` (a new process for the binary), since a stopped handle has given up its runtime.
+ * `Failed` is terminal (FORMAL-10 review): `Server::start` returns the bind error and no
+ * handle, and the binary exits 1, so nothing restarts a failed server; a caller that calls
+ * `Server::start` again gets a new machine from `Stopped` with nothing held
+ * (`failedStartupHoldsNothing`), whose states are exactly those reachable from `init`. The
+ * binary's signal path (SIGINT/SIGTERM to a stop, the exit codes) is not modelled either:
+ * `stopServer` is `Server::stop`.
  *
  * Where foundation.md's wording and the code differ, the model follows the code and ADR 0051:
  * a watcher failure during start-up is degraded serving (`Serving(false)`), not `Failed`,

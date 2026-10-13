@@ -1453,10 +1453,10 @@ mod tests {
                     .nth(1)
                     .and_then(|n| n.parse().ok())
                     .unwrap_or_else(|| panic!("{file}: no length above {name}: {comment}"));
-                let init = comment
-                    .contains("`initUnwatchable`")
-                    .then(|| "initUnwatchable".to_owned())
-                    .or_else(|| comment.contains("`init`").then(|| "init".to_owned()));
+                let init = ["initUnwatchable", "initCapped", "init"]
+                    .into_iter()
+                    .find(|init| comment.contains(&format!("`{init}`")))
+                    .map(str::to_owned);
                 scripts.push((file.clone(), name.to_owned(), steps, init));
             }
         }

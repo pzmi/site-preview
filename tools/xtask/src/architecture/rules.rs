@@ -144,6 +144,9 @@ rules! {
     ObservabilityIsolation => "ARCH-observability-isolation", "ARCH-09",
         "The domain names an instrumentation crate, or a tracing/log/observability/metrics value reaches a branch condition or returned value in domain or application code.",
         ["instrumentation-drives-decision"];
+    HiddenSeam => "ARCH-hidden-seam", "FORMAL-10",
+        "A crate other than preview-composition and preview-conformance names a #[doc(hidden)] item of preview-composition.",
+        ["cli-calls-hidden-seam"];
 }
 
 /// Compares the catalog with the negative fixtures in `dir`: every rule has fixtures, each

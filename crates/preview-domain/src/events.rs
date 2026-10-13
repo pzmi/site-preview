@@ -13,6 +13,10 @@ pub enum DegradeReason {
     /// The revision counter reached `u64::MAX`, so no further change can be published.
     /// Permanent: the watcher health never recovers from it.
     RevisionExhausted,
+    /// The served root directory is no longer at its path: deleted, moved away or replaced
+    /// (ADR 0067). Permanent: the server keeps serving through the descriptor it opened at
+    /// start-up, which no watch at that path can follow again, so only a restart helps.
+    RootRemoved,
 }
 
 /// A fact the domain reports; it carries no I/O handle and no wall-clock time.

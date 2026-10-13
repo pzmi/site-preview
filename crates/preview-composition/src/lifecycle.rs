@@ -565,6 +565,7 @@ impl<W: WatchControl, F: FnOnce(&OpenedRoot) -> (W, WatchStart)> Startup<'_, F> 
                     dirs: 0,
                     problems: Vec::new(),
                     unavailable: Some(WATCHER_PANICKED.to_owned()),
+                    deferred: false,
                 });
                 return LifecycleInput::WatcherFailed;
             }
@@ -644,6 +645,7 @@ impl<W: WatchControl, F: FnOnce(&OpenedRoot) -> (W, WatchStart)> Startup<'_, F> 
             dirs: 0,
             problems: Vec::new(),
             unavailable: Some(WATCHER_PANICKED.to_owned()),
+            deferred: false,
         };
         let watch = self.watch.as_ref().unwrap_or(&unknown);
         self.reporter.ready(&Ready {
@@ -851,6 +853,7 @@ mod tests {
                 dirs: usize::from(unavailable.is_none()),
                 problems: Vec::new(),
                 unavailable: unavailable.clone(),
+                deferred: false,
             };
             let live = unavailable.is_none();
             (FakeSource { live, closed }, start)
@@ -1034,6 +1037,7 @@ mod tests {
                 dirs: 1,
                 problems: Vec::new(),
                 unavailable: None,
+                deferred: false,
             };
             (Scripted(source), start)
         });

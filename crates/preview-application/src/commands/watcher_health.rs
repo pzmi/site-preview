@@ -7,7 +7,9 @@
 //! caller after the watcher adapter registered its directories, at startup or after a
 //! reconcile or a bounded retry: the source has no "recovered" batch (ADR 0040).
 
-use preview_domain::{DegradeReason, DomainEvent, Tick, WatcherHealthRefusal, WatcherInput};
+use preview_domain::{
+    DegradeReason, DomainEvent, Tick, WatcherHealth, WatcherHealthRefusal, WatcherInput,
+};
 
 use super::change_coordinator::ChangeCoordinator;
 use crate::ports::SourceFailure;
@@ -38,31 +40,41 @@ impl ChangeCoordinator {
             .collect()
     }
 
-    /// Reports that the watcher adapter has registered `dirs` directories.
-    ///
-    /// The first report after startup emits nothing; after a failure it is a recovery and
-    /// emits [`DomainEvent::WatcherRecovered`] once
-    /// (`should_emit_recovered_once_when_ready_after_failure`).
+    /// Reports that start-up registered `dirs` directories, every eligible one: the
+    /// coordinator moves from `Starting` to `Watching` and emits nothing
+    /// (`should_watch_silently_when_ready_at_startup`).
     ///
     /// # Errors
     ///
-    /// [`WatcherHealthRefusal`] once the revisions are exhausted: live reload can never
-    /// resume, so the caller logs the refusal and carries on; the health is unchanged
-    /// (`should_degrade_once_and_refuse_when_revisions_are_exhausted`). Also for `dirs == 0`:
-    /// the root is always watched, so no registered directory means no watch at all, and live
-    /// reload must not be claimed (`should_refuse_ready_when_nothing_was_registered`).
-    ///
-    /// This is the start-up report, made on a fresh coordinator. After a reconcile, report
-    /// readiness with [`watcher_reconciled`](Self::watcher_reconciled) instead, which also
-    /// catches up the changes a recovery may have missed.
+    /// [`WatcherHealthRefusal`] in any health but `Starting`, which is unchanged: this is the
+    /// start-up report only. Readiness after a reconcile goes through
+    /// [`watcher_reconciled`](Self::watcher_reconciled), which also makes the revision after a
+    /// recovery a full reload; accepting a recovery here would claim live reload again without
+    /// catching up the changes it missed (`should_refuse_startup_ready_when_not_starting`,
+    /// FORMAL-10). Also for `dirs == 0`: the root is always watched, so no registered
+    /// directory means no watch at all, and live reload must not be claimed
+    /// (`should_refuse_ready_when_nothing_was_registered`).
     pub fn watcher_ready(&mut self, dirs: usize) -> Result<Vec<DomainEvent>, WatcherHealthRefusal> {
-        let transition = self.health.apply(WatcherInput::Ready { dirs })?;
+        let input = WatcherInput::Ready { dirs };
+        if self.health != WatcherHealth::Starting {
+            return Err(WatcherHealthRefusal {
+                state: self.health,
+                input,
+            });
+        }
+        self.ready(input)
+    }
+
+    /// Feeds `input` (a `Ready`) to the health machine and returns its event.
+    fn ready(&mut self, input: WatcherInput) -> Result<Vec<DomainEvent>, WatcherHealthRefusal> {
+        let transition = self.health.apply(input)?;
         Ok(transition.event.into_iter().collect())
     }
 
     /// Reports, at `now`, that a reconcile left `dirs` directories registered and none
-    /// outstanding: [`watcher_ready`](Self::watcher_ready), and when that is a recovery the
-    /// next revision is a full reload, due a debounce window after `now` (ADR 0054).
+    /// outstanding: readiness, and when that is a recovery
+    /// ([`DomainEvent::WatcherRecovered`], once) the next revision is a full reload, due a
+    /// debounce window after `now` (ADR 0054).
     ///
     /// While a directory could not be watched, a change made inside it was never notified;
     /// the reload that follows the recovery is full because nothing else would publish that
@@ -74,13 +86,16 @@ impl ChangeCoordinator {
     ///
     /// # Errors
     ///
-    /// As [`watcher_ready`](Self::watcher_ready); a refusal marks nothing.
+    /// [`WatcherHealthRefusal`] once the revisions are exhausted or the root is removed: live
+    /// reload can never resume, so the caller carries on; the health is unchanged
+    /// (`should_degrade_once_and_refuse_when_revisions_are_exhausted`). Also for
+    /// `dirs == 0`, as [`watcher_ready`](Self::watcher_ready). A refusal marks nothing.
     pub fn watcher_reconciled(
         &mut self,
         dirs: usize,
         now: Tick,
     ) -> Result<Vec<DomainEvent>, WatcherHealthRefusal> {
-        let events = self.watcher_ready(dirs)?;
+        let events = self.ready(WatcherInput::Ready { dirs })?;
         if events.contains(&DomainEvent::WatcherRecovered) {
             self.debouncer.mark_recovered(now);
         }
@@ -159,12 +174,63 @@ mod tests {
         let mut c = coordinator();
         c.watcher_failed(SourceFailure::RegistrationFailed);
         // when
-        let first = c.watcher_ready(2).expect("accepted");
-        let second = c.watcher_ready(3).expect("accepted");
+        let first = c.watcher_reconciled(2, ms(0)).expect("accepted");
+        let second = c.watcher_reconciled(3, ms(10)).expect("accepted");
         // then
         assert_eq!(first, [DomainEvent::WatcherRecovered]);
         assert!(second.is_empty());
         assert_eq!(c.health(), WatcherHealth::Watching { dirs: 3 });
+    }
+
+    #[test]
+    fn should_refuse_startup_ready_when_not_starting() {
+        // given: one coordinator degraded, one already watching
+        let mut degraded = coordinator();
+        degraded.watcher_failed(SourceFailure::RegistrationFailed);
+        let mut watching = coordinator();
+        watching.watcher_ready(2).expect("accepted at start-up");
+        // when
+        let recovery = degraded.watcher_ready(3);
+        let again = watching.watcher_ready(3);
+        // then: neither moves; a recovery cannot skip the full reload `watcher_reconciled` marks
+        assert_eq!(
+            recovery,
+            Err(WatcherHealthRefusal {
+                state: WatcherHealth::Degraded {
+                    reason: DegradeReason::RegistrationFailed
+                },
+                input: WatcherInput::Ready { dirs: 3 }
+            })
+        );
+        assert_eq!(
+            degraded.health(),
+            WatcherHealth::Degraded {
+                reason: DegradeReason::RegistrationFailed
+            }
+        );
+        assert_eq!(degraded.deadline(), None);
+        assert!(again.is_err());
+        assert_eq!(watching.health(), WatcherHealth::Watching { dirs: 2 });
+    }
+
+    #[test]
+    fn should_refuse_recovery_when_root_is_removed() {
+        // given
+        let mut c = coordinator();
+        c.watcher_ready(2).expect("accepted");
+        // when
+        let removed = c.watcher_failed(SourceFailure::RootRemoved);
+        let recovery = c.watcher_reconciled(2, ms(0));
+        // then: degraded for good, and no full reload is marked by the refused readiness
+        assert_eq!(
+            removed,
+            [DomainEvent::WatcherDegraded {
+                reason: DegradeReason::RootRemoved
+            }]
+        );
+        assert!(recovery.is_err());
+        assert_eq!(c.deadline(), None);
+        assert!(!c.health().is_live());
     }
 
     #[test]

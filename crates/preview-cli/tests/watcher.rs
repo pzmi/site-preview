@@ -435,4 +435,35 @@ mod os_watcher {
             pending.len()
         );
     }
+
+    #[test]
+    fn should_report_root_removed_once_when_site_root_is_deleted() {
+        // given: a server watching a copy of the site
+        let site = Site::copy();
+        let server = PreviewProcess::start([OsStr::new("serve"), site.path().as_os_str()]);
+
+        // when: `rm -r` of the root
+        fs::remove_dir_all(site.path()).expect("the root is removed");
+
+        // then: the machine interface says live reload stopped, and why (ADR 0067)
+        let mut seen = Vec::new();
+        let reported = wait_until(DEADLINE, "a root-removed watcher event", || {
+            seen.extend(server.stdout().try_iter());
+            seen.iter()
+                .any(|line| line.contains(r#""reason":"root-removed""#))
+        });
+        assert!(reported.is_ok(), "stdout: {seen:?}");
+        assert!(
+            seen.contains(
+                &r#"{"event":"watcher","state":"degraded","reason":"root-removed"}"#.to_owned()
+            ),
+            "{seen:?}"
+        );
+        let stderr = server.stop_and_stderr();
+        let warned: Vec<_> = stderr
+            .iter()
+            .filter(|line| line.starts_with("site-preview: warning[root-removed]: "))
+            .collect();
+        assert_eq!(warned.len(), 1, "{stderr:?}");
+    }
 }

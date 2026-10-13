@@ -16,8 +16,9 @@
  *     --invariant allInvariants --out-itf formal/traces/regression/watcher-<script>.itf.json \
  *     formal/watcher_traces.qnt
  *
- * `<init>` is `init` (every directory watched at start-up, `initWith(false)`) or
- * `initUnwatchable` (`d` cannot be watched, `initWith(true)`), and `--max-steps` is the
+ * `<init>` is `init` (every directory watched at start-up, `initWith(false)`),
+ * `initUnwatchable` (`d` cannot be watched, `initWith(true)`) or `initCapped` (`d`'s
+ * registration passed the relisting cap, `initStartup(false, true)`), and `--max-steps` is the
  * script's length: both are in the comment above each script. A longer run would end in a
  * deadlock once the script is spent.
  */
@@ -35,6 +36,10 @@ module watcherTraces {
 
   /// `W::initWith(true)`: `d` cannot be watched, `Starting`, the failure queued.
   action initUnwatchable = all { W::initWith(true), pc' = 0 }
+
+  /// `W::initStartup(false, true)`: `d`'s registration passed the relisting cap, `Starting`,
+  /// the loss reported first.
+  action initCapped = all { W::initStartup(false, true), pc' = 0 }
 
   /// `W::receive`, with its arguments recorded as the picks `k` and `capped`, so the trace
   /// names the step `receive` as `step`'s traces do.
@@ -156,18 +161,16 @@ module watcherTraces {
     at(13, settle(false)),
   }
 
-  /// `watcherScenarios::recoveryAloneReloads`: `initUnwatchable`, 10 steps.
+  /// `watcherScenarios::recoveryAloneReloads`: `initUnwatchable`, 8 steps.
   action recoveryAloneReloads = any {
     at(0, receive(1, false)),
     at(1, W::modify(W::Sub)),
     at(2, W::freeWatch),
-    at(3, W::kernelQueue(true)),
-    at(4, W::modify(W::Index)),
-    at(5, W::kernelQueue(false)),
-    at(6, receive(1, false)),
-    at(7, W::tick),
-    at(8, W::tick),
-    at(9, settle(false)),
+    at(3, W::saveAtomically(W::Css)),
+    at(4, receive(4, false)),
+    at(5, W::tick),
+    at(6, W::tick),
+    at(7, settle(false)),
   }
 
   /// `watcherScenarios::runtimeFailureDegrades`: `init`, 6 steps.
@@ -189,6 +192,29 @@ module watcherTraces {
     at(4, receive(1, false)),
   }
 
+  /// `watcherScenarios::startupFailureBeforeOverflow`: `initUnwatchable`, 9 steps.
+  action startupFailureBeforeOverflow = any {
+    at(0, W::freeWatch),
+    at(1, W::kernelQueue(true)),
+    at(2, W::modify(W::Index)),
+    at(3, W::kernelQueue(false)),
+    at(4, receive(1, false)),
+    at(5, receive(1, false)),
+    at(6, W::tick),
+    at(7, W::tick),
+    at(8, settle(false)),
+  }
+
+  /// `watcherScenarios::startupCapDefersReadiness`: `initCapped`, 6 steps.
+  action startupCapDefersReadiness = any {
+    at(0, W::modify(W::Css)),
+    at(1, receive(1, false)),
+    at(2, receive(1, false)),
+    at(3, W::tick),
+    at(4, W::tick),
+    at(5, settle(false)),
+  }
+
   /// `watcherScenarios::rootDeleteRecreate`: `init`, 7 steps.
   action rootDeleteRecreate = any {
     at(0, W::rootDelete),
@@ -198,6 +224,16 @@ module watcherTraces {
     at(4, W::tick),
     at(5, W::tick),
     at(6, settle(false)),
+  }
+
+  /// `watcherScenarios::rootRemovalEscalates`: `initUnwatchable`, 6 steps.
+  action rootRemovalEscalates = any {
+    at(0, receive(1, false)),
+    at(1, W::rootDelete),
+    at(2, receive(4, false)),
+    at(3, W::tick),
+    at(4, W::tick),
+    at(5, settle(false)),
   }
 
   /// `watcherScenarios::shutdownDropsPending`: `init`, 5 steps.

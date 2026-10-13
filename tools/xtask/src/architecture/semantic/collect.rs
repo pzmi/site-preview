@@ -12,9 +12,9 @@ use syn::{Attribute, Item, Meta};
 use super::flow;
 use super::paths::{self, Scopes, TokenScan, Written, scan_tokens, use_leaves};
 use super::{
-    AttributeUse, Context, Facts, ImplMethod, MethodCall, MutParam, RefKind, Reference, Site,
-    TestFn, Unit, effective_metas, include_path, is_include, is_test_attribute, is_test_only,
-    non_literal, relative,
+    AttributeUse, Context, Facts, HiddenItem, ImplMethod, MethodCall, MutParam, RefKind, Reference,
+    Site, TestFn, Unit, effective_metas, include_path, is_doc_hidden, is_include,
+    is_test_attribute, is_test_only, non_literal, relative,
 };
 
 /// Collects the facts of one target into `facts`.
@@ -306,6 +306,17 @@ impl Collector<'_> {
         }
     }
 
+    /// Records `ident` as a hidden item when `attrs` hold `#[doc(hidden)]`.
+    fn hidden(&mut self, attrs: &[Attribute], ident: &syn::Ident) {
+        if is_doc_hidden(attrs) {
+            let site = self.site(ident.span().start().line);
+            self.facts.hidden.push(HiddenItem {
+                site,
+                name: paths::name(ident),
+            });
+        }
+    }
+
     fn method_call(&mut self, name: String, line: usize) {
         let site = self.site(line);
         self.facts.method_calls.push(MethodCall {
@@ -543,6 +554,7 @@ impl<'ast> Visit<'ast> for Collector<'_> {
     }
 
     fn visit_item_fn(&mut self, item: &'ast syn::ItemFn) {
+        self.hidden(&item.attrs, &item.sig.ident);
         self.decisions(&item.block, &item.sig.output);
         if item.attrs.iter().any(is_test_attribute) {
             let site = self.site(item.sig.ident.span().start().line);
@@ -557,8 +569,24 @@ impl<'ast> Visit<'ast> for Collector<'_> {
     }
 
     fn visit_impl_item_fn(&mut self, item: &'ast syn::ImplItemFn) {
+        self.hidden(&item.attrs, &item.sig.ident);
         self.decisions(&item.block, &item.sig.output);
         visit::visit_impl_item_fn(self, item);
+    }
+
+    fn visit_item_struct(&mut self, item: &'ast syn::ItemStruct) {
+        self.hidden(&item.attrs, &item.ident);
+        visit::visit_item_struct(self, item);
+    }
+
+    fn visit_item_enum(&mut self, item: &'ast syn::ItemEnum) {
+        self.hidden(&item.attrs, &item.ident);
+        visit::visit_item_enum(self, item);
+    }
+
+    fn visit_item_const(&mut self, item: &'ast syn::ItemConst) {
+        self.hidden(&item.attrs, &item.ident);
+        visit::visit_item_const(self, item);
     }
 
     fn visit_trait_item_fn(&mut self, item: &'ast syn::TraitItemFn) {

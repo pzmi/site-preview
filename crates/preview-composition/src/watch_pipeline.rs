@@ -44,6 +44,9 @@ pub(crate) struct Reconciled {
     /// One line per directory that newly cannot be walked or watched (relative paths only,
     /// at most ten named, the rest counted), each warned as `watch-registration-failed`.
     pub problems: Vec<String>,
+    /// The site root is no longer at its path (deleted, moved away or replaced): nothing was
+    /// reconciled, and the watcher degrades for good (ADR 0067).
+    pub root_removed: bool,
 }
 
 /// The change source as the pipeline drives it: the port plus the controls only the watcher
@@ -115,6 +118,13 @@ pub(crate) fn warning_for(
              restarted, pages are still served"
                 .to_owned(),
         )),
+        DegradeReason::RootRemoved => Some((
+            "root-removed",
+            "the site root was deleted, moved or replaced; live reload is unavailable and the \
+             server still serves the directory it opened: restart site-preview to serve the \
+             directory now at that path"
+                .to_owned(),
+        )),
     }
 }
 
@@ -126,6 +136,7 @@ pub(crate) const fn watcher_state(event: &DomainEvent) -> Option<WatcherState> {
             DegradeReason::RegistrationFailed => DegradedReason::RegistrationFailed,
             DegradeReason::RuntimeFailure => DegradedReason::RuntimeFailure,
             DegradeReason::RevisionExhausted => DegradedReason::RevisionExhausted,
+            DegradeReason::RootRemoved => DegradedReason::RootRemoved,
         })),
         DomainEvent::WatcherRecovered => Some(WatcherState::Watching),
         DomainEvent::RevisionPublished(_) => None,
@@ -252,7 +263,9 @@ impl<S: WatchControl, C: Clock> WatchPipeline<S, C> {
         }
     }
 
-    /// Reconciles the watch set and reports what changed: each directory that newly cannot
+    /// Reconciles the watch set and reports what changed: a root no longer at its path
+    /// degrades the watcher for good (`should_degrade_once_when_reconcile_finds_root_removed`);
+    /// each directory that newly cannot
     /// be watched is warned about and degrades the watcher; a complete set is readiness, so a
     /// degraded watcher recovers, and the coordinator makes the next revision a full reload
     /// that catches up what changed while a directory was unwatched (ADR 0054). Pinned by
@@ -275,6 +288,12 @@ impl<S: WatchControl, C: Clock> WatchPipeline<S, C> {
             Ok(RuntimeFlavor::MultiThread) => block_in_place(|| source.reconcile(scope)),
             _ => source.reconcile(scope),
         };
+        if reconciled.root_removed {
+            // Absorbed after the first: the warning and the event come once (ADR 0067).
+            let events = self.coordinator.watcher_failed(SourceFailure::RootRemoved);
+            self.report(&events);
+            return;
+        }
         for problem in &reconciled.problems {
             self.warnings.warn("watch-registration-failed", problem);
         }
@@ -674,10 +693,12 @@ mod tests {
                 log.answers.push_back(Reconciled {
                     ready: None,
                     problems: vec!["cannot watch directory `a`: permission denied".into()],
+                    root_removed: false,
                 });
                 log.answers.push_back(Reconciled {
                     ready: Some(2),
                     problems: Vec::new(),
+                    root_removed: false,
                 });
             }
 
@@ -714,6 +735,7 @@ mod tests {
             DegradedReason::RegistrationFailed,
             DegradedReason::RuntimeFailure,
             DegradedReason::RevisionExhausted,
+            DegradedReason::RootRemoved,
         ];
 
         // when
@@ -725,7 +747,8 @@ mod tests {
             [
                 "registration-failed",
                 "runtime-failure",
-                "revision-exhausted"
+                "revision-exhausted",
+                "root-removed"
             ]
         );
     }
@@ -882,6 +905,7 @@ mod tests {
                 .push_back(Reconciled {
                     ready: None,
                     problems: vec!["cannot watch directory `new/locked`: permission denied".into()],
+                    root_removed: false,
                 });
 
             // when
@@ -914,10 +938,12 @@ mod tests {
                 log.answers.push_back(Reconciled {
                     ready: None,
                     problems: vec!["cannot watch directory `a`: permission denied".into()],
+                    root_removed: false,
                 });
                 log.answers.push_back(Reconciled {
                     ready: Some(4),
                     problems: Vec::new(),
+                    root_removed: false,
                 });
             }
             h.handle.push(vec![event(ChangeKind::Create, "a")]);
@@ -938,6 +964,49 @@ mod tests {
     }
 
     #[test]
+    fn should_degrade_once_when_reconcile_finds_root_removed() {
+        paused().block_on(async {
+            // given: every reconcile finds the root gone; a later one would say ready
+            let h = start(None);
+            {
+                let mut log = h.log.lock().expect("unpoisoned");
+                for _ in 0..2 {
+                    log.answers.push_back(Reconciled {
+                        ready: None,
+                        problems: Vec::new(),
+                        root_removed: true,
+                    });
+                }
+                log.answers.push_back(Reconciled {
+                    ready: Some(1),
+                    problems: Vec::new(),
+                    root_removed: false,
+                });
+            }
+
+            // when: the root's removals arrive, then more changes that ask for reconciles
+            h.handle.push(vec![event(ChangeKind::Remove, "index.html")]);
+            after(1).await;
+            h.handle.push(vec![event(ChangeKind::Create, "x.css")]);
+            after(1).await;
+            h.handle.push(vec![event(ChangeKind::Create, "y.css")]);
+            after(WINDOW_MS + 1).await;
+
+            // then: degraded once with its own reason and warning, never claimed live again
+            assert_eq!(
+                h.states(),
+                [WatcherState::Degraded(DegradedReason::RootRemoved)]
+            );
+            let warnings = h.warnings();
+            assert_eq!(warnings.len(), 1, "{warnings:?}");
+            assert_eq!(warnings[0].0, "root-removed");
+            assert!(!warnings[0].1.contains('/'), "no path: {warnings:?}");
+            assert_eq!(h.revision(), 1, "the removals still publish one revision");
+            h.stop().await;
+        });
+    }
+
+    #[test]
     fn should_publish_full_reload_when_watcher_recovers() {
         paused().block_on(async {
             // given: degraded by a directory that could not be watched, its change published
@@ -948,10 +1017,12 @@ mod tests {
                 log.answers.push_back(Reconciled {
                     ready: None,
                     problems: vec!["cannot watch directory `blog`: no watches left".into()],
+                    root_removed: false,
                 });
                 log.answers.push_back(Reconciled {
                     ready: Some(2),
                     problems: Vec::new(),
+                    root_removed: false,
                 });
             }
             h.handle
@@ -987,6 +1058,7 @@ mod tests {
                 .push_back(Reconciled {
                     ready: Some(2),
                     problems: Vec::new(),
+                    root_removed: false,
                 });
 
             // when
@@ -1027,6 +1099,7 @@ mod tests {
         let runtime = warning_for(&degraded(DegradeReason::RuntimeFailure), None);
         let exhausted = warning_for(&degraded(DegradeReason::RevisionExhausted), None);
         let registration = warning_for(&degraded(DegradeReason::RegistrationFailed), None);
+        let removed = warning_for(&degraded(DegradeReason::RootRemoved), None);
         let recovered = warning_for(&DomainEvent::WatcherRecovered, None);
 
         // then
@@ -1035,6 +1108,7 @@ mod tests {
         assert!(message.starts_with("file watching failed; "), "{message}");
         assert_eq!(exhausted.map(|(code, _)| code), Some("reload-exhausted"));
         assert_eq!(registration, None);
+        assert_eq!(removed.map(|(code, _)| code), Some("root-removed"));
         assert_eq!(recovered, None);
     }
 }

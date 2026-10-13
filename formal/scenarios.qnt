@@ -630,8 +630,11 @@ module watcherScenarios {
         not(reachesRecoveredWithStaleChange),
       })
 
-  /// A recovery with nothing else pending still publishes one full revision, a window after
-  /// the reconcile that recovered; readiness at start-up publishes nothing.
+  /// The recovery alone makes the revision full: after a start-up failure, a change in `d` is
+  /// unseen; the reconcile of an atomic save of a stylesheet (a `Changed` reconcile, the only
+  /// notified change hot) watches `d` and recovers, and the revision a window later is full,
+  /// so the unseen change is published. Through an overflow the set would be full anyway, so
+  /// only this path shows the recovery's own mark (`markRecovered`; FORMAL-10).
   run recoveryAloneReloads =
     initWith(true)
       .then(receive(1, false))
@@ -639,11 +642,18 @@ module watcherScenarios {
       .then(modify(Sub))
       .expect(allInvariants and ghost.excused == Set(Sub))
       .then(freeWatch)
-      .then(kernelQueue(true))
-      .then(modify(Index))
-      .then(kernelQueue(false))
-      .then(receive(1, false))
-      .expect(allInvariants and health == HWatching and last.events == [EvRecovered] and deb.full)
+      .then(saveAtomically(Css))
+      .then(receive(4, false))
+      .expect(and {
+        allInvariants,
+        health == HWatching,
+        last.events == [EvRecovered],
+        last.needsReconcile,
+        not(reconciledFully),
+        deb.paths == Set(Css),
+        deb.full,
+        not(deb.rescan),
+      })
       .then(tick)
       .then(tick)
       .then(settle(false))
@@ -677,15 +687,78 @@ module watcherScenarios {
       .then(receive(1, false))
       .expect(allInvariants and health == HWatching and src.outstanding == Set() and deb.rescan)
 
+  /// The start-up failure is delivered before a loss reported after it: degraded, then the
+  /// overflow's full reconcile watches `d` and recovers, once each. Delivered after it, the
+  /// stale failure would degrade a watcher with every directory watched (FORMAL-10).
+  run startupFailureBeforeOverflow =
+    initWith(true)
+      .then(freeWatch)
+      .then(kernelQueue(true))
+      .then(modify(Index))
+      .then(kernelQueue(false))
+      .expect(allInvariants and src.overflow and registrationFailureQueued(src))
+      .then(receive(1, false))
+      .expect(allInvariants and health == HDegraded(RegistrationFailed) and src.overflow)
+      .then(receive(1, false))
+      .expect(and {
+        allInvariants,
+        health == HWatching,
+        last.events == [EvRecovered],
+        src.outstanding == Set(),
+        deb.rescan,
+      })
+      .then(tick)
+      .then(tick)
+      .then(settle(false))
+      .expect(and {
+        allInvariants,
+        health == HWatching,
+        settled,
+        ghost.pending == Set(),
+        ghost.degradedEvents == 1,
+        ghost.recoveredEvents == 1,
+      })
+
+  /// Start-up whose registration of `d` passed the relisting cap: `Starting`, no failure, the
+  /// loss first; its full reconcile watches `d` and only then is live reload claimed, with no
+  /// health event (FORMAL-10).
+  run startupCapDefersReadiness =
+    initStartup(false, true)
+      .expect(allInvariants and health == HStarting and src.overflow and src.watched == Set(Root))
+      .then(modify(Css))
+      .then(receive(1, false))
+      .expect(and {
+        allInvariants,
+        health == HWatching,
+        last.events == [],
+        src.watched == Set(Root, DirD),
+        deb.rescan,
+        deb.full,
+      })
+      .then(receive(1, false))
+      .then(tick)
+      .then(tick)
+      .then(settle(false))
+      .expect(allInvariants and revision == 1 and last.firedFull and settled and ghost.pending == Set())
+
   /// The root is deleted: every removal and the root's own, more than the channel holds, so
-  /// a loss too. One full revision covers it all. The root recreated at the same path is not
-  /// the served one and is never notified.
+  /// a loss too. The loss's full reconcile finds the root gone and degrades with
+  /// `RootRemoved`, once; one full revision covers every removal. The root recreated at the
+  /// same path is not the served one and is never notified: the watcher stays degraded and
+  /// live reload is not claimed again (ADR 0067).
   run rootDeleteRecreate =
     initWith(false)
       .then(rootDelete)
       .expect(allInvariants and src.overflow and src.queue.length() == CAP and src.watched == Set())
       .then(receive(4, false))
+      .expect(and {
+        allInvariants,
+        health == HDegraded(RootRemoved),
+        last.events == [EvDegraded(RootRemoved)],
+        deb.rescan,
+      })
       .then(receive(4, false))
+      .expect(allInvariants and health == HDegraded(RootRemoved) and last.events == [])
       .then(rootRecreate)
       .then(tick)
       .then(tick)
@@ -696,7 +769,30 @@ module watcherScenarios {
         last.firedFull,
         settled,
         ghost.pending == Set(),
+        health == HDegraded(RootRemoved),
+        ghost.degradedEvents == 1,
       })
+
+  /// A root removed while a directory could not be watched: the registration failure was
+  /// reported, and the root's removal escalates once to `RootRemoved`, so the warning says why
+  /// live reload cannot come back (ADR 0067).
+  run rootRemovalEscalates =
+    initWith(true)
+      .then(receive(1, false))
+      .expect(allInvariants and health == HDegraded(RegistrationFailed))
+      .then(rootDelete)
+      .expect(allInvariants and src.queue.length() == 4 and not(src.overflow))
+      .then(receive(4, false))
+      .expect(and {
+        allInvariants,
+        health == HDegraded(RootRemoved),
+        last.events == [EvDegraded(RootRemoved)],
+        ghost.escalations == 1,
+      })
+      .then(tick)
+      .then(tick)
+      .then(settle(false))
+      .expect(allInvariants and settled and health == HDegraded(RootRemoved) and ghost.pending == Set())
 
   /// Shutdown drops a pending change with the task: nothing fires afterwards.
   run shutdownDropsPending =

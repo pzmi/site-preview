@@ -19,6 +19,7 @@ mod paths;
 mod rules_cqrs;
 mod rules_hygiene;
 mod rules_purity;
+mod rules_seams;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -177,6 +178,17 @@ pub struct Facts {
     pub impl_methods: Vec<ImplMethod>,
     /// Instrumentation values in decision positions.
     pub decisions: Vec<Decision>,
+    /// Items marked `#[doc(hidden)]`.
+    pub hidden: Vec<HiddenItem>,
+}
+
+/// An item marked `#[doc(hidden)]`: a function, a method, a type or a constant.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HiddenItem {
+    /// Where its name is.
+    pub site: Site,
+    /// Its name.
+    pub name: String,
 }
 
 /// One attribute the hygiene rules look at, after `cfg_attr` expansion.
@@ -227,6 +239,7 @@ pub fn check(
         .map(|p| relative(root, p.manifest_path.as_std_path()))
         .collect();
     out.extend(hygiene.config(root, &manifests));
+    let mut every = Vec::new();
     for package in metadata.workspace_packages() {
         let facts = collect_package(root, package);
         for (at, problem) in &facts.problems {
@@ -239,7 +252,9 @@ pub fn check(
         out.extend(rules_purity::check(&facts, policy));
         out.extend(rules_cqrs::check(&facts, policy));
         out.extend(hygiene.check(&facts));
+        every.push(facts);
     }
+    out.extend(rules_seams::check(&every));
     out.extend(hygiene.finish());
     // Line numbers are computed; the parsed sources need not stay in this thread's span map.
     proc_macro2::extra::invalidate_current_thread_spans();
@@ -732,6 +747,16 @@ pub fn effective_metas(meta: &Meta) -> Vec<Meta> {
         }
     }
     out
+}
+
+/// Whether `attrs` hold `#[doc(hidden)]`, also through `cfg_attr`.
+pub fn is_doc_hidden(attrs: &[Attribute]) -> bool {
+    attrs.iter().any(|attr| {
+        effective_metas(&attr.meta).iter().any(|meta| {
+            matches!(meta, Meta::List(list) if list.path.is_ident("doc")
+                && list.tokens.to_string().trim() == "hidden")
+        })
+    })
 }
 
 /// Whether `attrs` make an item test-only: `#[cfg(test)]`, `#[cfg(all(test, ..))]`, or a

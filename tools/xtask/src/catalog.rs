@@ -364,7 +364,13 @@ mod tests {
         for rule in rules {
             let line = format!("\"id\": \"{}\"", rule.id());
             assert!(json.contains(&line), "{line} missing from {json}");
-            assert!(rule.owner().starts_with("ARCH-0"), "{}", rule.owner());
+            assert!(
+                ["ARCH-0", "FORMAL-"]
+                    .iter()
+                    .any(|task| rule.owner().starts_with(task)),
+                "{}",
+                rule.owner()
+            );
         }
     }
 

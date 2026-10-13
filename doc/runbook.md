@@ -191,11 +191,28 @@ the warnings and, with `--json`, the `watcher` events all say so.
 | `Watching: unavailable (...); live reload disabled` and `warning[watch-unavailable]` | The native watcher could not start, or no directory could be registered. |
 | `warning[watch-failed]` | The watcher failed while running; changes may be missed until restart. Reported once until it recovers. |
 | `warning[reload-exhausted]` | The revision counter ran out (after 2^64 - 1 reloads). Restart. |
-| `{"event":"watcher","state":"degraded","reason":"registration-failed"}` | The JSON counterpart of a registration failure. The other reasons are `runtime-failure` and `revision-exhausted`. |
+| `warning[root-removed]` | The site root was deleted, moved away or replaced. Live reload is no longer claimed, for good; see "The site root was removed" below. |
+| `{"event":"watcher","state":"degraded","reason":"registration-failed"}` | The JSON counterpart of a registration failure. The other reasons are `runtime-failure`, `revision-exhausted` and `root-removed`. |
 | `{"event":"watcher","state":"watching"}` | The watcher recovered. |
 
 An agent reading `--json` should treat `"watching": false` in `ready`, or any `degraded` event,
 as "edits will not reload the page": reload manually or restart the server.
+
+### The site root was removed (`warning[root-removed]`)
+
+site-preview opens the root once at start-up and serves through that open directory. When
+the root is deleted (`rm -r`), moved away, or replaced by another directory at the same path
+(a tool that rebuilds `dist/` by deleting and recreating it, a `git checkout` that swaps the
+directory), the next change it sees finds the path no longer names the served directory:
+
+- the watcher degrades with `root-removed`, once, and never recovers, even when a directory
+  appears at the path again;
+- the server keeps serving the directory it opened: a deleted one is empty (every request is
+  `404`), a moved one is still served under its new name.
+
+Restart site-preview to serve the directory now at the path. For a build tool that recreates
+its output directory, serve the parent directory, or configure the tool to empty the
+directory instead of deleting it.
 
 ### Linux: inotify limits
 

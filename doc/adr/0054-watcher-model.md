@@ -4,7 +4,9 @@ Date: 2026-10-12
 
 ## Status
 
-Proposed (planner default — owner may override)
+Proposed (planner default — owner may override). Root deletion amended by
+[ADR 0067](0067-root-removal-and-watcher-review-fixes.md): a removed root now degrades the
+watcher with `RootRemoved`, for good.
 
 ## Context
 
@@ -73,12 +75,11 @@ settled by the plan:
   then no watch at all. Recreation is never notified and changes nothing served. plan.md is
   silent on root deletion: section 8.1 handles removed subdirectories (drop their watches,
   rescan the nearest existing parent) and section 8.4 runtime failures, and section 5.3 serves
-  through the root descriptor opened at start-up. The behaviour is kept as built: the
-  health stays `Watching`. The served directory is unlinked, so no entry can be created in it
-  and nothing served can change again; the full revision the deletion causes shows the
-  browser the empty site, and "live reload active" claims nothing false about the served
-  tree. A distinct "root removed" report (or exiting) is left to the owner as a product
-  decision.
+  through the root descriptor opened at start-up. *Superseded by ADR 0067:* as first built
+  the health stayed `Watching`, which plan.md section 8.4 forbids ("must not claim live
+  reload is active when notifications are unavailable"); the next reconcile now finds the
+  root path no longer names the served directory and degrades with `RootRemoved`, which
+  nothing recovers, a root recreated at the same path included.
 - **One step relation**, `step`, picks a lane first (OS, pipeline, or the run-ending actions
   of root deletion and shutdown, each lane able to tick), so random traces publish, fail and
   recover instead of ending early.
@@ -97,8 +98,8 @@ settled by the plan:
   `should_mark_nothing_when_reconciled_without_recovery` and
   `should_keep_revision_hot_when_reconcile_is_ready_without_recovery` fail if every readiness
   marked a full reload.
-- After a root deletion the health stays `Watching` with no watch: nothing served can change
-  any more, so the claim is vacuous; the model does not flag it.
+- After a root deletion the health is `Degraded(RootRemoved)` (ADR 0067), and the model's
+  `noLiveClaimWithoutRoot` checks it.
 - FORMAL-06 replays these traces against the real `ChangeCoordinator` and `ReloadState`: the
   model's `receive` maps to `ChangeCoordinator::receive`, `settle` to `settle`, a reconcile's
   outcome to `watcher_reconciled` or `watcher_failed(RegistrationFailed)`; the OS actions and the
