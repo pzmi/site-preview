@@ -125,6 +125,12 @@ fn should_not_register_ignored_directory_when_started() {
     assert_eq!(names(watcher.watched().iter().cloned()), ["", "docs"]);
     let mut seen = Vec::new();
     wait_for_path(&notifications, &marker, &mut seen);
+    // macOS watches the root with one recursive stream (ADR 0075), which reports ignored
+    // subtrees to `notify`; the bridge drops them, and the contract case `ignored_subtree`
+    // (`tests/change_source_contract.rs`) pins that on every platform.
+    if cfg!(target_os = "macos") {
+        return;
+    }
     let leaked: Vec<_> = seen
         .iter()
         .filter(|path| {
@@ -942,6 +948,26 @@ fn should_watch_every_eligible_directory_when_nested_directories_burst_during_st
         let missing: Vec<_> = last.iter().filter(|dir| !watched.contains(dir)).collect();
         panic!("never watched: {missing:?}")
     });
+}
+
+#[test]
+fn should_watch_the_whole_tree_once_when_the_root_is_watched_recursively() {
+    // given: the strategy macOS uses (ADR 0075), run here on inotify
+    let (_base, root) = site();
+    fs::create_dir_all(root.join("docs/guide")).expect("create tree");
+    let site = open_site_root(&root).expect("open root");
+    let (sender, notifications) = channel();
+    let mut watcher = NotifyWatcher::new(&site.display_path, sender).expect("create watcher");
+
+    // when: two directories are "watched"; the second call starts nothing
+    let first = watcher.native_watch_with(&site.display_path.join("docs"), true);
+    let second = watcher.native_watch_with(&site.display_path.join("docs/guide"), true);
+    let target = site.display_path.join("docs/guide/page.html");
+    fs::write(&target, b"x").expect("write below the root");
+
+    // then
+    assert_eq!((first, second), (Ok(()), Ok(())));
+    wait_for_path(&notifications, &target, &mut Vec::new());
 }
 
 #[test]

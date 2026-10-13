@@ -362,13 +362,17 @@ fn trailing_slash<F: SiteContentFactory>() -> Result<(), String> {
 
 /// A directory without `index.html` opens with no index; no other name counts as one.
 fn missing_index<F: SiteContentFactory>() -> Result<(), String> {
-    let site = F::build(
-        &SiteTree::new()
-            .dir("empty")
-            .file("other/index.htm", b"htm")
-            .file("other/INDEX.HTML", b"upper")
-            .file("other/readme.txt", b"readme"),
-    );
+    let tree = SiteTree::new()
+        .dir("empty")
+        .file("other/index.htm", b"htm")
+        .file("other/readme.txt", b"readme");
+    // `INDEX.HTML` is another name only on a case-sensitive file system; on the default
+    // macOS volume it is `index.html` itself (eligibility.rs), so the case does not apply.
+    let upper = (!cfg!(target_os = "macos")).then_some("other/INDEX.HTML");
+    let tree = upper
+        .into_iter()
+        .fold(tree, |tree, path| tree.file(path, b"upper"));
+    let site = F::build(&tree);
     let bare = F::build(&SiteTree::new().file("a.txt", b"a"));
     let mut checks = Checks::default();
     checks.expect(&site, "/empty", &Observed::NO_INDEX);

@@ -3,7 +3,9 @@
 //!
 //! The callback runs on the native watcher's own thread and must never block it. It translates
 //! each notification (dropping access-only and metadata-only changes, which would otherwise
-//! fill the queue every time a page is served) and offers the result to a bounded
+//! fill the queue every time a page is served, and changes of an ineligible path, which the
+//! domain ignores anyway: no watch covers an ignored subtree on Linux, but the one recursive
+//! stream of macOS does, and a source must never deliver a change inside one, ADR 0075) and offers the result to a bounded
 //! `tokio::sync::mpsc` channel with `try_send`. When the channel is full, or the operating
 //! system reports that its own queue overflowed (the `Rescan` flag), it sets an overflow flag
 //! and wakes the consumer; a runtime error is queued as a failure, and if that too finds the
@@ -31,7 +33,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use preview_application::{ChangeBatch, ChangeSource, SourceFailure};
-use preview_domain::{ChangeEvent, ChangeKind, Classification, RelPath, classify};
+use preview_domain::{ChangeEvent, ChangeKind, Classification, IgnoreReason, RelPath, classify};
 use tokio::sync::Notify;
 use tokio::sync::mpsc::{self, error::TryRecvError, error::TrySendError};
 
@@ -139,6 +141,9 @@ impl Bridge {
                         !matches!(
                             change.kind,
                             ChangeKind::AccessOnly | ChangeKind::MetadataOnly
+                        ) && !matches!(
+                            classify(change),
+                            Classification::Ignored(IgnoreReason::Ineligible(_))
                         )
                     })
                     .collect();
@@ -759,6 +764,31 @@ mod tests {
         }
         bridge.handle(Ok(Event::new(EventKind::Create(CreateKind::File))
             .add_path(PathBuf::from("/elsewhere/x.html"))));
+
+        // then
+        assert!(poll_once(&mut source, Waker::noop()).is_pending());
+    }
+
+    #[test]
+    fn should_queue_nothing_when_change_is_inside_an_ignored_subtree() {
+        // given: the recursive stream of macOS reports ignored subtrees (ADR 0075)
+        let (bridge, mut source) = source(1);
+
+        // when
+        for path in [
+            "node_modules/pkg/index.js",
+            ".git/objects/ab",
+            "docs/.cache/entry",
+        ] {
+            bridge.handle(Ok(Event::new(EventKind::Modify(ModifyKind::Data(
+                DataChange::Content,
+            )))
+            .add_path(Path::new(ROOT).join(path))));
+        }
+        for path in ["node_modules", "docs/.cache"] {
+            bridge.handle(Ok(Event::new(EventKind::Create(CreateKind::Folder))
+                .add_path(Path::new(ROOT).join(path))));
+        }
 
         // then
         assert!(poll_once(&mut source, Waker::noop()).is_pending());

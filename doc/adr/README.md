@@ -84,3 +84,4 @@ This directory holds the decisions behind site-preview, one file per decision, i
 | [0070](0070-conformance-harness-review-fixes.md) | Conformance harness review fixes: a declared model view, the pipeline's shared decision step, the stop outcome, per-field sensitivity | Proposed |
 | [0073](0073-root-removal-through-the-parent-watch.md) | A root's removal is notified through a watch on its parent (Linux), since the held root descriptor hides it from the root's own watch | Proposed |
 | [0074](0074-native-platform-matrix.md) | Native platform matrix: a `platform` job on four runners and the non-gate `platform-tests` stage | Proposed |
+| [0075](0075-macos-single-recursive-stream.md) | macOS: one recursive FSEvents stream; ignored subtrees dropped in the watcher bridge | Proposed |

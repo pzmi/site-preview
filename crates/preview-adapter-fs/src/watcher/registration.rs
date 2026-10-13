@@ -36,6 +36,17 @@
 //!   an entry whose path is the root: the bridge turns that into a change on the root, whose
 //!   reconcile finds the root removed (ADR 0073). Every other entry of the parent is outside
 //!   the root, and the bridge drops it unread.
+//! - **macOS: one recursive stream, no per-directory watches.** `notify`'s FSEvents backend
+//!   rebuilds its whole stream on every `watch` and `unwatch`, from "now", so a change made
+//!   while a registration restarts it is lost, and registering a copied-in tree of hundreds
+//!   of directories one by one lost the events that would have registered the rest (and an
+//!   `unwatch` of a link removes its target's entry, which is keyed by canonical path). The
+//!   kernel stream is recursive by nature anyway. So on macOS the first registration starts
+//!   one recursive watch of the resolved root and every other `watch_one` only confirms
+//!   through the capability that a real directory stands there; nothing is restarted or
+//!   removed afterwards. The [`WatchSet`] stays the record of eligible directories, so
+//!   reconciliation is unchanged. The stream reports ignored subtrees too; the bridge drops
+//!   their changes (ADR 0075).
 //! - **Record.** Successful registrations are kept in a [`WatchSet`], the answer to "is this
 //!   directory watched" for reconciliation.
 
@@ -199,6 +210,9 @@ pub(crate) struct NotifyWatcher {
     /// Set when a watch was withdrawn: its removal may have taken the watch of another
     /// recorded directory with it (a link to it), so the recorded set is watched again.
     withdrawn: bool,
+    /// Set once the one recursive watch of the root exists (macOS only, see the module
+    /// documentation).
+    recursive_root: bool,
     /// How many directories the second listings of one call may queue ([`MAX_RELISTED`];
     /// tests lower it).
     pub(crate) relist_cap: usize,
@@ -268,6 +282,7 @@ impl NotifyWatcher {
             limit_reached: false,
             retry_cursor: None,
             withdrawn: false,
+            recursive_root: false,
             relist_cap: MAX_RELISTED,
             rescan_needed: false,
             #[cfg(test)]
@@ -397,16 +412,16 @@ impl NotifyWatcher {
     /// still stands at its path; otherwise the watch is withdrawn.
     fn watch_one(&mut self, root: &RootDir, dir: &RelPath) -> Result<(), WatchFault> {
         let path = self.absolute(dir);
-        self.inner
-            .watch(&path, RecursiveMode::NonRecursive)
-            .map_err(|error| WatchFault::from(&error))?;
+        self.native_watch(&path)?;
         let Err(refusal) = root.open_dir(dir) else {
             return Ok(());
         };
         // The watch may already be gone with its inode. If a link stood there, the watch was
         // its target's, which may be recorded under its own name: `repair` restores it.
-        let _ = self.inner.unwatch(&path);
-        self.withdrawn |= !cfg!(target_os = "macos");
+        if !cfg!(target_os = "macos") {
+            let _ = self.inner.unwatch(&path);
+            self.withdrawn = true;
+        }
         Err(match refusal {
             ContentRefusal::Forbidden(ForbiddenReason::PermissionDenied) => {
                 WatchFault::PermissionDenied
@@ -416,6 +431,34 @@ impl NotifyWatcher {
         })
     }
 
+    /// Puts `path` under native watch: a non-recursive watch of the directory, except on macOS
+    /// where the one recursive watch of the root covers every directory and is started once.
+    fn native_watch(&mut self, path: &Path) -> Result<(), WatchFault> {
+        self.native_watch_with(path, cfg!(target_os = "macos"))
+    }
+
+    /// [`Self::native_watch`] with the strategy given, so Linux runs the macOS one in a test
+    /// (`should_watch_the_whole_tree_once_when_the_root_is_watched_recursively`).
+    pub(crate) fn native_watch_with(
+        &mut self,
+        path: &Path,
+        recursive_root: bool,
+    ) -> Result<(), WatchFault> {
+        let (target, mode) = if recursive_root {
+            if self.recursive_root {
+                return Ok(());
+            }
+            (self.display_root.clone(), RecursiveMode::Recursive)
+        } else {
+            (path.to_path_buf(), RecursiveMode::NonRecursive)
+        };
+        self.inner
+            .watch(&target, mode)
+            .map_err(|error| WatchFault::from(&error))?;
+        self.recursive_root |= recursive_root;
+        Ok(())
+    }
+
     /// Removes the watches of `dirs` and forgets them. A watch the native watcher already
     /// dropped with its directory (`notify` removes the watch of a deleted or moved-away
     /// directory itself) is not an error: the record is what has to change.
@@ -423,8 +466,10 @@ impl NotifyWatcher {
     /// A removed watch frees one of the system's watches, so the watch limit is tried again.
     pub(crate) fn unwatch(&mut self, dirs: BTreeSet<RelPath>) {
         for dir in &dirs {
-            let path = self.absolute(dir);
-            let _ = self.inner.unwatch(&path);
+            if !cfg!(target_os = "macos") {
+                let path = self.absolute(dir);
+                let _ = self.inner.unwatch(&path);
+            }
             self.limit_reached &= !self.watched.contains(dir);
         }
         self.watched.apply(&preview_domain::WatchDiff {

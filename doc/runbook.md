@@ -270,14 +270,16 @@ What differs from Linux, by design of the platform:
   milliseconds late, and several quick changes to one file may reach the watcher as one
   event (a create and a write may be a single notification). The server publishes at least
   one reload per burst, never one per write; no test or promise depends on an exact latency.
-- **Streams are recursive.** FSEvents covers a whole tree, so ignored directories
-  (`node_modules`, hidden ones) are filtered out after the kernel reports them; they cost
-  nothing in watch quota but do wake the process. Each directory registration restarts the
-  stream, so start-up takes longer on a site with thousands of directories, and a change made
-  during that restart may be missed until the next change in the file.
-- **Names that are not UTF-8** inside the site are not supported by the watcher's FSEvents
-  backend (upstream limitation, ADR 0047); the site still serves, and a root path that is not
+- **One recursive stream.** FSEvents covers a whole tree, so on macOS the watcher starts one
+  recursive watch of the root and never restarts it (ADR 0075); directories need no
+  registration and a directory copied in is covered at once. Changes in ignored directories
+  (`node_modules`, hidden ones) wake the process and are then dropped, so a build that rewrites
+  `node_modules` costs some CPU but never causes a reload.
+- **Names that are not UTF-8.** APFS refuses to create them. On other volumes the watcher's
+  FSEvents backend cannot handle one (upstream limitation, ADR 0047); a root path that is not
   UTF-8 starts in degraded mode (`watch-unavailable`).
+- **Case-insensitive volumes.** The default macOS volume ignores case, so `INDEX.HTML` is
+  `index.html` there, and the reserved-name and eligibility rules already compare names that way.
 - **Temporary paths** under `/var` are really `/private/var`. The server resolves the root
   once and prints the resolved path; compare against that, not the path you typed.
 - **Descriptor limit.** A macOS process starts with 256 open files; raise it with

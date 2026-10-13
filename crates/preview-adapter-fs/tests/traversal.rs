@@ -2,9 +2,7 @@
 //! the shared eligibility predicate applied before descent, links never followed, partial
 //! failures reported, and the walk bounded.
 
-use std::ffi::OsStr;
 use std::fs;
-use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::Path;
 
@@ -179,8 +177,14 @@ fn should_return_empty_set_when_start_is_ineligible() {
     assert!(hidden.dirs.is_empty() && excluded.dirs.is_empty());
 }
 
+/// Not on macOS: APFS refuses to create a name that is not valid UTF-8 (`EILSEQ`), so there is
+/// no such directory to skip there.
+#[cfg(not(target_os = "macos"))]
 #[test]
 fn should_skip_directory_when_name_is_not_utf8() {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+
     // given
     let (_base, root) = site();
     fs::create_dir(root.join(OsStr::from_bytes(b"bad-\xff"))).expect("create non-utf8 dir");
