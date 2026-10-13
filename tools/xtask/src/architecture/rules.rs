@@ -146,7 +146,7 @@ rules! {
         ["instrumentation-drives-decision"];
     HiddenSeam => "ARCH-hidden-seam", "FORMAL-10",
         "A crate other than preview-composition and preview-conformance names a #[doc(hidden)] item of preview-composition.",
-        ["cli-calls-hidden-seam"];
+        ["cli-calls-hidden-seam", "cli-names-hidden-trait"];
 }
 
 /// Compares the catalog with the negative fixtures in `dir`: every rule has fixtures, each

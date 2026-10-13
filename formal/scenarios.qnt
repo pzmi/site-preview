@@ -439,7 +439,8 @@ module watcherScenarios {
       .then(tick)
       .expect(allInvariants and revision == 1 and not(deb.dirty))
 
-  /// Git and editor swap-file churn is received and dropped: the debouncer stays clean and no
+  /// Git and editor swap-file churn is dropped by the bridge before the channel (ADR 0075):
+  /// nothing is queued, so there is no batch to receive, the debouncer stays clean and no
   /// revision is ever published.
   run gitOnlyNoReload =
     initWith(false)
@@ -447,12 +448,10 @@ module watcherScenarios {
       .then(gitChange(true))
       .then(tempWrite)
       .then(gitChange(false))
-      .expect(allInvariants and src.queue.length() == 3)
-      .then(receive(4, false))
       .expect(and {
         allInvariants,
-        last.ineligibleOnly,
-        last.recorded == 0,
+        src.queue == [],
+        not(src.overflow),
         deb == CLEAN,
         settled,
       })
@@ -461,13 +460,14 @@ module watcherScenarios {
       .then(tick)
       .expect(allInvariants and revision == 0 and not(due(deb, now)) and ghost.cycles == 0)
 
-  /// Atomic saves: the temporary file's create, write and rename are dropped, the rename onto
-  /// the target is recorded (and asks for a reconcile, since a rename may move a directory).
-  /// The page reloads in full; the stylesheet is swapped in place.
+  /// Atomic saves: the temporary file's create, write and rename are dropped by the bridge
+  /// (ADR 0075), the rename onto the target is queued and recorded (and asks for a reconcile,
+  /// since a rename may move a directory). The page reloads in full; the stylesheet is swapped
+  /// in place.
   run atomicSave =
     initWith(false)
       .then(saveAtomically(Index))
-      .expect(allInvariants and src.queue.length() == 4)
+      .expect(allInvariants and src.queue == [MEvent(note(KRename, Index))])
       .then(receive(4, false))
       .expect(and {
         allInvariants,

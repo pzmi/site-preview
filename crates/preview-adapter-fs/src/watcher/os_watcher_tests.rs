@@ -1235,3 +1235,46 @@ fn should_report_incomplete_start_without_failure_when_registration_passes_the_r
     let full = source.reconcile_full(&site.dir);
     assert!(full.complete, "{full:?}");
 }
+
+/// The root's parent is watched on Linux only (ADR 0073); elsewhere nothing reports the moves.
+#[cfg(target_os = "linux")]
+#[test]
+fn should_keep_watching_root_when_it_is_renamed_away_and_back() {
+    // given
+    let (base, root) = site();
+    let site = open_site_root(&root).expect("open root");
+    let (mut source, report) = NotifyChangeSource::start(&site.dir, &site.display_path);
+    assert!(report.is_complete(), "{report:?}");
+
+    // when: `mv site x && mv x site`, both before the pipeline reconciles; the parent's watch
+    // reports both as changes on the root, whose reconcile is a full one
+    let away = base.path().join("x");
+    fs::rename(&site.display_path, &away).expect("move the root away");
+    fs::rename(&away, &site.display_path).expect("move it back");
+    let mut changes = Vec::new();
+    let delivered = wait_until(DEADLINE, "the root's moves delivered", || {
+        while let Some(batch) = poll_next(&mut source) {
+            match batch {
+                ChangeBatch::Events(batch) => changes.extend(batch),
+                other => panic!("unexpected batch: {other:?}"),
+            }
+        }
+        changes.iter().any(|change| change.path.is_root())
+    });
+    let after = source.reconcile_changed(&site.dir);
+    fs::write(site.display_path.join("index.html"), b"edited").expect("edit the page");
+
+    // then: the same directory stands at the path, so nothing is removed, and an edit in the
+    // root is still notified
+    assert!(delivered.is_ok(), "changes: {changes:?}");
+    assert!(!after.root_removed, "{after:?}");
+    assert!(after.complete, "{after:?}");
+    let failures = pump_until(
+        &mut source,
+        &site,
+        "the edit after the moves delivered",
+        |_, changes| names_path(changes, "index.html"),
+    );
+    assert!(failures.is_empty(), "{failures:?}");
+    assert!(!source.reconcile_full(&site.dir).root_removed);
+}

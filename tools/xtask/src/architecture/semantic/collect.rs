@@ -589,6 +589,16 @@ impl<'ast> Visit<'ast> for Collector<'_> {
         visit::visit_item_const(self, item);
     }
 
+    fn visit_item_type(&mut self, item: &'ast syn::ItemType) {
+        self.hidden(&item.attrs, &item.ident);
+        visit::visit_item_type(self, item);
+    }
+
+    fn visit_item_static(&mut self, item: &'ast syn::ItemStatic) {
+        self.hidden(&item.attrs, &item.ident);
+        visit::visit_item_static(self, item);
+    }
+
     fn visit_trait_item_fn(&mut self, item: &'ast syn::TraitItemFn) {
         if let Some(block) = &item.default {
             self.decisions(block, &item.sig.output);
@@ -646,6 +656,7 @@ impl<'ast> Visit<'ast> for Collector<'_> {
     }
 
     fn visit_item_trait(&mut self, item: &'ast syn::ItemTrait) {
+        self.hidden(&item.attrs, &item.ident);
         if let Some(token) = &item.unsafety {
             self.unsafe_site(token.span.start().line, "an `unsafe trait`");
         }
@@ -807,6 +818,32 @@ mod tests {
                 .any(|r| r.written == "tokio" && r.resolved == [vec!["tokio".to_owned()]]),
             "{:?}",
             facts.references
+        );
+    }
+
+    #[test]
+    fn should_record_hidden_items_when_they_are_traits_type_aliases_or_statics() {
+        // given: every kind of item `ARCH-hidden-seam` keeps to its users (OPS-04 review), and
+        // a visible one of each
+        let source = "#[doc(hidden)]\npub trait HiddenTrait {}\npub trait Shown {}\n#[cfg_attr(all(), doc(hidden))]\npub type HiddenAlias = u8;\npub type ShownAlias = u8;\n#[doc(hidden)]\npub static HIDDEN_STATIC: u8 = 0;\npub static SHOWN: u8 = 0;\n#[doc(hidden)]\npub fn hidden_fn() {}\n";
+
+        // when
+        let facts = facts_for("p", &[("src/lib.rs", source)]);
+
+        // then
+        let hidden: Vec<String> = facts
+            .hidden
+            .iter()
+            .map(|item| format!("{}@{}", item.name, item.site.at()))
+            .collect();
+        assert_eq!(
+            hidden,
+            [
+                "HiddenTrait@crates/p/src/lib.rs:2",
+                "HiddenAlias@crates/p/src/lib.rs:5",
+                "HIDDEN_STATIC@crates/p/src/lib.rs:8",
+                "hidden_fn@crates/p/src/lib.rs:11",
+            ]
         );
     }
 

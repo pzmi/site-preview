@@ -29,14 +29,33 @@ per-directory registration of ADR 0047 did not allow for:
   later `watch_one` only confirms through the root capability that a real directory stands
   there, and `unwatch` only updates the record. Nothing is restarted or removed afterwards. The
   `WatchSet` still records the eligible directories, so reconciliation, failures and the
-  reports are unchanged and the Quint model (a set of watched directories, its reconcile and
-  its loss handling) needs no change. Linux keeps one non-recursive watch per directory.
+  reports are unchanged. Linux keeps one non-recursive watch per directory.
 - The bridge drops every change whose path the domain classifies as ineligible
   (`Ignored(Ineligible(_))`) on all platforms, so no source delivers a change inside an
   ignored subtree (contract case `ignored_subtree`) however the platform watches. Linux
   behaviour is unchanged: it never watched those directories.
 - Platform facts that tests cannot share are gated with a reason: APFS cannot create a
   non-UTF-8 name, and `INDEX.HTML` is `index.html` on the default case-insensitive volume.
+
+## Amendment (OPS-04 review)
+
+The original text said the Quint model needed no change. That held for the watch set, but
+not for the bridge: the drop of ineligible changes before the bounded channel is a change
+on every platform, and `watcher.qnt` still queued `.git` and editor temporary churn, where
+it took a channel slot and could overflow it. `emitOne` now drops a notification on an
+ineligible path after the OS's own loss and before `offer`; `onlyEligibleTriggerReload` gains
+the conjunct that no queued change names an ineligible path, `gitOnlyNoReload` expects an
+empty channel (and no longer receives a batch: there is none), and `atomicSave` expects only
+the rename onto the target queued. Without the drop, `gitOnlyNoReload` and `atomicSave` fail
+and a random run (seed 7) violates the strengthened invariant.
+
+macOS reports a superset of what the model and Linux report. With one recursive stream, a
+change in an eligible directory that failed registration (no permission, too deep) is still
+delivered on macOS, while on Linux, with no watch of its own, it is not. The watcher's health
+is still derived from the `WatchSet` (degraded while the directory is outstanding), so
+nothing claims more than Linux would; the extra notifications only cause reloads the model
+leaves to the recovery's full reload, and an extra reload is harmless. This lies outside the
+model (doc/formal-models.md).
 
 ## Consequences
 

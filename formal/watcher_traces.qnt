@@ -74,16 +74,15 @@ module watcherTraces {
     at(11, W::tick),
   }
 
-  /// `watcherScenarios::gitOnlyNoReload`: `init`, 8 steps.
+  /// `watcherScenarios::gitOnlyNoReload`: `init`, 7 steps.
   action gitOnlyNoReload = any {
     at(0, W::gitChange(true)),
     at(1, W::gitChange(true)),
     at(2, W::tempWrite),
     at(3, W::gitChange(false)),
-    at(4, receive(4, false)),
+    at(4, W::tick),
     at(5, W::tick),
     at(6, W::tick),
-    at(7, W::tick),
   }
 
   /// `watcherScenarios::atomicSave`: `init`, 10 steps.

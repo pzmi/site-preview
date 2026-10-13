@@ -12,6 +12,7 @@
  *   watcher_ready, watcher_reconciled}` in `crates/preview-application/src/commands/`, with
  *   the health machine `WatcherHealth::step` in `crates/preview-domain/src/watcher_health.rs`;
  * - the source: the bridge of `crates/preview-adapter-fs/src/watcher/bridge.rs` (ADR 0048): a
+ *   change of an ineligible path dropped before anything is queued (ADR 0075), a
  *   bounded channel (`CAP` messages here, 1024 in the code), an overflow flag set when the
  *   channel is full or the OS reports a loss, a failure flag beside it, and `next`'s order
  *   (overflow, then failure, then queued messages, consecutive changes merged into one batch);
@@ -306,10 +307,14 @@ module watcher {
     }
 
   /// One notification of the OS: none without a watch on its directory (or after shutdown),
-  /// a loss while the OS drops, else offered to the channel.
+  /// a loss while the OS drops (the kernel drops it before any path is read), dropped by the
+  /// bridge when its path is ineligible (`Bridge::handle`, `Ignored(Ineligible(_))`, ADR 0075:
+  /// `.git` and editor temporary churn never takes a slot of the channel, so it can never
+  /// cause an overflow), else offered to the channel.
   pure def emitOne(w: World, n: Notif): World =
     if (w.cancelled or not(w.src.watched.contains(watchOf(n.path)))) w
     else if (w.src.osDropping) { ...w, src: { ...w.src, overflow: true } }
+    else if (not(eligible(n.path))) w
     else { ...w, src: offer(w.src, MEvent(n)) }
 
   pure def emit(w: World, ns: List[Notif]): World = ns.foldl(w, (acc, n) => emitOne(acc, n))
@@ -704,7 +709,8 @@ module watcher {
   }
 
   /// Git writes `.git/HEAD`. `.git` is never watched; a backend whose streams are recursive
-  /// by nature (FSEvents) may still report it (`seen`), and then classification drops it.
+  /// by nature (FSEvents) may still report it (`seen`), and then the bridge drops it before
+  /// the channel (ADR 0075), so either way nothing is queued.
   action gitChange(seen: bool): bool = all {
     fs.rootPresent,
     commit(if (seen) begin(world).emit([note(KModify, Git)]) else begin(world)),
@@ -926,12 +932,20 @@ module watcher {
   /// Only eligible changes trigger a reload: a revision names served files only; the
   /// debouncer is dirty only after a notification naming a served entry (ground truth, not
   /// `classify`) or an overflow; a batch of ineligible changes leaves the debouncer exactly
-  /// as it was; and a clean debouncer holds no change.
+  /// as it was; a clean debouncer holds no change; and no change of an ineligible path ever
+  /// occupies the channel (the bridge drops it first, ADR 0075), so ignored churn cannot fill
+  /// it and force an overflow's full reload. Since the bridge's drop, no batch is
+  /// ineligible-only, so the third conjunct guards the coordinator against a source that
+  /// would deliver one; the last pins the drop.
   val onlyEligibleTriggerReload = and {
     last.fired implies last.firedPaths.subseteq(SERVED),
     deb.dirty implies ghost.eligibleCause,
     last.ineligibleOnly implies deb == last.debBefore,
     not(deb.dirty) implies deb == CLEAN,
+    src.queue.indices().forall(i => match src.queue[i] {
+      | MEvent(n) => eligible(n.path)
+      | MFailed(_) => true
+    }),
   }
 
   /// The pipeline has settled: shutdown has not happened, every notification and loss the

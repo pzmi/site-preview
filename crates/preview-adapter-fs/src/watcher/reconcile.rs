@@ -46,7 +46,9 @@
 //!   directory the root capability holds ([`root_removed`]). When it does not (the root was
 //!   deleted, moved away, or replaced by another directory at its path), nothing is walked or
 //!   registered, and the report says `root_removed`: a watch on the path would follow a
-//!   directory that is not served, and none can follow the served one (ADR 0067).
+//!   directory that is not served, and none can follow the served one (ADR 0067). A `stat`
+//!   that fails for any reason but a missing path (an I/O error or a stale handle of a network
+//!   file system) is not a removal: it may pass, and the next reconcile checks again.
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -93,20 +95,56 @@ pub struct ReconcileReport {
 /// Whether `display_root` no longer names the directory `root` holds: the directory was
 /// deleted (no link to it is left), or the path now names another object, or nothing. Pinned
 /// by `should_report_root_removed_when_root_is_deleted` and
-/// `should_report_root_removed_when_root_is_replaced_at_its_path`.
+/// `should_report_root_removed_when_root_is_replaced_at_its_path`; the reading of each
+/// outcome is [`removed`]'s.
 ///
 /// Identity is the device and inode pair, and a deleted directory is told by its link count:
 /// a file system may give a new directory the freed inode number at once, so the pair alone
-/// would take a root deleted and recreated for the original.
+/// would take a root deleted and recreated for the original. A held descriptor that cannot be
+/// read says nothing either way, so it is not a removal.
 pub(crate) fn root_removed(root: &RootDir, display_root: &Path) -> bool {
     let Ok(held) = rustix::fs::fstat(root.as_fd()) else {
         return false;
     };
-    if held.st_nlink == 0 {
-        return true;
-    }
-    !rustix::fs::stat(display_root)
-        .is_ok_and(|named| (named.st_dev, named.st_ino) == (held.st_dev, held.st_ino))
+    let named = match rustix::fs::stat(display_root) {
+        Ok(named) if (named.st_dev, named.st_ino) == (held.st_dev, held.st_ino) => Named::Same,
+        Ok(_) => Named::Other,
+        Err(errno) => Named::Failed(errno),
+    };
+    removed(held.st_nlink == 0, named)
+}
+
+/// What a `stat` of the root path found, against the directory the root capability holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Named {
+    /// The served directory.
+    Same,
+    /// Another object: the root was moved away or replaced at its path.
+    Other,
+    /// The `stat` failed.
+    Failed(rustix::io::Errno),
+}
+
+/// Whether the root counts as removed, given whether the held directory has no link left and
+/// what its path names (ADR 0067, amended by OPS-04's review). Only a definite answer degrades
+/// for good: the held directory unlinked, another object at the path, or a failure that says
+/// the path names no directory (`ENOENT`; `ENOTDIR`, a component now a file; `ELOOP`, the
+/// path now a link loop). Any other failure (`EIO`, `ESTALE`, `ETIMEDOUT`, `ENOTCONN` from a
+/// network or FUSE file system, `EACCES` on a parent, `ENOMEM`, `EINTR`) may pass, so it is
+/// not a removal: the reconcile goes on through the held descriptor, and the next reconcile
+/// checks again. A removal hidden by such a failure is found by the next reconcile any change
+/// asks for, as when the parent cannot be watched (ADR 0073). Pinned by
+/// `should_count_only_a_missing_path_as_removed_when_stat_fails`,
+/// `should_count_removed_when_held_directory_has_no_link_whatever_the_path_says` and
+/// `should_count_removed_only_when_path_names_another_object`.
+fn removed(unlinked: bool, named: Named) -> bool {
+    use rustix::io::Errno;
+    unlinked
+        || match named {
+            Named::Same => false,
+            Named::Other => true,
+            Named::Failed(errno) => matches!(errno, Errno::NOENT | Errno::NOTDIR | Errno::LOOP),
+        }
 }
 
 /// The planned work of one call.
@@ -388,6 +426,65 @@ mod tests {
                 .map(|part| Component::new(part).expect("valid component"))
                 .collect(),
         )
+    }
+
+    #[test]
+    fn should_count_only_a_missing_path_as_removed_when_stat_fails() {
+        // given
+        use rustix::io::Errno;
+        let missing = [Errno::NOENT, Errno::NOTDIR, Errno::LOOP];
+        let transient = [
+            Errno::IO,
+            Errno::STALE,
+            Errno::TIMEDOUT,
+            Errno::NOTCONN,
+            Errno::ACCESS,
+            Errno::NOMEM,
+            Errno::INTR,
+            Errno::NAMETOOLONG,
+        ];
+
+        // when
+        let gone: Vec<bool> = missing
+            .iter()
+            .map(|errno| removed(false, Named::Failed(*errno)))
+            .collect();
+        let kept: Vec<bool> = transient
+            .iter()
+            .map(|errno| removed(false, Named::Failed(*errno)))
+            .collect();
+
+        // then
+        assert_eq!(gone, [true; 3]);
+        assert_eq!(kept, [false; 8]);
+    }
+
+    #[test]
+    fn should_count_removed_when_held_directory_has_no_link_whatever_the_path_says() {
+        // given
+        let outcomes = [
+            Named::Same,
+            Named::Other,
+            Named::Failed(rustix::io::Errno::IO),
+        ];
+
+        // when
+        let removals: Vec<bool> = outcomes.iter().map(|named| removed(true, *named)).collect();
+
+        // then
+        assert_eq!(removals, [true; 3]);
+    }
+
+    #[test]
+    fn should_count_removed_only_when_path_names_another_object() {
+        // given
+        let (same, other) = (Named::Same, Named::Other);
+
+        // when
+        let removals = (removed(false, same), removed(false, other));
+
+        // then
+        assert_eq!(removals, (false, true));
     }
 
     #[test]

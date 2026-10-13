@@ -118,3 +118,10 @@ The FORMAL-10 checkpoint review found, in `preview-conformance`:
   composition's own drain test sends a 64 MiB body.
 - Changing a script without its run, or a run without its script, fails `cargo xtask
   check`'s unit tests before any trace is regenerated.
+- The pipeline reports a step after it has run, so the warnings and
+  `WatcherEvents::changed` for the events the coordinator returns on receiving a batch now
+  come after the reconcile that batch asked for, not before it as the inline pipeline
+  emitted them. Every
+  event still comes once and in the coordinator's order, and the reconcile changes nothing a
+  user sees in between (the revision waits for the window), so the order was kept as is
+  (OPS-04 review); restoring it would need a reporting callback inside `WatchDecisions`.

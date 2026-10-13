@@ -40,7 +40,8 @@ without a model change fails it too, wherever the model observes the difference.
   `stopServer`. A bind failure is a port the driver already holds. A refused start is a root
   that does not exist. A watcher failure is the `start_with_unavailable_watcher` seam.
 - **Watcher:** the operating system's notifications (modify, create, delete, rename, atomic
-  save, temp-file writes, `.git` changes, directory deletion and recreation, root deletion in
+  save, temp-file writes and `.git` changes, which the bridge drops before its channel as the
+  code does (ADR 0075), directory deletion and recreation, root deletion in
   its two parts (the entries, then the root, which only the parent's watch reports: ADR 0073)
   and recreation,
   duplicates, reordering, queue overflow, runtime failure) come from the trace's own
@@ -90,7 +91,7 @@ edits each one at one state of a committed trace and requires the replay to stop
 | lifecycle | `stopIdempotent` | A stop is accepted in every state; a second one changes and performs nothing |
 | lifecycle | `failedStartupHoldsNothing` | A failed start-up leaves nothing allocated, and `Failed` is final |
 | lifecycle | `shutdownInPlanOrder` | Shutdown effects run in plan.md section 9's order: listener, streams, watcher, tasks |
-| watcher | `onlyEligibleTriggerReload` | Only notifications naming a served entry, or an overflow, make a reload pending |
+| watcher | `onlyEligibleTriggerReload` | Only notifications naming a served entry, or an overflow, make a reload pending; no change of an ineligible path ever takes a slot of the bridge's channel (ADR 0075) |
 | watcher | `noLostEligibleChange` | A settled pipeline has published every change it saw; once `Watching`, nothing is pending |
 | watcher | `boundedReloadsPerBurst` | One revision per burst, after a quiet window, however many duplicates it absorbs |
 | watcher | `failureIsExplicit` | Live reload is claimed only with every eligible directory watched; a registration failure is claimed only while a directory is outstanding; each degradation and recovery is announced once, the one escalation to a root removal included |
@@ -141,7 +142,16 @@ scheduled lane: see "Verification baseline" for what was tried.
 - **Watcher:** revision exhaustion, the 64-path cap, nesting below one directory level, a
   watcher that cannot be created, and `Closed` before shutdown. How a root removal is
   detected (the root descriptor's identity against the path) is the adapter's; the model has
-  the outcome only.
+  the outcome only. A `stat` of the root path that fails for any reason but a missing path
+  (`EIO`, `ESTALE` and the like) is not a removal and changes no health, so it is outside the
+  model too (ADR 0067, amended by the OPS-04 review).
+- **Watcher, macOS is a superset outside the model:** the model's OS reports a change only
+  through the watch of the directory that holds it, which is Linux's behaviour. macOS watches
+  the root with one recursive FSEvents stream (ADR 0075), so a change in an eligible directory
+  whose registration failed is still delivered there, where Linux is blind to it. That only
+  adds notifications the model would excuse as unseen: an extra, harmless reload of a change
+  the model counts as pending, and the health still follows the registration failure, as the
+  model has it.
 - **Watcher, what the replay drives and what it does not:** it drives the real coordinator,
   debouncer, classification, change set, health and reload state through the pipeline's own
   synchronous decision step (`WatchDecisions` in `watch_pipeline.rs`: receive, settle, the

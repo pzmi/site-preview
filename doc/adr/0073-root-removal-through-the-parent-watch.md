@@ -72,9 +72,17 @@ not holding the root's descriptor (plan.md section 5.3 serves through it).
   repair. Under the same load the binary's test failed 0 times in 30.
 - One more inotify watch per server. The parent's other traffic (often a busy directory such
   as a home directory) wakes the native watcher's thread and is dropped there; it never reaches
-  the channel. It shares the instance's kernel queue, so a very busy parent makes a queue
+  the channel. That includes the root's own `IN_OPEN` and `IN_CLOSE_NOWRITE`, which the parent
+  reports for the root's path whenever the root directory is opened (a reconcile's walk, a
+  listing): `translate` makes them access-only changes, which the bridge drops before the
+  channel. It shares the instance's kernel queue, so a very busy parent makes a queue
   overflow (a full reconcile and a full reload) a little more likely.
 - `notify` drops its own watch of the root when the parent reports the root removed or moved
   away; the watcher has degraded for good by then, so nothing is lost.
+- `mv site x && mv x site` while site-preview runs is reported by the parent as two changes
+  on the root, so a full reconcile follows. Run after both moves, it finds the same directory
+  at the path, keeps live reload and re-watches the root in place
+  (`should_keep_watching_root_when_it_is_renamed_away_and_back`); run between them, it finds
+  the root removed and degrades for good, as for any move away (ADR 0067).
 - The bounded check's depth table changes: a root deletion is two steps now, so the watcher's
   bounded run reaches `reachesRootDeleted` but no longer `reachesRootRemoved` (3 steps).

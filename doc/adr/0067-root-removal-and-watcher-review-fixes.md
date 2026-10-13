@@ -5,7 +5,8 @@ Date: 2026-10-13
 ## Status
 
 Proposed (planner default — owner may override). Amended by ADR 0073: the root's removal
-reaches a reconcile through a watch on the root's parent (Linux).
+reaches a reconcile through a watch on the root's parent (Linux). Amended by the OPS-04
+review: only a definite answer is a removal (see Amendment).
 
 Amends [ADR 0054](0054-watcher-model.md) (its root-deletion decision) and
 [ADR 0048](0048-watcher-callback-bridge.md) (the order of `next`).
@@ -73,6 +74,27 @@ The FORMAL-10 checkpoint review found, in the watcher and its models:
   of `nextBatch`, a capped start-up in `init`, the invariant `noLiveClaimWithoutRoot`, and a
   `failureIsExplicit` conjunct that a `RegistrationFailed` degradation needs a directory
   outstanding; `lifecycle.qnt` keeps `Failed` terminal (see Consequences).
+
+## Amendment (OPS-04 review): a failed `stat` is not a removal
+
+The check took any failure of the path's `stat` for a removal, so a transient `EIO`,
+`ESTALE`, `ETIMEDOUT` or `ENOTCONN` of a network or FUSE file system, an `EACCES` on a
+parent, or `ENOMEM` disabled live reload for good. Now only a definite answer counts: the
+held directory has no link left; the path names another object (device and inode differ);
+or the `stat` fails with `ENOENT`, `ENOTDIR` (a component is a file now) or `ELOOP` (the path
+is a link loop now), none of which names a directory at all. Any other failure is ignored:
+the reconcile goes on through the held descriptor as if the root stood, and the next
+reconcile checks again. The decision is a pure function over the two `stat` results
+(`removed` in `reconcile.rs`), unit-tested for every errno case.
+
+Ignoring was chosen over a recoverable degradation. A degradation would be a health change
+with its own model, warning and recovery, for a condition the walk already reports when it
+lasts: the walk runs through the same file system, so a persistent fault there fails the
+registration and degrades with `RegistrationFailed`, which recovers. The residual risk is a
+real removal whose one reconcile met a transient error; it is found by the next reconcile any
+change asks for, as when the parent cannot be watched (ADR 0073). No health changes, so the
+model is unchanged (doc/formal-models.md lists the case as outside it).
+`should_count_only_a_missing_path_as_removed_when_stat_fails` fails with the old reading.
 
 ## Consequences
 
