@@ -72,6 +72,13 @@ pub const CATALOG: &[Check] = &[
         true,
     ),
     row(
+        "platform-tests",
+        "integration",
+        "cargo nextest run --workspace --locked --profile ci --exclude preview-conformance --exclude xtask -E not binary(compile_fail)",
+        "OPS-03",
+        false,
+    ),
+    row(
         "doctests",
         "unit",
         "cargo test --locked --workspace --doc",

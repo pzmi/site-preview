@@ -83,3 +83,4 @@ This directory holds the decisions behind site-preview, one file per decision, i
 | [0072](0072-ci-job-topology-and-stage-parity.md) | CI job topology: one job per level, `check --only` parity, restore-only PR caches, `formal.yml` and `security.yml` scheduled only | Proposed |
 | [0070](0070-conformance-harness-review-fixes.md) | Conformance harness review fixes: a declared model view, the pipeline's shared decision step, the stop outcome, per-field sensitivity | Proposed |
 | [0073](0073-root-removal-through-the-parent-watch.md) | A root's removal is notified through a watch on its parent (Linux), since the held root descriptor hides it from the root's own watch | Proposed |
+| [0074](0074-native-platform-matrix.md) | Native platform matrix: a `platform` job on four runners and the non-gate `platform-tests` stage | Proposed |

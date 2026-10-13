@@ -258,7 +258,30 @@ A descriptor limit (`ulimit -n`) can produce the second message as well.
 - A directory that appears after start-up is registered automatically, and one that is
   removed is dropped. If it was created inside a hidden or excluded directory it is ignored,
   by design.
-- On macOS the watcher uses FSEvents; the inotify settings do not apply.
+- On macOS the watcher uses FSEvents; the inotify settings do not apply. See
+  [macOS](#macos-fsevents) below.
+
+### macOS (FSEvents)
+
+CI runs the product tests on `macos-15` (arm64) and `macos-15-intel` (OPS-03, ADR 0074).
+What differs from Linux, by design of the platform:
+
+- **Latency and coalescing.** FSEvents batches events: a change arrives some tens of
+  milliseconds late, and several quick changes to one file may reach the watcher as one
+  event (a create and a write may be a single notification). The server publishes at least
+  one reload per burst, never one per write; no test or promise depends on an exact latency.
+- **Streams are recursive.** FSEvents covers a whole tree, so ignored directories
+  (`node_modules`, hidden ones) are filtered out after the kernel reports them; they cost
+  nothing in watch quota but do wake the process. Each directory registration restarts the
+  stream, so start-up takes longer on a site with thousands of directories, and a change made
+  during that restart may be missed until the next change in the file.
+- **Names that are not UTF-8** inside the site are not supported by the watcher's FSEvents
+  backend (upstream limitation, ADR 0047); the site still serves, and a root path that is not
+  UTF-8 starts in degraded mode (`watch-unavailable`).
+- **Temporary paths** under `/var` are really `/private/var`. The server resolves the root
+  once and prints the resolved path; compare against that, not the path you typed.
+- **Descriptor limit.** A macOS process starts with 256 open files; raise it with
+  `ulimit -n 4096` before serving a very busy site.
 
 ## Shutdown
 

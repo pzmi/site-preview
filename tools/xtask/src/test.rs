@@ -26,29 +26,52 @@ pub fn stages() -> Vec<Stage> {
 
 /// A nextest stage under the `ci` profile: the workspace without the conformance replay
 /// (ADR 0060), narrowed by `filter`, with the proptest floor and the unknown-key guard.
-fn nextest_stage(name: &'static str, filter: &str, developer_cases: Option<&str>) -> Stage {
-    Stage::new(
-        name,
-        "cargo",
-        &[
-            "nextest",
-            "run",
-            "--workspace",
-            "--locked",
-            "--profile",
-            "ci",
-            // The conformance replay runs once, in `conformance` (ADR 0060).
-            "--exclude",
-            "preview-conformance",
-            "-E",
-            filter,
-        ],
+fn nextest_stage(
+    name: &'static str,
+    filter: &str,
+    developer_cases: Option<&str>,
+    also_exclude: &[&str],
+) -> Stage {
+    let mut args = vec![
+        "nextest",
+        "run",
+        "--workspace",
+        "--locked",
+        "--profile",
+        "ci",
+        // The conformance replay runs once, in `conformance` (ADR 0060).
+        "--exclude",
+        "preview-conformance",
+    ];
+    for package in also_exclude {
+        args.extend(["--exclude", package]);
+    }
+    args.extend(["-E", filter]);
+    Stage::new(name, "cargo", &args)
+        .needs("cargo-nextest")
+        // nextest 0.9.148 has no profile-level env table, so the case count is set here.
+        .env("PROPTEST_CASES", &proptest_cases(developer_cases))
+        // A config key nextest ignores is a silent no-op; fail closed on it.
+        .deny_stderr("ignoring unknown configuration key")
+}
+
+/// The `platform-tests` stage (OPS-03, ADR 0074): the product crates' unit and integration
+/// tests, run natively on each CI platform by the `platform` job.
+///
+/// It is the whole `unit-tests` plus `integration-tests` run minus what is not OS behaviour:
+/// `xtask` (its security fixtures need cargo-deny, Gitleaks and actionlint, which only the
+/// Linux x86-64 jobs install, and its repository policy tests read the Linux-specific CI
+/// definition) and the compile-fail tests (rustc diagnostics, owned by the Linux jobs). It is
+/// not part of [`stages`] or of `check`: on Linux the two stages it repeats already run, so a
+/// local `check` would run everything twice. Reached only as `cargo xtask test --only
+/// platform-tests`. Pinned by `should_run_the_product_crates_natively_when_platform_stage_is_built`.
+fn platform_stage(developer_cases: Option<&str>) -> Stage {
+    nextest_stage(
+        "platform-tests",
+        "not binary(compile_fail)",
+        developer_cases,
+        &["xtask"],
     )
-    .needs("cargo-nextest")
-    // nextest 0.9.148 has no profile-level env table, so the case count is set here.
-    .env("PROPTEST_CASES", &proptest_cases(developer_cases))
-    // A config key nextest ignores is a silent no-op; fail closed on it.
-    .deny_stderr("ignoring unknown configuration key")
 }
 
 /// [`stages`] with the developer's `PROPTEST_CASES`, if any, given.
@@ -61,8 +84,8 @@ fn nextest_stage(name: &'static str, filter: &str, developer_cases: Option<&str>
 /// `should_split_the_workspace_run_by_test_kind_when_test_is_built`.
 fn stages_with(developer_cases: Option<&str>) -> Vec<Stage> {
     vec![
-        nextest_stage("unit-tests", "not kind(test)", developer_cases),
-        nextest_stage("integration-tests", "kind(test)", developer_cases),
+        nextest_stage("unit-tests", "not kind(test)", developer_cases, &[]),
+        nextest_stage("integration-tests", "kind(test)", developer_cases, &[]),
         Stage::new(
             "doctests",
             "cargo",
@@ -94,7 +117,14 @@ fn select(all: Vec<Stage>, only: Option<&str>) -> Result<Vec<Stage>, String> {
 
 /// Runs `test` (or one of its stages) and returns the exit code.
 pub fn run(only: Option<&str>) -> i32 {
-    match select(stages(), only) {
+    let all = if only == Some("platform-tests") {
+        vec![platform_stage(
+            std::env::var("PROPTEST_CASES").ok().as_deref(),
+        )]
+    } else {
+        stages()
+    };
+    match select(all, only) {
         Ok(stages) => finish(&run_report(&stages, &tools::require)),
         Err(err) => {
             eprintln!("xtask: {err}");
@@ -179,6 +209,28 @@ mod tests {
             assert!(debug.contains("(\"PROPTEST_CASES\", \"1024\")"), "{debug}");
         }
         assert_eq!(stages[1].tool, Some("cargo-nextest"));
+    }
+
+    #[test]
+    fn should_run_the_product_crates_natively_when_platform_stage_is_built() {
+        // given
+        let stage = platform_stage(None);
+
+        // when
+        let debug = format!("{:?}", stage.action);
+
+        // then
+        assert_eq!(stage.name, "platform-tests");
+        assert_eq!(stage.tool, Some("cargo-nextest"));
+        assert!(debug.contains("\"xtask\""), "{debug}");
+        assert!(debug.contains("preview-conformance"), "{debug}");
+        assert!(debug.contains("not binary(compile_fail)"), "{debug}");
+        assert!(!debug.contains("kind(test)"), "{debug}");
+        assert!(debug.contains("(\"PROPTEST_CASES\", \"1024\")"), "{debug}");
+        assert!(
+            stages().iter().all(|s| s.name != "platform-tests"),
+            "a plain `test` would run the workspace twice"
+        );
     }
 
     #[test]

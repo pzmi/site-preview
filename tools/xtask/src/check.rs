@@ -296,4 +296,35 @@ mod tests {
         assert!(jobs.contains_key("required"), "{jobs:?}");
         assert_eq!(got, want);
     }
+
+    #[test]
+    fn should_run_the_platform_job_on_the_four_native_runners_when_ci_is_read() {
+        // given
+        let text = std::fs::read_to_string(crate::repo::root().join(".github/workflows/ci.yml"))
+            .expect("ci.yml");
+
+        // when
+        let matrix = text
+            .lines()
+            .find(|l| l.trim_start().starts_with("os: ["))
+            .expect("the platform matrix");
+
+        // then
+        for runner in [
+            "ubuntu-24.04",
+            "ubuntu-24.04-arm",
+            "macos-15",
+            "macos-15-intel",
+        ] {
+            assert!(
+                matrix.contains(&format!("{runner},")) || matrix.contains(&format!("{runner}]")),
+                "{runner}: {matrix}"
+            );
+        }
+        assert!(text.contains("cargo xtask test --only platform-tests"));
+        assert!(
+            !text.to_ascii_lowercase().contains("windows"),
+            "D2: no Windows"
+        );
+    }
 }

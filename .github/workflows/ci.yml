@@ -146,6 +146,52 @@ jobs:
           key: ${{ steps.rust.outputs.cache-key }}
           hit: ${{ steps.rust.outputs.cache-hit }}
 
+  # The product crates' unit and integration tests (adapter-fs, the real OS watcher, the symlink
+  # race, the CLI black-box suites) on each native platform, because the code under test is the
+  # operating system's: inotify, FSEvents, openat/O_NOFOLLOW errnos, signals (foundation.md
+  # section 10, OPS-03, ADR 0074). It installs neither Gitleaks nor actionlint
+  # (linux x86-64 only) and so runs `cargo xtask test --only platform-tests`, which leaves out
+  # the xtask package whose fixtures need them; every `check` stage stays in exactly one other
+  # job. Every platform runs to the end (`fail-fast: false`) so one red leg never hides another.
+  platform:
+    name: Platform (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-15, macos-15-intel]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Rust
+        id: rust
+        uses: ./.github/actions/setup-rust
+        with:
+          job: platform-${{ matrix.os }}
+          tools: cargo-nextest
+
+      - name: Platform tests
+        run: cargo xtask test --only platform-tests
+
+      - name: Keep the JUnit report of a failed run
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: junit-platform-${{ matrix.os }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            target/nextest/ci/junit.xml
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Save caches (main only)
+        uses: ./.github/actions/save-rust-cache
+        with:
+          key: ${{ steps.rust.outputs.cache-key }}
+          hit: ${{ steps.rust.outputs.cache-hit }}
+
   conformance:
     name: Conformance (Quint)
     runs-on: ubuntu-24.04
@@ -398,6 +444,7 @@ jobs:
       - static
       - fast-tests
       - integration
+      - platform
       - conformance
       - coverage
       - security

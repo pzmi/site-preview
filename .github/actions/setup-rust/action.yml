@@ -2,7 +2,8 @@ name: Set up Rust for a CI job
 description: >-
   Installs the toolchain from rust-toolchain.toml, restores the cargo registry, build output
   and installed tools from the cache, and installs the pinned dev tools the job names. The
-  cache is restored only; actions/cache/save runs in save-rust-cache, on main only, so a pull
+  cache key names the runner OS and architecture (a macOS or arm64 entry never restores on
+  another platform). The cache is restored only; actions/cache/save runs in save-rust-cache, on main only, so a pull
   request never writes an entry that would evict main's (ADR 0072). A cache entry is a speedup
   only: cargo fingerprints decide what is rebuilt, and the xtask checks the version of every
   tool it runs. Run it after checkout.
@@ -41,9 +42,9 @@ runs:
           ~/.cargo/registry/cache
           ~/.cargo/git/db
           target
-        key: ${{ inputs.job }}-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'tools/versions.toml') }}-${{ inputs.tools }}
+        key: ${{ inputs.job }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'tools/versions.toml') }}-${{ inputs.tools }}
         restore-keys: |
-          ${{ inputs.job }}-${{ runner.os }}-
+          ${{ inputs.job }}-${{ runner.os }}-${{ runner.arch }}-
 
     - name: Install pinned dev tools
       if: inputs.tools != ''
