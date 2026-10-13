@@ -4,7 +4,8 @@ Date: 2026-10-13
 
 ## Status
 
-Proposed (planner default — owner may override)
+Proposed (planner default — owner may override). Amended by ADR 0073: the root's removal
+reaches a reconcile through a watch on the root's parent (Linux).
 
 Amends [ADR 0054](0054-watcher-model.md) (its root-deletion decision) and
 [ADR 0048](0048-watcher-callback-bridge.md) (the order of `next`).

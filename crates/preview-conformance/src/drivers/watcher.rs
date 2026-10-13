@@ -19,7 +19,7 @@
 //! | `settle(capped)` | [`WatchDecisions::settle`] |
 //! | `tick` | the [`FakeClock`] moves [`TICK_MS`] |
 //! | `shutdown` | the driver stops applying anything but time |
-//! | OS actions, `duplicate`, `reorder`, `kernelQueue`, `runtimeFailure`, `freeWatch` | nothing: they change only the environment, which the next `receive` reads |
+//! | OS actions (`rootEmpty` and `rootDelete` are the two parts of `rm -r` of the root), `duplicate`, `reorder`, `kernelQueue`, `runtimeFailure`, `freeWatch` | nothing: they change only the environment, which the next `receive` reads |
 //!
 //! A reconcile the decisions run reports what the watcher adapter would (ADR 0050, `reconciled`
 //! in composition's bootstrap), from the previous state's `fs` and `src` and the step's
@@ -563,7 +563,7 @@ impl<C: Coordinator> Driver for WatcherDriver<C> {
             "settle" => self.settle(&env, params)?,
             "shutdown" => self.cancelled = true,
             "modify" | "createFile" | "deleteFile" | "renameFile" | "saveAtomically"
-            | "tempWrite" | "gitChange" | "dirDelete" | "dirCreate" | "freeWatch"
+            | "tempWrite" | "gitChange" | "dirDelete" | "dirCreate" | "freeWatch" | "rootEmpty"
             | "rootDelete" | "rootRecreate" | "kernelQueue" | "runtimeFailure" | "duplicate"
             | "reorder" => {}
             other => return Err(DriverError::UnknownAction(other.to_owned())),

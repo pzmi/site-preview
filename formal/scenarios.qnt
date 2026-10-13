@@ -741,13 +741,15 @@ module watcherScenarios {
       .then(settle(false))
       .expect(allInvariants and revision == 1 and last.firedFull and settled and ghost.pending == Set())
 
-  /// The root is deleted: every removal and the root's own, more than the channel holds, so
-  /// a loss too. The loss's full reconcile finds the root gone and degrades with
-  /// `RootRemoved`, once; one full revision covers every removal. The root recreated at the
-  /// same path is not the served one and is never notified: the watcher stays degraded and
-  /// live reload is not claimed again (ADR 0067).
+  /// The root is deleted: every removal and the root's own (through its parent's watch, ADR
+  /// 0073), more than the channel holds, so a loss too. The loss's full reconcile finds the
+  /// root gone and degrades with `RootRemoved`, once; one full revision covers every removal.
+  /// The root recreated at the same path is not the served one: its parent's watch reports
+  /// it, and the reconcile that asks for still finds the root removed, so the watcher stays
+  /// degraded and live reload is not claimed again (ADR 0067).
   run rootDeleteRecreate =
     initWith(false)
+      .then(rootEmpty)
       .then(rootDelete)
       .expect(allInvariants and src.overflow and src.queue.length() == CAP and src.watched == Set())
       .then(receive(4, false))
@@ -760,6 +762,9 @@ module watcherScenarios {
       .then(receive(4, false))
       .expect(allInvariants and health == HDegraded(RootRemoved) and last.events == [])
       .then(rootRecreate)
+      .expect(allInvariants and src.queue.length() == 1)
+      .then(receive(1, false))
+      .expect(allInvariants and health == HDegraded(RootRemoved) and last.events == [] and last.needsReconcile)
       .then(tick)
       .then(tick)
       .then(settle(false))
@@ -780,6 +785,7 @@ module watcherScenarios {
     initWith(true)
       .then(receive(1, false))
       .expect(allInvariants and health == HDegraded(RegistrationFailed))
+      .then(rootEmpty)
       .then(rootDelete)
       .expect(allInvariants and src.queue.length() == 4 and not(src.overflow))
       .then(receive(4, false))
@@ -793,6 +799,38 @@ module watcherScenarios {
       .then(tick)
       .then(settle(false))
       .expect(allInvariants and settled and health == HDegraded(RootRemoved) and ghost.pending == Set())
+
+  /// `rm -r` of the root with the pipeline between its two parts: the removals below the
+  /// root are received and reconciled while the emptied root still stands, so that reconcile
+  /// finds no root removal; then the root itself goes. Its own watch says nothing (the
+  /// server's descriptor keeps its inode: no `IN_DELETE_SELF`), so only the watch of its
+  /// parent can report it, and that report's reconcile degrades with `RootRemoved`
+  /// (FORMAL-10).
+  run rootRemovedAfterEmptyReconcile =
+    initWith(false)
+      .then(rootEmpty)
+      .expect(allInvariants and src.queue.length() == 4 and not(src.overflow))
+      .then(receive(4, false))
+      .expect(allInvariants and fs.rootPresent and health == HWatching and src.queue == [])
+      .then(rootDelete)
+      .expect(allInvariants and src.queue.length() == 1)
+      .then(receive(1, false))
+      .expect(and {
+        allInvariants,
+        health == HDegraded(RootRemoved),
+        last.events == [EvDegraded(RootRemoved)],
+      })
+      .then(tick)
+      .then(tick)
+      .then(settle(false))
+      .expect(and {
+        allInvariants,
+        settled,
+        revision == 1,
+        ghost.pending == Set(),
+        health == HDegraded(RootRemoved),
+        ghost.degradedEvents == 1,
+      })
 
   /// Shutdown drops a pending change with the task: nothing fires afterwards.
   run shutdownDropsPending =

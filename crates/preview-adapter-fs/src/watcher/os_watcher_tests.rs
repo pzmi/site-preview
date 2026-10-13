@@ -1075,6 +1075,89 @@ fn should_report_root_removed_when_root_is_deleted() {
 }
 
 #[test]
+fn should_notify_root_removal_when_emptied_root_is_removed() {
+    // given: `rm -r` of the root in its two parts, with the reconcile the first part asks for
+    // run while the emptied root still stands (FORMAL-10)
+    let (_base, root) = site();
+    let site = open_site_root(&root).expect("open root");
+    let (mut source, report) = NotifyChangeSource::start(&site.dir, &site.display_path);
+    assert!(report.is_complete(), "{report:?}");
+    fs::remove_file(site.display_path.join("index.html")).expect("remove the page");
+    pump_until(
+        &mut source,
+        &site,
+        "the page's removal delivered",
+        |_, changes| names_path(changes, "index.html"),
+    );
+    let before = source.reconcile_changed(&site.dir);
+
+    // when: the root itself goes while its descriptor is held, so its own watch is told
+    // nothing
+    fs::remove_dir(&site.display_path).expect("remove the root");
+
+    // then: the parent's watch reports it as a change on the root, whose reconcile finds the
+    // root removed
+    let mut changes = Vec::new();
+    let delivered = wait_until(DEADLINE, "the root's removal delivered", || {
+        while let Some(batch) = poll_next(&mut source) {
+            match batch {
+                ChangeBatch::Events(batch) => changes.extend(batch),
+                other => panic!("unexpected batch: {other:?}"),
+            }
+        }
+        changes.iter().any(|change| change.path.is_root())
+    });
+    let after = source.reconcile_changed(&site.dir);
+    assert!(!before.root_removed, "{before:?}");
+    assert!(delivered.is_ok(), "changes: {changes:?}");
+    assert!(
+        changes.contains(&ChangeEvent {
+            kind: ChangeKind::DirectoryChanged,
+            path: RelPath::root(),
+        }),
+        "{changes:?}"
+    );
+    assert!(after.root_removed, "{after:?}");
+}
+
+#[test]
+fn should_keep_watching_root_parent_when_a_link_to_it_is_withdrawn() {
+    // given: `x` is listed as a directory, then replaced by a link to the root's parent
+    let (_base, root) = site();
+    fs::create_dir(root.join("x")).expect("create x");
+    let site = open_site_root(&root).expect("open root");
+    let traversal = eligible_dirs(&site.dir, &RelPath::root()).expect("traverse");
+    let x = site.display_path.join("x");
+    fs::remove_dir(&x).expect("remove x");
+    std::os::unix::fs::symlink("..", &x).expect("swap in a link to the parent");
+    let (sender, notifications) = channel();
+    let mut watcher = NotifyWatcher::new(&site.display_path, sender).expect("create watcher");
+    watcher.watch_parent();
+
+    // when: watching `x` follows the link to the parent's watch, and withdrawing it removes
+    // that; then the root is removed
+    let errors = watcher.register(&site.dir, traversal);
+    fs::remove_file(&x).expect("remove the link");
+    fs::remove_file(site.display_path.join("index.html")).expect("remove the page");
+    fs::remove_dir(&site.display_path).expect("remove the root");
+
+    // then: the parent's watch was restored and reports the root's removal (the root's own
+    // watch reports only its opening)
+    let mut seen = Vec::new();
+    let removed = wait_until(DEADLINE, "the root's removal notified", || {
+        while let Ok(result) = notifications.try_recv() {
+            seen.push(result.expect("no watcher error"));
+        }
+        seen.iter().any(|event| {
+            matches!(event.kind, notify::EventKind::Remove(_))
+                && event.paths.iter().any(|path| path == &site.display_path)
+        })
+    });
+    assert_eq!(names(errors.iter().map(|e| e.dir.clone())), ["x"]);
+    assert!(removed.is_ok(), "{seen:?}");
+}
+
+#[test]
 fn should_report_root_removed_when_root_is_replaced_at_its_path() {
     // given
     let (base, root) = site();

@@ -75,10 +75,11 @@ This directory holds the decisions behind site-preview, one file per decision, i
 | [0064](0064-changed-line-gate-in-check.md) | The changed-line gate: merge-base with `origin/main` else `HEAD~1`, a stamped LCOV report, the `changed-lines` stage in `check` | Proposed. Amended by 0069 |
 | [0065](0065-fuzz-targets-beyond-the-domain-and-fuzz-lockfile-audit.md) | Fuzz targets beyond the domain (application, HTTP adapter) and the `deny-fuzz` audit of `fuzz/Cargo.lock` | Proposed |
 | [0066](0066-coverage-overall-floor-over-crates-only.md) | The overall coverage floor over `crates/` only; `xtask` measured and reported without a floor | Proposed |
-| [0067](0067-root-removal-and-watcher-review-fixes.md) | A removed root degrades the watcher for good; start-up failures first; start-up readiness only from `Starting`; composition's hidden seams | Proposed |
+| [0067](0067-root-removal-and-watcher-review-fixes.md) | A removed root degrades the watcher for good; start-up failures first; start-up readiness only from `Starting`; composition's hidden seams | Proposed. Amended by 0073 |
 | [0068](0068-mutation-scope-and-lane.md) | Mutation testing: scope, test selection and the weekly lane | Proposed |
 | [0069](0069-tooling-review-fixes-fuzz-lint-and-gate-bases.md) | Fuzz targets formatted and linted, the changed-line base of a push, the formal lane's concurrency | Proposed |
 | [0071](0071-miri-lane-for-domain-and-application.md) | The Miri lane: domain and application tests, forwarded proptest settings, `compile_fail` excluded | Proposed |
 | [0069](0069-tooling-review-fixes-fuzz-lint-and-gate-bases.md) | Fuzz targets formatted and linted, the changed-line base of a push, the formal lane's concurrency | Proposed. Amended by 0072 |
 | [0072](0072-ci-job-topology-and-stage-parity.md) | CI job topology: one job per level, `check --only` parity, restore-only PR caches, `formal.yml` and `security.yml` scheduled only | Proposed |
 | [0070](0070-conformance-harness-review-fixes.md) | Conformance harness review fixes: a declared model view, the pipeline's shared decision step, the stop outcome, per-field sensitivity | Proposed |
+| [0073](0073-root-removal-through-the-parent-watch.md) | A root's removal is notified through a watch on its parent (Linux), since the held root descriptor hides it from the root's own watch | Proposed |

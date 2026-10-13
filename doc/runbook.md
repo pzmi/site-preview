@@ -203,7 +203,10 @@ as "edits will not reload the page": reload manually or restart the server.
 site-preview opens the root once at start-up and serves through that open directory. When
 the root is deleted (`rm -r`), moved away, or replaced by another directory at the same path
 (a tool that rebuilds `dist/` by deleting and recreating it, a `git checkout` that swaps the
-directory), the next change it sees finds the path no longer names the served directory:
+directory), the watcher finds the path no longer names the served directory. On Linux it
+learns of it from a watch on the root's parent directory (the root's own watch is told nothing
+while site-preview holds the root open, ADR 0073); when that directory cannot be watched (no
+permission to read it), the next change below the root finds it instead:
 
 - the watcher degrades with `root-removed`, once, and never recovers, even when a directory
   appears at the path again;
@@ -217,7 +220,8 @@ directory instead of deleting it.
 ### Linux: inotify limits
 
 Each watched directory uses one inotify watch, and each watcher uses one inotify instance
-(site-preview uses one instance, with one watch per eligible directory, not per file).
+(site-preview uses one instance, with one watch per eligible directory, not per file, and on
+Linux one more on the root's parent directory, ADR 0073).
 The messages are:
 
 - `the system's file watch limit is reached (on Linux raise fs.inotify.max_user_watches)`

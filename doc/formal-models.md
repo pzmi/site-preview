@@ -40,7 +40,9 @@ without a model change fails it too, wherever the model observes the difference.
   `stopServer`. A bind failure is a port the driver already holds. A refused start is a root
   that does not exist. A watcher failure is the `start_with_unavailable_watcher` seam.
 - **Watcher:** the operating system's notifications (modify, create, delete, rename, atomic
-  save, temp-file writes, `.git` changes, directory and root deletion and recreation,
+  save, temp-file writes, `.git` changes, directory deletion and recreation, root deletion in
+  its two parts (the entries, then the root, which only the parent's watch reports: ADR 0073)
+  and recreation,
   duplicates, reordering, queue overflow, runtime failure) come from the trace's own
   environment, and so does the start-up (every directory watched, `d` unwatchable, or `d`'s
   registration past the relisting cap). The driver hands the bridge's delivery to
@@ -239,13 +241,16 @@ counted), measured by simulating at increasing depths and checked against the na
 | lifecycle | `step` | 4 | `reachesStopAwaitingBind`, `reachesFailed` (2), `reachesServingWatched`, `reachesServingDegraded`, `reachesStopAwaitingWatcher` (3), `reachesOpenStream` (4) | none |
 | lifecycle | `serverStep` | 2 | `reachesServingWatched`, `reachesServingDegraded`, `reachesFailed` (1), `reachesOpenStream` (2) | `reachesStopAwaiting*` (unreachable under `serverStep`, ADR 0051) |
 | reload | `step` | 4 | `reachesRestart` (2), `reachesReload` (4) | `reachesCoalescedGap` (5), `reachesHotApply` (6) |
-| watcher | `step` | 2 | `reachesOverflow`, `reachesDegraded`, `reachesExcusedChange`, `reachesRootDeleted`, `reachesCappedStartupWatching` (1), `reachesSettledWithUnseenChange`, `reachesRootRemoved` (2) | `reachesRecovered`, `reachesRootRemovalEscalated` (3), `reachesPublish`, `reachesSettledAfterPublish` (4), `reachesRecoveredCaughtUp` (6) |
+| watcher | `step` | 2 | `reachesOverflow`, `reachesDegraded`, `reachesExcusedChange`, `reachesCappedStartupWatching` (1), `reachesSettledWithUnseenChange`, `reachesRootDeleted` (2) | `reachesRecovered`, `reachesRootRemoved` (3), `reachesRootRemovalEscalated`, `reachesPublish`, `reachesSettledAfterPublish` (4), `reachesRecoveredCaughtUp` (6) |
 
 So the watcher's bounded run never reaches a published revision, let alone a settled state
 after one, a recovery or a caught-up recovery: `noLostEligibleChange`'s interesting cases and
 every conjunct about a fired revision are checked there only on states before any publish.
 They are checked by the simulation (`formal-verify-simulate`, 50 steps) and the replay, not
-by Apalache. The same holds for the reload model's coalesced gaps and hot applies.
+by Apalache. Nor does it reach a reported root removal, since `rm -r` of the root takes two
+steps (ADR 0073), so the race FORMAL-10 fixed there (a reconcile between them) is found by the
+simulation and the named runs only. The same holds for the reload model's coalesced gaps and
+hot applies.
 
 The depths are shallow on purpose: Apalache's search grows about tenfold per step on these
 models (reload: 24 s at 3 steps, 246 s at 4; watcher: 227 s at 1 step, 483 s at 2, over 600 s

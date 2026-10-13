@@ -42,10 +42,12 @@
  * outstanding retry, so `Changed` and `Full` act alike on this tree), a watcher that cannot be
  * created at all, and `Closed` (only after shutdown here). A root deletion leaves the server
  * on the deleted directory, as the root capability does (plan.md section 5.3): nothing served
- * can change after it, and a directory recreated at the same path is not served. The next
- * reconcile finds the root path no longer names the served directory and degrades with
- * `RootRemoved` (ADR 0067), which nothing recovers: live reload is never claimed for a root
- * that is gone (`noLiveClaimWithoutRoot`).
+ * can change after it, and a directory recreated at the same path is not served. `rm -r` of
+ * the root is two steps, the entries below it (`rootEmpty`) then the root (`rootDelete`), and
+ * the root's own watch never reports the second, because the held descriptor keeps its inode;
+ * the watch of the root's parent does (ADR 0073). The next reconcile finds the root path no
+ * longer names the served directory and degrades with `RootRemoved` (ADR 0067), which nothing
+ * recovers: live reload is never claimed for a root that is gone (`noLiveClaimWithoutRoot`).
  */
 module watcher {
   // ---------------------------------------------------------------------------------------
@@ -311,6 +313,15 @@ module watcher {
     else { ...w, src: offer(w.src, MEvent(n)) }
 
   pure def emit(w: World, ns: List[Notif]): World = ns.foldl(w, (acc, n) => emitOne(acc, n))
+
+  /// One notification through the watch of the root's parent directory (ADR 0073): the root
+  /// entry itself removed or created there. That watch is not a site directory, so it is not
+  /// in `watched`, and nothing but shutdown removes it; what it reports about other entries
+  /// of the parent is outside the root and dropped by the bridge, so the model omits it.
+  pure def emitParent(w: World, n: Notif): World =
+    if (w.cancelled) w
+    else if (w.src.osDropping) { ...w, src: { ...w.src, overflow: true } }
+    else { ...w, src: offer(w.src, MEvent(n)) }
 
   /// A registration failure reported at start-up that the pipeline has not received yet. Only
   /// start-up queues one, first, and nothing moves a failure (`duplicate` and `reorder` touch
@@ -733,31 +744,52 @@ module watcher {
     commit({ ...begin(world), fs: { ...fs, dUnwatchable: false } }),
   }
 
-  /// `rm -r` of the site root: every file and `d` go, then the root itself (its watch
-  /// reports its own removal), and the kernel drops every watch.
-  action rootDelete: bool = all {
+  /// The first part of `rm -r` of the site root: every entry below it goes, each reported
+  /// through the watch of the directory that held it, and the kernel drops `d`'s watch. The
+  /// root itself still stands, empty, until `rootDelete`: the pipeline may receive and
+  /// reconcile in between (FORMAL-10).
+  action rootEmpty: bool = all {
     fs.rootPresent,
+    fs.present != Set() or fs.dPresent,
     {
       val w0 = begin(world).changeServed(fs.present)
       val rootFiles = [Index, Css, Css2].select(p => fs.present.contains(p))
       val w1 = w0.emit(rootFiles.foldl([], (acc, p) => acc.append(note(KRemove, p))))
       val w2 = if (fs.present.contains(Sub)) w1.emit([note(KRemove, Sub)]) else w1
       val w3 = if (fs.dPresent) w2.emit([note(KDirChanged, DirD)]) else w2
-      val w4 = w3.emit([note(KRemove, Root)])
       commit({
-        ...w4,
-        fs: { ...w4.fs, present: Set(), dPresent: false, dUnwatchable: false, rootPresent: false },
-        src: { ...w4.src, watched: Set() },
+        ...w3,
+        fs: { ...w3.fs, present: Set(), dPresent: false, dUnwatchable: false },
+        src: { ...w3.src, watched: w3.src.watched.exclude(Set(DirD)) },
       })
     },
   }
 
+  /// The end of `rm -r` of the site root: the emptied root is removed. Its own watch reports
+  /// nothing: the server holds the root's descriptor (plan.md section 5.3), which keeps the
+  /// directory's inode, and inotify reports `IN_DELETE_SELF` only when the inode goes, after
+  /// the descriptor is closed (FORMAL-10). The watch of the root's parent reports it, as the
+  /// removal of a directory entry: `DirectoryChanged` on the root (ADR 0073).
+  action rootDelete: bool = all {
+    fs.rootPresent,
+    fs.present == Set(),
+    not(fs.dPresent),
+    {
+      val w = begin(world).emitParent(note(KDirChanged, Root))
+      commit({ ...w, fs: { ...w.fs, rootPresent: false }, src: { ...w.src, watched: Set() } })
+    },
+  }
+
   /// A new directory at the root's path. It is not the served root (the server holds the
-  /// deleted one's descriptor) and its parent is not watched: nothing is notified.
+  /// deleted one's descriptor); the watch of the root's parent reports its creation as
+  /// `DirectoryChanged` on the root (ADR 0073), whose reconcile still finds the root removed.
   action rootRecreate: bool = all {
     not(fs.rootPresent),
     not(fs.rootRecreated),
-    commit({ ...begin(world), fs: { ...fs, rootRecreated: true } }),
+    {
+      val w = begin(world).emitParent(note(KDirChanged, Root))
+      commit({ ...w, fs: { ...w.fs, rootRecreated: true } })
+    },
   }
 
   /// The OS's own notification queue overflows (`dropping`) or drains again.
@@ -857,6 +889,7 @@ module watcher {
     tempWrite,
     { nondet seen = oneOf(Set(true, false)) gitChange(seen) },
     dirDelete,
+    rootEmpty,
     { nondet unwatchable = oneOf(Set(true, false)) dirCreate(unwatchable) },
     freeWatch,
     { nondet dropping = oneOf(Set(true, false)) kernelQueue(dropping) },
@@ -872,8 +905,8 @@ module watcher {
     tick,
   }
 
-  /// The actions that end most of a run's interest: deleting the root, recreating it,
-  /// shutting down.
+  /// The actions that end most of a run's interest: deleting the (emptied) root, recreating
+  /// it, shutting down.
   action endStep = any { rootDelete, rootRecreate, shutdown, tick }
 
   /// Everything that can happen. A roll picks the lane first (half the OS, nine in twenty
@@ -972,8 +1005,9 @@ module watcher {
 
   /// Live reload is never claimed for a root that is gone (plan.md section 8.4: the tool
   /// "must not claim live reload is active when notifications are unavailable"): once the
-  /// source has delivered everything (the root's own removal, or the loss that hid it), a
-  /// deleted or replaced root has degraded the watcher with `RootRemoved`, and it stays so.
+  /// source has delivered everything (the root's removal, which its parent's watch reports, or
+  /// the loss that hid it), a deleted or replaced root has degraded the watcher with
+  /// `RootRemoved`, and it stays so.
   val noLiveClaimWithoutRoot = and {
     (not(cancelled) and not(fs.rootPresent) and src.queue == [] and not(src.overflow) and not(src.failure))
       implies health == HDegraded(RootRemoved),

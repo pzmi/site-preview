@@ -16,7 +16,7 @@ use preview_conformance::generate::{Family, formal_dir, regression};
 use preview_conformance::{Cause, Divergence, DriverError, Trace, replay};
 
 /// The named scenarios of `watcherScenarios`, each scripted in `watcher_traces.qnt`.
-const NAMED: [&str; 14] = [
+const NAMED: [&str; 15] = [
     "atomicSave",
     "burstOneReload",
     "dirRecreate",
@@ -26,6 +26,7 @@ const NAMED: [&str; 14] = [
     "recoveryAloneReloads",
     "rootDeleteRecreate",
     "rootRemovalEscalates",
+    "rootRemovedAfterEmptyReconcile",
     "runtimeFailureDegrades",
     "shutdownDropsPending",
     "startupCapDefersReadiness",

@@ -29,6 +29,13 @@
 //!   withdrawal removes it; after any withdrawal every recorded directory is therefore watched
 //!   again in place (on Linux). A swap in the instant between the watch and that check, then
 //!   back, is not detected; ADR 0047 records the residual window.
+//! - **The root's parent.** On Linux the root's parent directory is watched too, non-recursively
+//!   and outside the [`WatchSet`]: the server holds the root's descriptor, which keeps the
+//!   root's inode alive, so `inotify` reports neither `IN_DELETE_SELF` nor `IN_IGNORED` on the
+//!   root's own watch when the root is removed. Only the parent reports it, as the removal of
+//!   an entry whose path is the root: the bridge turns that into a change on the root, whose
+//!   reconcile finds the root removed (ADR 0073). Every other entry of the parent is outside
+//!   the root, and the bridge drops it unread.
 //! - **Record.** Successful registrations are kept in a [`WatchSet`], the answer to "is this
 //!   directory watched" for reconciliation.
 
@@ -231,6 +238,7 @@ impl NotifyWatcher {
         handler: H,
     ) -> Result<(Self, Vec<RegistrationError>), WatchFault> {
         let mut watcher = Self::new(display_root, handler)?;
+        watcher.watch_parent();
         let errors = match eligible_dirs(root, &RelPath::root()) {
             Ok(traversal) => watcher.register(root, traversal),
             Err(error) => vec![error.into()],
@@ -265,6 +273,20 @@ impl NotifyWatcher {
             #[cfg(test)]
             before_watch: None,
         })
+    }
+
+    /// Watches the root's parent directory on Linux (see the module documentation and ADR
+    /// 0073), so the root's removal is notified although the root's descriptor is held. Best
+    /// effort: when the parent cannot be watched (no permission to read it, the watch limit),
+    /// or the root is `/`, a root removal is found only by a reconcile some other change asks
+    /// for, as before. Watching it again is harmless: `inotify` keeps one watch per inode.
+    /// Pinned by `should_notify_root_removal_when_emptied_root_is_removed` and
+    /// `should_keep_watching_root_parent_when_a_link_to_it_is_withdrawn`.
+    pub(crate) fn watch_parent(&mut self) {
+        #[cfg(target_os = "linux")]
+        if let Some(parent) = self.display_root.parent() {
+            let _ = self.inner.watch(parent, RecursiveMode::NonRecursive);
+        }
     }
 
     /// Registers the directories of `traversal` not yet watched and reports its walk errors
@@ -349,14 +371,16 @@ impl NotifyWatcher {
 
     /// After a withdrawal, watches every recorded directory again in place, so a watch the
     /// withdrawal took from another directory (`inotify` hands back the existing watch for a
-    /// link to a watched directory) is restored. Bounded by [`MAX_REPAIR_ROUNDS`]; what is
-    /// left waits for the next call. Pinned by
-    /// `should_keep_watching_link_target_when_link_is_withdrawn`.
+    /// link to a watched directory) is restored; the root's parent too, which a link to it
+    /// would take the same way. Bounded by [`MAX_REPAIR_ROUNDS`]; what is left waits for the
+    /// next call. Pinned by `should_keep_watching_link_target_when_link_is_withdrawn` and
+    /// `should_keep_watching_root_parent_when_a_link_to_it_is_withdrawn`.
     pub(crate) fn repair(&mut self, root: &RootDir, errors: &mut Vec<RegistrationError>) {
         for _ in 0..MAX_REPAIR_ROUNDS {
             if !core::mem::take(&mut self.withdrawn) {
                 return;
             }
+            self.watch_parent();
             let recorded: Vec<RelPath> = self.watched.iter().cloned().collect();
             for dir in recorded {
                 if self.watched.contains(&dir)

@@ -215,25 +215,39 @@ module watcherTraces {
     at(5, settle(false)),
   }
 
-  /// `watcherScenarios::rootDeleteRecreate`: `init`, 7 steps.
+  /// `watcherScenarios::rootDeleteRecreate`: `init`, 9 steps.
   action rootDeleteRecreate = any {
-    at(0, W::rootDelete),
-    at(1, receive(4, false)),
+    at(0, W::rootEmpty),
+    at(1, W::rootDelete),
     at(2, receive(4, false)),
-    at(3, W::rootRecreate),
+    at(3, receive(4, false)),
+    at(4, W::rootRecreate),
+    at(5, receive(1, false)),
+    at(6, W::tick),
+    at(7, W::tick),
+    at(8, settle(false)),
+  }
+
+  /// `watcherScenarios::rootRemovalEscalates`: `initUnwatchable`, 7 steps.
+  action rootRemovalEscalates = any {
+    at(0, receive(1, false)),
+    at(1, W::rootEmpty),
+    at(2, W::rootDelete),
+    at(3, receive(4, false)),
     at(4, W::tick),
     at(5, W::tick),
     at(6, settle(false)),
   }
 
-  /// `watcherScenarios::rootRemovalEscalates`: `initUnwatchable`, 6 steps.
-  action rootRemovalEscalates = any {
-    at(0, receive(1, false)),
-    at(1, W::rootDelete),
-    at(2, receive(4, false)),
-    at(3, W::tick),
+  /// `watcherScenarios::rootRemovedAfterEmptyReconcile`: `init`, 7 steps.
+  action rootRemovedAfterEmptyReconcile = any {
+    at(0, W::rootEmpty),
+    at(1, receive(4, false)),
+    at(2, W::rootDelete),
+    at(3, receive(1, false)),
     at(4, W::tick),
-    at(5, settle(false)),
+    at(5, W::tick),
+    at(6, settle(false)),
   }
 
   /// `watcherScenarios::shutdownDropsPending`: `init`, 5 steps.
