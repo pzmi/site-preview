@@ -77,7 +77,11 @@ pub enum Command {
         reproduce: Option<PathBuf>,
     },
     /// Apalache bounded verification and multi-seed simulation of the Quint models.
-    FormalVerify,
+    FormalVerify {
+        /// Run Miri over the domain and application tests instead.
+        #[arg(long)]
+        miri: bool,
+    },
     /// Clean packaged artifact tests.
     ReleaseCheck,
     /// Print the check catalog as JSON.
@@ -105,7 +109,7 @@ impl Command {
             Self::Check => "check",
             Self::Mutation { .. } => "mutation",
             Self::Fuzz { .. } => "fuzz",
-            Self::FormalVerify => "formal-verify",
+            Self::FormalVerify { .. } => "formal-verify",
             Self::ReleaseCheck => "release-check",
             Self::ListChecks => "list-checks",
             Self::Doctor => "doctor",
@@ -129,6 +133,20 @@ mod tests {
 
         // then
         assert_eq!(id, "formal-verify");
+    }
+
+    #[test]
+    fn should_select_the_miri_lane_when_the_flag_is_given() {
+        // given
+        let plain = Cli::try_parse_from(["xtask", "formal-verify"]).unwrap();
+        let miri = Cli::try_parse_from(["xtask", "formal-verify", "--miri"]).unwrap();
+
+        // when
+        let flags = (plain.command, miri.command);
+
+        // then
+        assert!(matches!(flags.0, Command::FormalVerify { miri: false }));
+        assert!(matches!(flags.1, Command::FormalVerify { miri: true }));
     }
 
     #[test]

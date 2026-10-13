@@ -19,6 +19,14 @@ slow-timeout = { period = "30s", terminate-after = 4 }
 # nextest has no profile-level env table. Failing seeds persist in each crate's committed
 # `proptest-regressions/` directory.
 
+# The Miri lane (`cargo xtask formal-verify --miri`, TEST-09): Miri runs tests two to three
+# orders of magnitude slower than native code, so a test may take minutes. No retries, and a
+# test still ends after the terminate-after periods (20 minutes), so a hang is a failure.
+[profile.miri]
+retries = 0
+fail-fast = false
+slow-timeout = { period = "300s", terminate-after = 4 }
+
 [profile.ci.junit]
 path = "junit.xml"
 

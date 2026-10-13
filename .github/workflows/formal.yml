@@ -82,8 +82,8 @@ jobs:
   # of `cargo xtask check`. The hosted runner's default JDK (17 or newer) runs Apalache.
   # `formal-verify` fetches the pinned release itself, refuses it unless its SHA-256 equals the
   # one in tools/versions.toml, and unpacks it into ~/.quint before Quint runs (ADR 0061), so
-  # ~/.quint is never cached: what runs is always unpacked from a verified tarball. TEST-09
-  # adds its Miri job beside this one.
+  # ~/.quint is never cached: what runs is always unpacked from a verified tarball. The Miri
+  # job below sits beside this one.
   formal-verify:
     name: Formal verification (Apalache)
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
@@ -133,3 +133,48 @@ jobs:
           path: target/formal-verify/
           if-no-files-found: warn
           retention-days: 30
+
+  # The scheduled Miri lane (foundation.md section 10, ADR 0026, ADR 0071, TEST-09): the unit
+  # and component tests of preview-domain and preview-application under Miri on the dated
+  # nightly of tools/versions.toml. It is not part of `cargo xtask check` and does not run for
+  # pull requests. A missing component fails with what to install, never a skip.
+  miri:
+    name: Miri (domain and application)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install toolchain from rust-toolchain.toml
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - name: Cache cargo registry, build output, tools and the Miri sysroot
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/bin
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            ~/.cache/miri
+            target
+          key: miri-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'tools/versions.toml') }}
+          restore-keys: |
+            miri-${{ runner.os }}-
+
+      - name: Install pinned dev tools
+        run: cargo xtask install-tools cargo-nextest nightly
+
+      # The nightly is installed with the minimal profile, which has no Miri. The component
+      # name and the date come from tools/versions.toml through xtask, so the pin has one owner.
+      - name: Install Miri
+        run: |
+          nightly="$(sed -n '/^\[tools.nightly\]/,/^$/s/^version = "\(.*\)"/\1/p' tools/versions.toml)"
+          rustup "+${nightly}" component add miri rust-src
+          cargo "+${nightly}" miri setup
+
+      - name: Miri
+        run: cargo xtask formal-verify --miri

@@ -512,13 +512,17 @@ mod tests {
         assert_eq!(Component::new("a b").map(|c| c.0), Ok("a b".to_owned()));
     }
 
-    /// Every string of up to four symbols from an alphabet chosen to build dot segments,
+    /// Symbols per input of [`short_inputs`]: three under Miri, which runs this exhaustive
+    /// enumeration about a thousand times slower (doc/verification-scope.md).
+    const INPUT_LENGTH: u32 = if cfg!(miri) { 3 } else { 4 };
+
+    /// Every string of up to [`INPUT_LENGTH`] (four) symbols from an alphabet chosen to build dot segments,
     /// escapes (including `%2e`, `%2f`, `%5c`, `%25`) and separators, behind a leading `/`.
     fn short_inputs() -> Vec<String> {
         const ALPHABET: [&str; 10] = ["/", ".", "%", "2", "e", "f", "5", "c", "\\", "%25"];
         let mut inputs = vec![String::from("/")];
         let mut frontier = vec![String::from("/")];
-        for _ in 0..4 {
+        for _ in 0..INPUT_LENGTH {
             frontier = frontier
                 .iter()
                 .flat_map(|prefix| ALPHABET.iter().map(move |s| format!("{prefix}{s}")))

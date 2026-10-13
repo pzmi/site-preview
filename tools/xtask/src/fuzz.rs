@@ -118,7 +118,7 @@ fn execute(args: &[String]) -> i32 {
 }
 
 /// The pinned nightly's toolchain name, from `tools/versions.toml`.
-fn pinned_nightly() -> Result<String, String> {
+pub fn pinned_nightly() -> Result<String, String> {
     tools::manifest()?
         .into_iter()
         .find(|t| t.name == NIGHTLY_TOOL)

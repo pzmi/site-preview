@@ -633,7 +633,7 @@ mod tests {
 
         #[test]
         fn should_fire_full_or_with_changes_when_schedule_is_arbitrary(
-            steps in proptest::collection::vec(step(), 0..120),
+            steps in proptest::collection::vec(step(), 0..SCHEDULE_STEPS),
         ) {
             // given
             let mut d = debouncer(150);
@@ -674,6 +674,10 @@ mod tests {
         Overflow,
         Poll,
     }
+
+    /// Most steps per case. Miri runs about a thousand times slower than native code, so under
+    /// it the schedules are shorter (doc/verification-scope.md).
+    const SCHEDULE_STEPS: usize = if cfg!(miri) { 30 } else { 120 };
 
     fn step() -> impl Strategy<Value = (u64, Step)> {
         let kind = prop_oneof![

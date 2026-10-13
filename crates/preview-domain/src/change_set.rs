@@ -645,6 +645,10 @@ mod tests {
             })
     }
 
+    /// Most hot events per case. Miri runs about a thousand times slower than native code, so
+    /// under it the cases are shorter, still past the 64-path cap (doc/verification-scope.md).
+    const HOT_EVENTS: usize = if cfg!(miri) { 70 } else { 100 };
+
     fn hot_event() -> impl Strategy<Value = ChangeEvent> {
         (
             proptest::collection::vec("[a-z]{1,3}", 0..2),
@@ -662,7 +666,7 @@ mod tests {
     proptest! {
         #[test]
         fn should_be_hot_only_when_every_change_is_hot_and_within_cap(
-            hot in proptest::collection::vec(hot_event(), 0..100),
+            hot in proptest::collection::vec(hot_event(), 0..HOT_EVENTS),
             mixed in proptest::collection::vec(change_event(), 0..4),
             at in any::<prop::sample::Index>(),
         ) {

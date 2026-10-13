@@ -11,6 +11,10 @@
 //!   [`SIM_SAMPLES`] traces of [`SIM_STEPS`] steps each, far beyond the pull-request
 //!   simulation, and beyond the depth Apalache reaches.
 //!
+//! `cargo xtask formal-verify --miri` is the other scheduled lane: Miri over the unit and
+//! component tests of the domain and application crates, the code that carries no I/O (see
+//! [`miri_stages`] and `doc/verification-scope.md`).
+//!
 //! Apalache is the version `tools/versions.toml` pins. Before Quint runs, the xtask fetches
 //! that release from GitHub, refuses it unless its SHA-256 is the pinned one, and unpacks it
 //! into `~/.quint/apalache-dist-<version>` (`crate::apalache`, ADR 0061), where Quint finds it
@@ -136,9 +140,133 @@ pub fn stages() -> Vec<Stage> {
     ]
 }
 
-/// Runs `formal-verify` and returns the exit code.
-pub fn run() -> i32 {
-    finish(&run_report(&stages(), &tools::require))
+/// Runs `formal-verify` (with `--miri`, the Miri lane instead) and returns the exit code.
+pub fn run(miri: bool) -> i32 {
+    let stages = if miri { miri_stages() } else { stages() };
+    finish(&run_report(&stages, &tools::require))
+}
+
+/// The crates Miri runs: the ones with no file, socket, clock or process access, where
+/// undefined behaviour could only come from the code itself or a dependency's `unsafe`.
+pub const MIRI_PACKAGES: &[&str] = &["preview-domain", "preview-application"];
+
+/// Proptest cases per property under Miri (the normal lane runs far more). Miri is two to
+/// three orders of magnitude slower than native code, and UB does not depend on the case
+/// count: each case exercises the same code paths.
+pub const MIRI_PROPTEST_CASES: &str = "4";
+
+/// The nextest profile of the Miri run (`.config/nextest.toml`): the 30-second slow-test
+/// timeout of the other profiles is far too short for an interpreter.
+pub const MIRI_PROFILE: &str = "miri";
+
+/// The nextest filter of the Miri run: every test but the `trybuild` compile-fail suites,
+/// which start `cargo` and `rustc` as child processes and read the file system, none of which
+/// Miri can run. They check that invalid API use does not compile, which is not a property
+/// of executed code; the `unit-tests` stage still runs them (doc/verification-scope.md).
+pub const MIRI_FILTER: &str = "not binary(compile_fail)";
+
+/// The stages `formal-verify --miri` runs.
+pub fn miri_stages() -> Vec<Stage> {
+    vec![
+        Stage::in_process(
+            "formal-verify-miri",
+            "cargo +<pinned nightly> miri nextest run -p preview-domain -p preview-application",
+            miri,
+        )
+        .needs("cargo-nextest"),
+    ]
+}
+
+/// The `cargo` arguments of the Miri run on `nightly`.
+///
+/// `--no-fail-fast` so one run reports every test Miri rejects. `--locked` as everywhere.
+fn miri_args(nightly: &str) -> Vec<String> {
+    let mut args = vec![
+        format!("+{nightly}"),
+        "miri".to_owned(),
+        "nextest".to_owned(),
+        "run".to_owned(),
+        "--profile".to_owned(),
+        MIRI_PROFILE.to_owned(),
+        "--locked".to_owned(),
+        "--no-fail-fast".to_owned(),
+    ];
+    for package in MIRI_PACKAGES {
+        args.push("-p".to_owned());
+        args.push((*package).to_owned());
+    }
+    args.push("-E".to_owned());
+    args.push(MIRI_FILTER.to_owned());
+    args
+}
+
+/// The environment of the Miri run: the proptest case count (a caller's `PROPTEST_CASES`
+/// wins), no failure persistence, and `MIRIFLAGS` forwarding both into the interpreted
+/// program (Miri's isolation hides the host environment, so without the forwarding proptest
+/// would run its default 256 cases and look for `proptest-regressions/` through `getcwd`,
+/// which isolation refuses). The committed regression seeds are replayed by the ordinary test
+/// lane, so nothing is lost by not reading them here. A caller's `MIRIFLAGS` is kept first.
+fn miri_env(proptest_cases: Option<&str>, miriflags: Option<&str>) -> Vec<(&'static str, String)> {
+    let forward = "-Zmiri-env-forward=PROPTEST_CASES \
+                   -Zmiri-env-forward=PROPTEST_DISABLE_FAILURE_PERSISTENCE";
+    let flags = match miriflags.map(str::trim).filter(|f| !f.is_empty()) {
+        Some(existing) => format!("{existing} {forward}"),
+        None => forward.to_owned(),
+    };
+    vec![
+        (
+            "PROPTEST_CASES",
+            proptest_cases.unwrap_or(MIRI_PROPTEST_CASES).to_owned(),
+        ),
+        ("PROPTEST_DISABLE_FAILURE_PERSISTENCE", "true".to_owned()),
+        ("MIRIFLAGS", flags),
+    ]
+}
+
+/// Decides from `cargo +<nightly> miri --version`'s result (`None`: cargo could not run).
+fn classify_miri(nightly: &str, probe: Option<(bool, &str)>) -> Result<(), String> {
+    match probe {
+        Some((true, text)) if text.trim_start().starts_with("miri ") => Ok(()),
+        _ => Err(format!(
+            "Miri is not installed for {nightly}: run 'rustup +{nightly} component add miri \
+             rust-src' and then 'cargo +{nightly} miri setup' (ADR 0026)"
+        )),
+    }
+}
+
+fn require_miri(nightly: &str) -> Result<(), String> {
+    let probe = std::process::Command::new("cargo")
+        .args([&format!("+{nightly}"), "miri", "--version"])
+        .output()
+        .ok()
+        .map(|o| {
+            (
+                o.status.success(),
+                String::from_utf8_lossy(&o.stdout).into_owned(),
+            )
+        });
+    classify_miri(nightly, probe.as_ref().map(|(ok, t)| (*ok, t.as_str())))
+}
+
+fn miri() -> i32 {
+    let checked = tools::require("nightly")
+        .and_then(|()| crate::fuzz::pinned_nightly())
+        .and_then(|n| require_miri(&n).map(|()| n));
+    let nightly = match checked {
+        Ok(nightly) => nightly,
+        Err(err) => return fail(&err),
+    };
+    let cases = std::env::var("PROPTEST_CASES").ok();
+    let miriflags = std::env::var("MIRIFLAGS").ok();
+    let mut command = std::process::Command::new("cargo");
+    command
+        .args(miri_args(&nightly))
+        .envs(miri_env(cases.as_deref(), miriflags.as_deref()))
+        .current_dir(repo::root());
+    match command.status() {
+        Ok(status) => status.code().unwrap_or(1),
+        Err(err) => fail(&format!("cannot run cargo: {err}")),
+    }
 }
 
 /// Where logs, ITF traces and Apalache's run directories go.
@@ -606,6 +734,76 @@ mod tests {
         // then
         assert!(rows.iter().all(|r| !r.in_check && r.owner == "FORMAL-10"));
         assert!(crate::catalog::find("formal-verify").is_some_and(|c| !c.in_check));
+    }
+
+    #[test]
+    fn should_build_the_miri_command_when_the_nightly_is_pinned() {
+        // given
+        let nightly = "nightly-2026-10-01";
+
+        // when
+        let args = miri_args(nightly);
+
+        // then
+        assert_eq!(
+            args.join(" "),
+            "+nightly-2026-10-01 miri nextest run --profile miri --locked --no-fail-fast \
+             -p preview-domain -p preview-application -E not binary(compile_fail)"
+        );
+    }
+
+    #[test]
+    fn should_let_the_caller_choose_the_case_count_when_proptest_cases_is_set() {
+        // given
+        // when
+        let default = miri_env(None, None);
+        let chosen = miri_env(Some("32"), Some("-Zmiri-seed=1"));
+
+        // then
+        assert_eq!(
+            default[0],
+            ("PROPTEST_CASES", MIRI_PROPTEST_CASES.to_owned())
+        );
+        assert_eq!(chosen[0], ("PROPTEST_CASES", "32".to_owned()));
+        assert!(default.contains(&("PROPTEST_DISABLE_FAILURE_PERSISTENCE", "true".to_owned())));
+        let flags = |env: &[(&str, String)]| {
+            env.iter()
+                .find(|(k, _)| *k == "MIRIFLAGS")
+                .unwrap()
+                .1
+                .clone()
+        };
+        assert!(flags(&default).starts_with("-Zmiri-env-forward=PROPTEST_CASES"));
+        assert!(flags(&chosen).starts_with("-Zmiri-seed=1 -Zmiri-env-forward="));
+    }
+
+    #[test]
+    fn should_fail_with_the_install_command_when_miri_is_missing() {
+        // given
+        let nightly = "nightly-2026-10-01";
+
+        // when
+        let missing = classify_miri(nightly, Some((false, "")));
+        let unrunnable = classify_miri(nightly, None);
+        let present = classify_miri(nightly, Some((true, "miri 0.1.0 (abc 2026-10-01)\n")));
+
+        // then
+        assert!(missing.unwrap_err().contains("component add miri rust-src"));
+        assert!(unrunnable.is_err());
+        assert!(present.is_ok());
+    }
+
+    #[test]
+    fn should_keep_the_miri_stage_out_of_check_when_the_lane_is_listed() {
+        // given
+        let stages = miri_stages();
+
+        // when
+        let row = crate::catalog::find(stages[0].name).expect("listed in the catalog");
+
+        // then
+        assert_eq!(stages.len(), 1);
+        assert!(!row.in_check && row.owner == "TEST-09");
     }
 
     #[test]

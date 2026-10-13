@@ -69,6 +69,7 @@ This directory holds the decisions behind site-preview, one file per decision, i
 | [0064](0064-changed-line-gate-in-check.md) | The changed-line gate: merge-base with `origin/main` else `HEAD~1`, a stamped LCOV report, the `changed-lines` stage in `check` | Proposed. Amended by 0069 |
 | [0065](0065-fuzz-targets-beyond-the-domain-and-fuzz-lockfile-audit.md) | Fuzz targets beyond the domain (application, HTTP adapter) and the `deny-fuzz` audit of `fuzz/Cargo.lock` | Proposed |
 | [0066](0066-coverage-overall-floor-over-crates-only.md) | The overall coverage floor over `crates/` only; `xtask` measured and reported without a floor | Proposed |
-| [0068](0068-mutation-scope-and-lane.md) | Mutation testing: scope, test selection and the weekly lane | Proposed |
 | [0067](0067-root-removal-and-watcher-review-fixes.md) | A removed root degrades the watcher for good; start-up failures first; start-up readiness only from `Starting`; composition's hidden seams | Proposed |
+| [0068](0068-mutation-scope-and-lane.md) | Mutation testing: scope, test selection and the weekly lane | Proposed |
 | [0069](0069-tooling-review-fixes-fuzz-lint-and-gate-bases.md) | Fuzz targets formatted and linted, the changed-line base of a push, the formal lane's concurrency | Proposed |
+| [0071](0071-miri-lane-for-domain-and-application.md) | The Miri lane: domain and application tests, forwarded proptest settings, `compile_fail` excluded | Proposed |

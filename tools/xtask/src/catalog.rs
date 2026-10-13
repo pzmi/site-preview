@@ -238,6 +238,13 @@ pub const CATALOG: &[Check] = &[
         false,
     ),
     row(
+        "formal-verify-miri",
+        "formal-scheduled",
+        "cargo xtask formal-verify --miri",
+        "TEST-09",
+        false,
+    ),
+    row(
         "release-check",
         "release",
         "cargo xtask release-check",

@@ -39,7 +39,7 @@ fn main() -> ExitCode {
             None => coverage::command(),
             Some(rev) => changed_lines::command(rev.as_deref()),
         },
-        Command::FormalVerify => formal_verify::run(),
+        Command::FormalVerify { miri } => formal_verify::run(*miri),
         Command::Security => security::run(),
         Command::Fmt => run_fmt(),
         Command::Architecture { manifest_path } => architecture::run(manifest_path.as_deref()),
