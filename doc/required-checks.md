@@ -46,7 +46,8 @@ test in `tools/xtask/src/check.rs` fails when a stage is in none or in two.
 ## Other workflows
 
 These are not in `required`. `formal.yml` (Apalache, extended simulation, Miri), `fuzz.yml`,
-`mutation.yml` and `security.yml` run on a schedule or by hand. `codeql.yml` also runs on pushes
+`mutation.yml` and `security.yml` run on a schedule or by hand. `release.yml` runs on a pushed
+`v*` tag or by hand from a tag, and makes a draft release ([`release.md`](release.md)). `codeql.yml` also runs on pushes
 and pull requests, as its own workflow. A red run of any of them is reported to the owner and
 fixed as a task, but does not make `Required` red.
 

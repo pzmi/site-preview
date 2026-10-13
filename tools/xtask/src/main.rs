@@ -19,6 +19,7 @@ mod process;
 mod quick;
 mod release;
 mod repo;
+mod sbom;
 mod security;
 mod test;
 mod tools;
@@ -57,7 +58,10 @@ fn main() -> ExitCode {
             package,
             jobs,
         } => mutation::run(in_diff.as_deref(), package.as_deref(), *jobs),
-        Command::ReleaseCheck { target } => release::run(target.as_deref()),
+        Command::ReleaseCheck { target, archive } => {
+            release::run(target.as_deref(), archive.as_deref())
+        }
+        Command::Sbom { out } => sbom::run(out.as_deref()),
         Command::Bench => bench::run(),
         Command::Doctor => tools::doctor(),
         Command::InstallTools { tools } => tools::install(tools),

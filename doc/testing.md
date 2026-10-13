@@ -254,6 +254,10 @@ runner) builds the release binary for `T` (default: the host), packages
 binary under `env -i PATH=/usr/bin:/bin`. It needs `cargo-about` (`cargo xtask install-tools
 cargo-about`) and the Rust target (`rustup target add T`; the Linux release targets are musl
 and may need `musl-tools`). Logs of the run are in `target/release-check/<T>/logs/`.
+`release-check --target T --archive PATH` skips the build and smokes an existing archive named
+`site-preview-<T>.tar.gz` (the release workflow's `verify` job), and `cargo xtask sbom` writes one
+CycloneDX SBOM per release target with the pinned `cargo-cyclonedx`
+([`release.md`](release.md), [ADR 0078](adr/0078-release-workflow.md)).
 
 ## Checks the gate runs
 

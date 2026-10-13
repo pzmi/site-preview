@@ -94,6 +94,16 @@ pub enum Command {
         /// are the four of plan section 11 M5, each run on its own native runner.
         #[arg(long, value_name = "TARGET")]
         target: Option<String>,
+        /// Smoke this existing archive instead of building one (the release workflow's
+        /// `verify` job); it must be named `site-preview-<TARGET>.tar.gz`.
+        #[arg(long, value_name = "PATH", requires = "target")]
+        archive: Option<PathBuf>,
+    },
+    /// One CycloneDX SBOM per release target, through the pinned cargo-cyclonedx.
+    Sbom {
+        /// Directory for `site-preview-<target>.cdx.json` (default: `target/sbom`).
+        #[arg(long, value_name = "DIR")]
+        out: Option<PathBuf>,
     },
     /// Non-blocking performance and soak measurement; writes `target/bench/report.json`.
     Bench,
@@ -125,6 +135,7 @@ impl Command {
             Self::Fuzz { .. } => "fuzz",
             Self::FormalVerify { .. } => "formal-verify",
             Self::ReleaseCheck { .. } => "release-check",
+            Self::Sbom { .. } => "sbom",
             Self::Bench => "bench",
             Self::ListChecks => "list-checks",
             Self::Doctor => "doctor",
@@ -180,10 +191,41 @@ mod tests {
         let targets = (host.command, musl.command);
 
         // then
-        assert!(matches!(targets.0, Command::ReleaseCheck { target: None }));
+        assert!(matches!(
+            targets.0,
+            Command::ReleaseCheck {
+                target: None,
+                archive: None
+            }
+        ));
         assert!(matches!(
             targets.1,
-            Command::ReleaseCheck { target: Some(ref t) } if t == "x86_64-unknown-linux-musl"
+            Command::ReleaseCheck { target: Some(ref t), archive: None } if t == "x86_64-unknown-linux-musl"
+        ));
+    }
+
+    #[test]
+    fn should_require_a_target_when_an_archive_is_given_to_release_check() {
+        // given
+        let bare = ["xtask", "release-check", "--archive", "a.tar.gz"];
+        let full = [
+            "xtask",
+            "release-check",
+            "--target",
+            "aarch64-apple-darwin",
+            "--archive",
+            "dl/site-preview-aarch64-apple-darwin.tar.gz",
+        ];
+
+        // when
+        let (bare, full) = (Cli::try_parse_from(bare), Cli::try_parse_from(full));
+
+        // then
+        assert!(bare.is_err());
+        assert!(matches!(
+            full.unwrap().command,
+            Command::ReleaseCheck { target: Some(_), archive: Some(ref a) }
+                if a.ends_with("site-preview-aarch64-apple-darwin.tar.gz")
         ));
     }
 

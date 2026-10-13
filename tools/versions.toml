@@ -36,6 +36,8 @@ version = "0.13.2"
 method = "cargo"
 probe = ["cargo-fuzz", "fuzz", "--version"]
 
+# The SBOMs of a release (OPS-06, ADR 0078): `cargo xtask sbom` runs `cargo cyclonedx` once per
+# release target; the release workflow installs it with `install-tools`, never from a cache.
 [tools.cargo-cyclonedx]
 version = "0.5.9"
 method = "cargo"

@@ -5,7 +5,7 @@ repository does today. The rules come from [`foundation.md`](foundation.md) sect
 execution contract) and section 9 (commands); the integration decision is
 [ADR 0032](adr/0032-whole-plan-on-main.md) (D31 in [`tasks.md`](tasks.md)), which supersedes the
 planned pull-request flow of [ADR 0027](adr/0027-pr-flow-start.md). The checks CI requires are in
-[`required-checks.md`](required-checks.md). Outside contributors start at
+[`required-checks.md`](required-checks.md); how a release is cut is in [`release.md`](release.md). Outside contributors start at
 [`../CONTRIBUTING.md`](../CONTRIBUTING.md).
 
 ## Definition of Ready

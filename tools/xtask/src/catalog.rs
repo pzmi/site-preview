@@ -273,6 +273,7 @@ pub const CATALOG: &[Check] = &[
         "OPS-05",
         false,
     ),
+    row("sbom", "release", "cargo xtask sbom", "OPS-06", false),
     row(
         "list-checks",
         "tooling",

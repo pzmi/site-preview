@@ -14,6 +14,10 @@
 //! target) must have an entry in it, and the four MPL-2.0 crates of ADR 0043 must come with the
 //! licence text and a source location (MPL-2.0 section 3.2). A missing `cargo-about` is an
 //! install hint, never a skip (ADR 0010). OPS-06 calls this once per native runner.
+//!
+//! `--archive PATH` (with `--target T`) skips the build and the notices and runs the extraction
+//! check and the smoke on an existing archive, such as one read back from a draft release by
+//! OPS-06's `verify` job (ADR 0078).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -59,9 +63,14 @@ const ARCHIVE_FILES: [&str; 5] = [
 /// Wait for the server to print `ready`, to exit after SIGTERM, or for a reload.
 const DEADLINE: Duration = Duration::from_secs(30);
 
-/// Runs the command and returns its exit code.
-pub fn run(target: Option<&str>) -> i32 {
-    match check(target) {
+/// Runs the command and returns its exit code. With `archive`, the build and packaging are
+/// skipped and that existing archive is extracted and smoked instead (OPS-06's `verify` job).
+pub fn run(target: Option<&str>, archive: Option<&Path>) -> i32 {
+    let result = match archive {
+        Some(archive) => check_archive(target, archive),
+        None => check(target),
+    };
+    match result {
         Ok(summary) => {
             for line in summary {
                 eprintln!("release-check: {line}");
@@ -132,6 +141,58 @@ fn check(target_arg: Option<&str>) -> Result<Vec<String>, String> {
             .to_owned(),
     );
     Ok(summary)
+}
+
+/// `release-check --target T --archive PATH`: the smoke of an archive built elsewhere, such as
+/// one downloaded from a draft release. Nothing is built and `cargo-about` is not needed; the
+/// archive must carry the name of `T`, hold exactly [`ARCHIVE_FILES`] below
+/// `site-preview-T/`, and its extracted binary must pass the same [`smoke`] as a fresh build.
+/// The notices are not regenerated here: the release's `SHA256SUMS` ties the archive to the
+/// build job that checked them.
+fn check_archive(target_arg: Option<&str>, archive: &Path) -> Result<Vec<String>, String> {
+    let root = crate::repo::root();
+    let target = target_arg.ok_or("--archive needs --target, the triple the archive is for")?;
+    validate_target(target)?;
+    archive_name_problem(target, archive).map_or(Ok(()), Err)?;
+    if !archive.is_file() {
+        return Err(format!("{} is not a file", archive.display()));
+    }
+    let logs = root
+        .join(target_dir_name())
+        .join("release-check")
+        .join(target)
+        .join("logs");
+    // Only the logs are reset: the archive itself may live in the target's output directory.
+    reset_dir(&logs)?;
+
+    let scratch = tempfile::tempdir().map_err(|e| format!("cannot make a temp dir: {e}"))?;
+    let extracted = extract(archive, scratch.path(), target)?;
+    smoke(
+        &root,
+        &extracted.join("site-preview"),
+        scratch.path(),
+        &logs,
+    )?;
+    Ok(vec![
+        format!("target {target}"),
+        format!("archive {} (existing, not rebuilt)", archive.display()),
+        format!("members {}", ARCHIVE_FILES.join(", ")),
+        "smoke: --version, serve --json --port 0, GET /, reload after an edit, SIGTERM exit 0, tree unchanged"
+            .to_owned(),
+    ])
+}
+
+/// Why `archive` cannot be the archive of `target`, if it cannot: its file name must be
+/// exactly [`archive_name`], so an archive of one platform is never smoked as another's.
+fn archive_name_problem(target: &str, archive: &Path) -> Option<String> {
+    let want = archive_name(target);
+    match archive.file_name().and_then(|n| n.to_str()) {
+        Some(name) if name == want => None,
+        Some(name) => Some(format!(
+            "the archive for {target} is named {want}, not {name}"
+        )),
+        None => Some(format!("{} names no archive file", archive.display())),
+    }
 }
 
 /// `CARGO_TARGET_DIR` (relative to the root) or `target`.
@@ -269,7 +330,7 @@ fn parse_shipped(tree: &str) -> BTreeSet<(String, String)> {
 
 /// The crates linked into the binary for `target`: normal dependencies of `preview-cli`, so no
 /// dev- or build-only tool. Workspace members are the project's own code, not third parties.
-fn shipped_crates(root: &Path, target: &str) -> Result<BTreeSet<(String, String)>, String> {
+pub fn shipped_crates(root: &Path, target: &str) -> Result<BTreeSet<(String, String)>, String> {
     let output = Command::new("cargo")
         .args([
             "tree",
@@ -1087,6 +1148,226 @@ clap v4.6.7 (*)
         // then
         assert_eq!(parsed, (200, b"<html>".to_vec()));
         assert!(parse_response(b"garbage").is_err());
+    }
+
+    #[test]
+    fn should_refuse_an_archive_named_for_another_target_when_smoking_an_existing_one() {
+        // given
+        let target = "x86_64-apple-darwin";
+
+        // when
+        let right = archive_name_problem(
+            target,
+            Path::new("dl/site-preview-x86_64-apple-darwin.tar.gz"),
+        );
+        let wrong = archive_name_problem(
+            target,
+            Path::new("dl/site-preview-aarch64-apple-darwin.tar.gz"),
+        );
+        let none = archive_name_problem(target, Path::new("/"));
+
+        // then
+        assert_eq!(right, None);
+        assert!(wrong.is_some_and(|p| p.contains("not site-preview-aarch64-apple-darwin.tar.gz")));
+        assert!(none.is_some());
+    }
+
+    #[test]
+    fn should_refuse_an_existing_archive_when_it_holds_an_extra_file() {
+        // given
+        let dir = tempfile::tempdir().unwrap();
+        let top = dir.path().join("stage/site-preview-x86_64-apple-darwin");
+        fs::create_dir_all(&top).unwrap();
+        for name in ARCHIVE_FILES.iter().chain(&["install.sh"]) {
+            fs::write(top.join(name), b"x").unwrap();
+        }
+        let archive = dir.path().join("site-preview-x86_64-apple-darwin.tar.gz");
+        let packed = Command::new("tar")
+            .arg("-czf")
+            .arg(&archive)
+            .arg("-C")
+            .arg(dir.path().join("stage"))
+            .arg("site-preview-x86_64-apple-darwin")
+            .status()
+            .unwrap();
+        assert!(packed.success());
+        let scratch = tempfile::tempdir().unwrap();
+
+        // when
+        let result = extract(&archive, scratch.path(), "x86_64-apple-darwin");
+
+        // then
+        let message = result.unwrap_err();
+        assert!(message.contains("install.sh"), "{message}");
+    }
+
+    /// The release workflow, parsed (JSON-compatible YAML, so `on` stays a string key).
+    fn release_workflow() -> (String, yaml_rust2::Yaml) {
+        let text = fs::read_to_string(crate::repo::root().join(".github/workflows/release.yml"))
+            .expect("release.yml");
+        let doc = yaml_rust2::YamlLoader::load_from_str(&text)
+            .expect("release.yml parses")
+            .remove(0);
+        (text, doc)
+    }
+
+    fn keys(map: &yaml_rust2::Yaml) -> Vec<String> {
+        map.as_hash()
+            .map(|h| {
+                h.keys()
+                    .filter_map(|k| k.as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// The scopes a `permissions` value grants `write` (a string such as `write-all` counts).
+    fn write_scopes(permissions: &yaml_rust2::Yaml) -> Vec<String> {
+        match permissions {
+            yaml_rust2::Yaml::String(all) if all != "read-all" => vec![all.clone()],
+            yaml_rust2::Yaml::Hash(h) => h
+                .iter()
+                .filter(|(_, v)| v.as_str() == Some("write"))
+                .filter_map(|(k, _)| k.as_str().map(str::to_owned))
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    #[test]
+    fn should_trigger_only_on_v_tags_and_dispatch_when_release_yml_is_read() {
+        // given
+        let (_, doc) = release_workflow();
+
+        // when
+        let on = &doc["on"];
+
+        // then
+        assert_eq!(
+            keys(on),
+            ["push", "workflow_dispatch"],
+            "no pull_request or other trigger"
+        );
+        assert_eq!(
+            keys(&on["push"]),
+            ["tags"],
+            "a tag push, never a branch push"
+        );
+        let tags: Vec<_> = on["push"]["tags"]
+            .as_vec()
+            .unwrap()
+            .iter()
+            .filter_map(|t| t.as_str())
+            .collect();
+        assert_eq!(tags, ["v*"]);
+        let inputs = &on["workflow_dispatch"]["inputs"];
+        assert_eq!(inputs["tag"]["required"].as_bool(), Some(true));
+        assert_eq!(inputs["dry_run"]["default"].as_bool(), Some(true));
+    }
+
+    #[test]
+    fn should_grant_write_permissions_only_to_publish_when_release_yml_is_read() {
+        // given
+        let (_, doc) = release_workflow();
+
+        // when
+        let top = write_scopes(&doc["permissions"]);
+        let jobs = doc["jobs"].as_hash().expect("jobs");
+        let mut writers = BTreeMap::new();
+        let mut undeclared = Vec::new();
+        for (id, job) in jobs {
+            let id = id.as_str().unwrap().to_owned();
+            if job["permissions"].is_badvalue() {
+                undeclared.push(id.clone());
+            }
+            let scopes = write_scopes(&job["permissions"]);
+            if !scopes.is_empty() {
+                writers.insert(id, scopes);
+            }
+        }
+
+        // then
+        assert!(top.is_empty(), "workflow-level write: {top:?}");
+        assert!(
+            undeclared.is_empty(),
+            "jobs without permissions: {undeclared:?}"
+        );
+        let want: BTreeMap<String, Vec<String>> = BTreeMap::from([(
+            "publish".to_owned(),
+            vec!["contents".into(), "id-token".into(), "attestations".into()],
+        )]);
+        assert_eq!(writers, want);
+    }
+
+    #[test]
+    fn should_restore_no_cache_and_use_no_secret_when_release_yml_is_read() {
+        // given
+        let (text, _) = release_workflow();
+
+        // when
+        let code: String = text
+            .lines()
+            .filter(|l| !l.trim_start().starts_with('#'))
+            .map(|l| format!("{l}\n"))
+            .collect();
+
+        // then
+        for banned in [
+            "actions/cache",
+            "setup-rust",
+            "secrets.",
+            "cargo publish",
+            "pull_request",
+            "git push",
+            "git tag",
+            "--draft=false",
+        ] {
+            assert!(!code.contains(banned), "release.yml uses {banned}");
+        }
+        let create = code
+            .lines()
+            .find(|l| l.contains("args=(--draft"))
+            .expect("the gh release create arguments");
+        assert!(create.contains("--verify-tag"), "{create}");
+        assert_eq!(code.matches("gh release create").count(), 1);
+    }
+
+    #[test]
+    fn should_run_the_four_targets_on_native_runners_when_release_yml_is_read() {
+        // given
+        let (_, doc) = release_workflow();
+
+        // when
+        let pairs = |job: &str| -> BTreeSet<(String, String)> {
+            doc["jobs"][job]["strategy"]["matrix"]["include"]
+                .as_vec()
+                .expect("a matrix")
+                .iter()
+                .map(|leg| {
+                    (
+                        leg["target"].as_str().unwrap().to_owned(),
+                        leg["os"].as_str().unwrap().to_owned(),
+                    )
+                })
+                .collect()
+        };
+
+        // then
+        let want: BTreeSet<(String, String)> = [
+            ("aarch64-apple-darwin", "macos-15"),
+            ("x86_64-apple-darwin", "macos-15-intel"),
+            ("aarch64-unknown-linux-musl", "ubuntu-24.04-arm"),
+            ("x86_64-unknown-linux-musl", "ubuntu-24.04"),
+        ]
+        .iter()
+        .map(|(t, o)| ((*t).to_owned(), (*o).to_owned()))
+        .collect();
+        assert_eq!(pairs("build"), want);
+        assert_eq!(pairs("verify"), want);
+        assert!(
+            want.iter()
+                .all(|(t, _)| RELEASE_TARGETS.contains(&t.as_str()))
+        );
     }
 
     #[test]
