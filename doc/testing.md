@@ -5,7 +5,9 @@ command runs it. The rules come from [`foundation.md`](foundation.md) section 5 
 quality) and section 9 (commands); the test locations are decided in
 [ADR 0016](adr/0016-test-locations.md). `cargo xtask list-checks` prints the machine-readable
 catalog of every check, its level, its command and its owner task. Every command in this file
-is one of its entries, or a planned one it lists as not yet available.
+is one of its entries, or a planned one it lists as not yet available. How a change is gated and
+integrated is in [`sdlc.md`](sdlc.md); the CI checks that must be green on `main` are in
+[`required-checks.md`](required-checks.md).
 
 ## Levels
 

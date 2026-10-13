@@ -308,6 +308,9 @@ once. See [CONTRIBUTING.md](CONTRIBUTING.md).
 - [doc/plan.md](doc/plan.md) - implementation plan
 - [doc/foundation.md](doc/foundation.md) - architecture, quality and delivery rules
 - [doc/tasks.md](doc/tasks.md) - task breakdown
+- [doc/testing.md](doc/testing.md) - test levels and commands
+- [doc/sdlc.md](doc/sdlc.md) - how changes are made, gated and integrated
+- [doc/required-checks.md](doc/required-checks.md) - the CI checks that must be green on `main`
 - [CONTRIBUTING.md](CONTRIBUTING.md) - how to contribute
 
 ## License
