@@ -152,6 +152,13 @@ pub const CATALOG: &[Check] = &[
         true,
     ),
     row(
+        "changed-lines",
+        "coverage",
+        "git diff -U0 <merge-base with origin/main, else HEAD~1> over crates/**/src/**/*.rs, joined with target/coverage/lcov.info: >=95% of instrumented changed lines covered",
+        "TEST-07",
+        true,
+    ),
+    row(
         "security",
         "security",
         "cargo xtask security",

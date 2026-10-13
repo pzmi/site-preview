@@ -4,6 +4,7 @@ mod action_pins;
 mod architecture;
 mod browser;
 mod catalog;
+mod changed_lines;
 mod check;
 mod cli;
 mod conformance;
@@ -31,7 +32,10 @@ fn main() -> ExitCode {
         Command::Test { only } => test::run(only.as_deref()),
         Command::Check => check::run(),
         Command::Conformance { typecheck } => conformance::run(*typecheck),
-        Command::Coverage => coverage::command(),
+        Command::Coverage { changed_since } => match changed_since {
+            None => coverage::command(),
+            Some(rev) => changed_lines::command(rev.as_deref()),
+        },
         Command::Security => security::run(),
         Command::Fmt => run_fmt(),
         Command::Architecture { manifest_path } => architecture::run(manifest_path.as_deref()),

@@ -17,6 +17,11 @@
 //!
 //! The report is `target/coverage/lcov.info`. Floors live in `coverage-floor.toml`; the
 //! evaluator works on integer line counts, so there is no rounding at the boundary.
+//!
+//! Beside the report, a successful measurement writes `target/coverage/lcov.stamp`: the
+//! fingerprint of the source tree it measured (`changed_lines::tree_fingerprint`, taken before
+//! the run). The changed-line gate (TEST-07, ADR 0064) reads the report only while the stamp
+//! still matches the tree, so it never joins a diff with an LCOV of other file contents.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -26,13 +31,16 @@ use std::process::Command;
 use serde::Deserialize;
 
 use crate::process::{Stage, finish, run_report};
-use crate::{conformance, repo, test, tools};
+use crate::{changed_lines, conformance, repo, test, tools};
 
 /// The floors file, from the repository root.
 const FLOOR_FILE: &str = "coverage-floor.toml";
 
 /// Where the LCOV report is written, from the repository root.
-const LCOV_PATH: &str = "target/coverage/lcov.info";
+pub const LCOV_PATH: &str = "target/coverage/lcov.info";
+
+/// The fingerprint of the tree the LCOV report measured, from the repository root.
+const STAMP_PATH: &str = "target/coverage/lcov.stamp";
 
 /// No floor may be set below this (ADR 0018).
 const MIN_FLOOR: u32 = 90;
@@ -132,6 +140,20 @@ fn crate_of(path: &str) -> Option<String> {
     path.contains("/tools/xtask/").then(|| XTASK.to_owned())
 }
 
+/// One `DA:<line>,<hits>[,<checksum>]` record; `number` is its zero-based line in the report.
+fn parse_da(record: &str, number: usize) -> Result<(u32, u64), String> {
+    let mut fields = record.split(',');
+    let line = fields.next().and_then(|l| l.parse::<u32>().ok());
+    let hits = fields.next().and_then(|h| h.parse::<u64>().ok());
+    match (line, hits) {
+        (Some(line), Some(hits)) => Ok((line, hits)),
+        _ => Err(format!(
+            "lcov line {}: bad DA record {record:?}",
+            number + 1
+        )),
+    }
+}
+
 /// Reads the `SF:` / `DA:` records of an LCOV report.
 pub fn parse_lcov(text: &str) -> Result<Measured, String> {
     let mut measured = Measured::default();
@@ -141,11 +163,7 @@ pub fn parse_lcov(text: &str) -> Result<Measured, String> {
         if let Some(path) = line.strip_prefix("SF:") {
             current = crate_of(path);
         } else if let Some(record) = line.strip_prefix("DA:") {
-            let hits = record
-                .split(',')
-                .nth(1)
-                .and_then(|h| h.parse::<u64>().ok())
-                .ok_or_else(|| format!("lcov line {}: bad DA record {record:?}", number + 1))?;
+            let (_, hits) = parse_da(record, number)?;
             let add = |counts: &mut Counts| {
                 counts.instrumented += 1;
                 counts.covered += u64::from(hits > 0);
@@ -160,6 +178,70 @@ pub fn parse_lcov(text: &str) -> Result<Measured, String> {
         return Err("the LCOV report has no instrumented line".to_owned());
     }
     Ok(measured)
+}
+
+/// Per repository-relative file (`crates/preview-domain/src/a.rs`), the hit count of each
+/// instrumented line.
+pub type FileLines = BTreeMap<String, BTreeMap<u32, u64>>;
+
+/// The repository-relative, `/`-separated form of an LCOV `SF:` path, trying each root in
+/// turn (the root as the build saw it, then its canonical form). `None` for a file outside
+/// every root.
+pub fn relative_path(path: &str, roots: &[String]) -> Option<String> {
+    let path = path.replace('\\', "/");
+    roots.iter().find_map(|root| {
+        let root = root.replace('\\', "/");
+        path.strip_prefix(root.trim_end_matches('/'))?
+            .strip_prefix('/')
+            .map(str::to_owned)
+    })
+}
+
+/// Reads an LCOV report into per-file line hits, keyed by repository-relative path. Files
+/// outside `roots` are left out. A line recorded twice for one file (one record per
+/// instantiation) adds its hits up, so a line any instantiation ran counts as covered.
+pub fn parse_lcov_lines(text: &str, roots: &[String]) -> Result<FileLines, String> {
+    let mut files = FileLines::new();
+    let mut current: Option<String> = None;
+    for (number, line) in text.lines().enumerate() {
+        let line = line.trim();
+        if let Some(path) = line.strip_prefix("SF:") {
+            current = relative_path(path, roots);
+        } else if line == "end_of_record" {
+            current = None;
+        } else if let Some(record) = line.strip_prefix("DA:") {
+            let (at, hits) = parse_da(record, number)?;
+            if let Some(file) = &current {
+                let slot = files
+                    .entry(file.clone())
+                    .or_default()
+                    .entry(at)
+                    .or_default();
+                *slot = slot.saturating_add(hits);
+            }
+        }
+    }
+    Ok(files)
+}
+
+/// The LCOV report, when its stamp matches the tree as it is now; `None` when there is no
+/// report or stamp, or the tree changed since the report was measured.
+pub fn fresh_lcov(root: &Path) -> Result<Option<String>, String> {
+    let Ok(stamp) = std::fs::read_to_string(root.join(STAMP_PATH)) else {
+        return Ok(None);
+    };
+    if stamp.trim() != changed_lines::tree_fingerprint(root)? {
+        return Ok(None);
+    }
+    std::fs::read_to_string(root.join(LCOV_PATH))
+        .map(Some)
+        .map_err(|e| format!("cannot read {LCOV_PATH}: {e}"))
+}
+
+/// Records that the LCOV report measured the tree with this fingerprint.
+fn write_stamp(root: &Path, fingerprint: &str) -> Result<(), String> {
+    std::fs::write(root.join(STAMP_PATH), format!("{fingerprint}\n"))
+        .map_err(|e| format!("cannot write {STAMP_PATH}: {e}"))
 }
 
 /// Compares the measurement with the floors. Returns the report text and whether every floor
@@ -205,11 +287,20 @@ pub fn evaluate(measured: &Measured, floors: &Floors) -> (String, bool) {
     (out, ok)
 }
 
-/// Runs the instrumented workspace tests and writes the LCOV report.
-fn measure(root: &Path) -> Result<(), String> {
+/// Runs the instrumented workspace tests and writes the LCOV report and its stamp. The
+/// fingerprint is taken before the run, so an edit made during it leaves the report stale. A
+/// tree that cannot be fingerprinted (no git) gets no stamp: the floors still apply, and the
+/// changed-line gate measures again.
+pub fn measure(root: &Path) -> Result<(), String> {
     tools::require("cargo-nextest")?;
     std::fs::create_dir_all(root.join("target/coverage"))
         .map_err(|e| format!("cannot create target/coverage: {e}"))?;
+    if let Err(e) = std::fs::remove_file(root.join(STAMP_PATH))
+        && e.kind() != std::io::ErrorKind::NotFound
+    {
+        return Err(format!("cannot remove {STAMP_PATH}: {e}"));
+    }
+    let fingerprint = changed_lines::tree_fingerprint(root);
     let status = Command::new("cargo")
         .args([
             "llvm-cov",
@@ -230,10 +321,15 @@ fn measure(root: &Path) -> Result<(), String> {
         )
         .status()
         .map_err(|e| format!("cannot run cargo llvm-cov: {e}"))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!("cargo llvm-cov failed with {status}"))
+    if !status.success() {
+        return Err(format!("cargo llvm-cov failed with {status}"));
+    }
+    match fingerprint {
+        Ok(fingerprint) => write_stamp(root, &fingerprint),
+        Err(e) => {
+            eprintln!("xtask: {LCOV_PATH} gets no freshness stamp: {e}");
+            Ok(())
+        }
     }
 }
 
@@ -445,6 +541,62 @@ end_of_record
         assert!(floors.overall_line >= MIN_FLOOR);
         assert!(floors.crate_floors.contains_key("preview-domain"));
         assert!(floors.crate_floors.contains_key("preview-application"));
+    }
+
+    #[test]
+    fn should_key_lines_by_repository_path_when_lcov_lines_are_read() {
+        // given: a duplicate record for line 3 (two instantiations), a file outside the root
+        // and a DA record before any SF
+        let text = "\
+DA:9,9
+SF:/r/crates/preview-domain/src/a.rs
+DA:1,3
+DA:3,0
+DA:3,2
+end_of_record
+DA:7,7
+SF:/home/.cargo/registry/x.rs
+DA:1,1
+end_of_record
+";
+        let roots = ["/elsewhere".to_owned(), "/r/".to_owned()];
+
+        // when
+        let files = parse_lcov_lines(text, &roots).unwrap();
+
+        // then
+        assert_eq!(
+            files,
+            FileLines::from([(
+                "crates/preview-domain/src/a.rs".to_owned(),
+                BTreeMap::from([(1, 3), (3, 2)])
+            )])
+        );
+    }
+
+    #[test]
+    fn should_refuse_a_record_without_a_line_number_when_lcov_lines_are_read() {
+        // given
+        let text = "SF:/r/crates/a/src/a.rs\nDA:x,1\n";
+
+        // when
+        let err = parse_lcov_lines(text, &["/r".to_owned()]).unwrap_err();
+
+        // then
+        assert!(err.contains("bad DA record"), "{err}");
+    }
+
+    #[test]
+    fn should_normalise_backslashes_when_a_path_is_made_relative() {
+        // given
+        let path = r"C:\r\crates\a\src\a.rs";
+
+        // when
+        let relative = relative_path(path, &[r"C:\r".to_owned()]);
+
+        // then
+        assert_eq!(relative.as_deref(), Some("crates/a/src/a.rs"));
+        assert_eq!(relative_path("/rx/crates/a.rs", &["/r".to_owned()]), None);
     }
 
     #[test]

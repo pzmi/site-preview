@@ -41,7 +41,13 @@ pub enum Command {
         typecheck: bool,
     },
     /// LLVM line coverage of the whole workspace against `coverage-floor.toml`.
-    Coverage,
+    Coverage {
+        /// Gate only the lines changed since REV (default: the merge-base with origin/main,
+        /// else HEAD~1): at least 95% of instrumented changed lines covered. Reuses
+        /// target/coverage/lcov.info while it matches the tree, else measures.
+        #[arg(long, value_name = "REV", num_args = 0..=1)]
+        changed_since: Option<Option<String>>,
+    },
     /// Dependency policy, secrets and workflow checks.
     Security,
     /// The full blocking PR-quality gate.
@@ -83,7 +89,7 @@ impl Command {
             Self::Architecture { .. } => "architecture",
             Self::Test { .. } => "test",
             Self::Conformance { .. } => "conformance",
-            Self::Coverage => "coverage",
+            Self::Coverage { .. } => "coverage",
             Self::Security => "security",
             Self::Check => "check",
             Self::Mutation => "mutation",

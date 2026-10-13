@@ -2,11 +2,11 @@
 //!
 //! It composes the registered stages: the `quick` stages other than its fast tests (format
 //! check, architecture with fixtures, Clippy), everything `test` runs, everything
-//! `conformance` runs (FORMAL-09, ADR 0060), then `coverage` (TEST-06, ADR 0062), then
-//! `security`. A stage that does not exist yet is absent, never skipped; one that cannot run shows `UNAVAILABLE`.
+//! `conformance` runs (FORMAL-09, ADR 0060), then `coverage` (TEST-06, ADR 0062) and the
+//! `changed-lines` gate over its report (TEST-07, ADR 0064), then `security`. A stage that does not exist yet is absent, never skipped; one that cannot run shows `UNAVAILABLE`.
 
 use crate::process::{Stage, finish, run_report};
-use crate::{conformance, coverage, quick, security, test, tools};
+use crate::{changed_lines, conformance, coverage, quick, security, test, tools};
 
 /// The stages `check` runs, in order. Their names are catalog ids with `in_check` set.
 pub fn stages() -> Vec<Stage> {
@@ -17,6 +17,7 @@ pub fn stages() -> Vec<Stage> {
     stages.extend(test::stages());
     stages.extend(conformance::stages(false));
     stages.push(coverage::stage());
+    stages.push(changed_lines::stage());
     stages.extend(security::stages());
     stages
 }
@@ -86,6 +87,7 @@ mod tests {
             "conformance-replay",
             "conformance-controls",
             "coverage",
+            "changed-lines",
             "deny",
             "secrets",
             "workflows",

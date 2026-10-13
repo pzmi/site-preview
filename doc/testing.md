@@ -27,7 +27,7 @@ is one of its entries, or a planned one it lists as not yet available.
 | Compile-fail | An invalid API use does not compile (`trybuild`) | `crates/preview-domain/tests/compile_fail.rs`, `crates/preview-adapter-fs/tests/compile_fail.rs` | `unit-tests` | in place (ARCH-08) |
 | Client JavaScript | The reload client's `node:test` suite, with no npm dependency | `crates/preview-adapter-http/assets/client.test.mjs` | `client-js` (`node --test crates/*/assets/*.test.mjs`) | in place (HTTP-09) |
 | Conformance | Quint models: typecheck, named scenarios and invariant simulation; model traces replayed against the real code, compared after every step | `formal/lifecycle.qnt`, `formal/watcher.qnt`, `formal/reload.qnt`, `formal/scenarios.qnt`, `formal/lifecycle_traces.qnt`, `formal/watcher_traces.qnt`, `formal/reload_traces.qnt` (Quint 0.33.0 locked in `formal/package-lock.json`, [ADR 0052](adr/0052-quint-toolchain-and-lifecycle-model.md)); `crates/preview-conformance`: the ITF replay core ([ADR 0053](adr/0053-conformance-harness.md)), the lifecycle driver over the composition `Server` (`src/drivers/lifecycle.rs`, `tests/lifecycle_conformance.rs`, [ADR 0056](adr/0056-lifecycle-conformance-driver.md)), the reload driver over the real `ReloadState` and SSE handler in process (`src/drivers/reload.rs`, `tests/reload_conformance.rs`, [ADR 0057](adr/0057-reload-conformance-driver.md)) and the watcher driver over the `ChangeCoordinator` (`src/drivers/watcher.rs`, `tests/watcher_conformance.rs`, [ADR 0058](adr/0058-watcher-conformance-driver.md)); negative controls, faulty implementations behind the drivers' seams, each caught at an asserted trace, step, action and field (`tests/negative_controls.rs`, [ADR 0059](adr/0059-conformance-negative-controls.md)); named traces in `formal/traces/regression/{lifecycle,watcher,reload}-*.itf.json`, regenerated from `formal/traces/regression/manifest.toml`; seeded ones generated into `formal/traces/generated/` with `manifest.json` | `formal-typecheck`, `formal-scenarios`, `formal-simulate`, `formal-freshness`, `formal-generate`, `conformance-replay`, `conformance-controls` (`cargo xtask conformance`, in `check`; `unit-tests` excludes `preview-conformance`, [ADR 0060](adr/0060-conformance-stage-and-trace-corpus.md)) | in place (FORMAL-01 to FORMAL-09); models, stimuli, observations, invariants, scope and promoting a counterexample in [`formal-models.md`](formal-models.md) |
-| Coverage | Line coverage floor and changed-line coverage | `cargo llvm-cov nextest --workspace`: every in-process suite including conformance and xtask, floors in `coverage-floor.toml`, LCOV at `target/coverage/lcov.info` ([ADR 0018](adr/0018-coverage-gates.md), [ADR 0062](adr/0062-coverage-stage-scope-and-floors.md)); the changed-line gate is planned (TEST-07) | `coverage` (`cargo xtask coverage`, in `check`) | in place (TEST-06); changed-line gate TEST-07 |
+| Coverage | Line coverage floor and changed-line coverage | `cargo llvm-cov nextest --workspace`: every in-process suite including conformance and xtask, floors in `coverage-floor.toml`, LCOV at `target/coverage/lcov.info` ([ADR 0018](adr/0018-coverage-gates.md), [ADR 0062](adr/0062-coverage-stage-scope-and-floors.md)); ≥95% of the instrumented lines changed in `crates/**/src/**/*.rs` since the merge-base with `origin/main` (else `HEAD~1`) covered ([ADR 0064](adr/0064-changed-line-gate-in-check.md)) | `coverage` and `changed-lines` (`cargo xtask coverage [--changed-since [REV]]`, both in `check`) | in place (TEST-06, TEST-07) |
 | Mutation | Test quality: whether tests fail when code changes | planned; scope per foundation.md 5.3 | `mutation` (not yet available) | TEST-08 |
 | Fuzz | Adversarial parsing and change sequences | `fuzz/` (own workspace, pinned nightly, `fuzz_only`; [ADR 0026](adr/0026-nightly-fuzz-miri-and-concurrency-proof-scope.md), [ADR 0063](adr/0063-fuzz-crate-and-architecture-fuzz-only.md)): target `decode_path` (`fuzz/fuzz_targets/decode_path.rs`) with committed seeds `fuzz/seeds/decode_path/` | `fuzz` (`cargo xtask fuzz decode_path --time 60`; not in `check`) | `decode_path` in place (SEC-04); rewriter, Host and change-sequence targets planned (SEC-05) |
 | Miri and concurrency proofs | Undefined behaviour and synchronisation schedules | planned; scope in [ADR 0026](adr/0026-nightly-fuzz-miri-and-concurrency-proof-scope.md) | | TEST-09 |
@@ -212,13 +212,25 @@ from `formal/traces/regression/manifest.toml`, and the `formal-freshness` stage 
 to promote a counterexample.
 
 ```bash
-cargo xtask coverage       # instrumented workspace run, LCOV, floors (TEST-06)
+cargo xtask coverage                          # instrumented workspace run, LCOV, floors (TEST-06)
+cargo xtask coverage --changed-since          # changed-line gate since the merge-base with origin/main, else HEAD~1 (TEST-07)
+cargo xtask coverage --changed-since HEAD~3   # the same against another revision
 ```
 
 `coverage` needs `cargo-llvm-cov` and `cargo-nextest` (`cargo xtask install-tools`) and, because
 `preview-conformance` generates its own traces there, `npm ci --prefix formal`. It prints the
 overall and per-crate line coverage against `coverage-floor.toml` and exits 1 below a floor
 ([ADR 0062](adr/0062-coverage-stage-scope-and-floors.md)).
+
+`--changed-since` gates only the change: the lines `git diff -U0` adds or modifies in
+`crates/**/src/**/*.rs` between the merge-base of REV and `HEAD` and the working tree, plus
+every untracked file there. At least 95% of those with an LCOV `DA:` record must be covered; it
+prints each uncovered `file:line`, and counts apart the changed lines with no record (comments,
+signatures), which stay out of the ratio. It reuses `target/coverage/lcov.info` only while
+`target/coverage/lcov.stamp` matches the content of the tree (every tracked and untracked, non-ignored file), and
+measures again otherwise. In `check`, the `changed-lines` stage reads the report the `coverage`
+stage just wrote and fails rather than measure twice if it no longer matches
+([ADR 0064](adr/0064-changed-line-gate-in-check.md)).
 
 Planned, printing `not available yet` until their task lands:
 
