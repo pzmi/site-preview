@@ -17,7 +17,7 @@ you tag. Test names are grep-able; CI job names are the display names in
 
 | # | Item | Status | Evidence |
 |:--|:--|:--|:--|
-| 1 | One executable works without Rust, Node, npm or per-site setup | done (notices pending, see below) | `cargo xtask release-check` extracts the packaged archive and runs the binary with `env -i PATH=/usr/bin:/bin`, refusing a `PATH` that holds cargo or node (`tools/xtask/src/release.rs`, `CLEAN_PATH`; [ADR 0076](adr/0076-release-check-archive-and-notices.md)); CI job `Artifact smoke` (linux musl x86_64); the release workflow's `Build` jobs repeat it on all four native runners. Clean-runner proof for all four archives: item 11. [`runbook.md`](runbook.md#minimum-system-expectations-released-binaries) |
+| 1 | One executable works without Rust, Node, npm or per-site setup | done | `cargo xtask release-check` extracts the packaged archive and runs the binary with `env -i PATH=/usr/bin:/bin`, refusing a `PATH` that holds cargo or node (`tools/xtask/src/release.rs`, `CLEAN_PATH`; [ADR 0076](adr/0076-release-check-archive-and-notices.md)); CI job `Artifact smoke` (linux musl x86_64); the release workflow's `Build` jobs repeat it on all four native runners. Clean-runner proof for all four archives: item 11. [`runbook.md`](runbook.md#minimum-system-expectations-released-binaries) |
 | 2 | `site-preview serve .` serves HTML and ordinary static assets on localhost | done | `crates/preview-cli/tests/serve_slice.rs`; `crates/preview-cli/tests/http_security.rs`; Chromium: `should_load_the_fixture_page_when_the_server_is_ready` (`tests/e2e/browser/loads.spec.ts`), `should_serve_css_js_svg_and_gpx_when_fetched_from_the_page` (`reload.spec.ts`); CI jobs `Integration`, `Browser` |
 | 3 | Source assets and HTML are never modified by the tool | done | `should_leave_source_tree_unchanged_when_pages_and_streams_are_served` (`crates/preview-cli/tests/injection_sse.rs`); `should_leave_source_bytes_unchanged_when_served` (`crates/preview-cli/tests/serve_slice.rs`); `should_leave_tree_unchanged_when_suite_has_run` (`crates/preview-cli/tests/http_security.rs`); `should_leave_source_bytes_unchanged_when_injected` (`crates/preview-adapter-http/tests/inject.rs`); CI job `Integration` |
 | 4 | File changes reliably cause one debounced browser reload | done | `should_publish_one_revision_when_twenty_edits_burst` and `should_publish_nothing_when_git_editor_temp_and_node_modules_change` (`crates/preview-cli/tests/watcher.rs`); `should_send_reload_when_index_html_is_edited` (`watch_reload.rs`); `should_show_new_text_after_one_reload_when_html_is_edited` (`tests/e2e/browser/reload.spec.ts`); `should_navigate_exactly_once_and_stay_stable_when_html_changes` (`hot.spec.ts`); the Quint watcher and reload models replayed against the code ([`formal-models.md`](formal-models.md)), CI job `Conformance (Quint)`; OS watcher tests on all four runners, CI job `Platform` |
@@ -35,10 +35,10 @@ Further pending items that belong to the release rather than to a section 16 lin
 |:--|:--|:--|
 | Release workflow dry run | pending (owner) | [`release.md`](release.md#dry-run); not yet run |
 | Tag `v0.1.0` | pending (owner) | pushed by the owner only; owner steps below |
-| `THIRD-PARTY-NOTICES` completeness | pending | The notices in the archives currently lack the musl libc and Rust standard library notices. A fix is coming; item 1 and the release should wait for it, and this row is ticked when the fix has landed |
+| `THIRD-PARTY-NOTICES` completeness | done | Fixed sections beside the `cargo about` output: the Rust standard library ([`tools/notices/rust-std.txt`](../tools/notices/rust-std.txt)) for every target and musl libc ([`tools/notices/musl-libc.txt`](../tools/notices/musl-libc.txt)) for the `*-linux-musl` targets; `cargo xtask release-check` fails when a section the target needs, or musl's copyright line, is missing (`notices_problems` in `tools/xtask/src/release.rs`, `should_require_the_fixed_sections_when_the_target_needs_them`); [ADR 0076](adr/0076-release-check-archive-and-notices.md#amendment-2026-10-14-what-cargo-about-cannot-see-and-a-reproducible-archive) amendment; CI job `Artifact smoke` and the release workflow's `Build` jobs |
 
-Summary: 10 done, 1 pending, 0 gaps among the 11 section 16 items; plus 3 pending release items
-(dry run, tag, notices).
+Summary: 10 done, 1 pending, 0 gaps among the 11 section 16 items; plus 3 release items: 1 done
+(notices) and 2 pending (dry run, tag).
 
 ## Plan section 11, milestone M5 exit gate
 
@@ -67,9 +67,13 @@ Agents never push tags, dispatch the workflow or publish a release. In order:
    (`## [0.1.0] - YYYY-MM-DD`), delete the sentence under it that tells the owner to do so, and
    commit it to `main`. Update the README status line (the "pre-release" note under the title) in
    the same commit. Wait for `Required` again.
-3. Wait until the `THIRD-PARTY-NOTICES` fix (musl libc and Rust standard library notices) is on
-   `main`. Then the dry run of [`release.md`](release.md#dry-run) on a throwaway
-   `dry-run-<name>` tag. It exercises the workflow end to end; delete its draft and tag afterwards. Treat it as required, not optional: nothing else has run `release.yml`.
+3. Once, before any release tag: add the `v*` tag ruleset of
+   [`release.md`](release.md#one-time-setup-owner) (restrict updates and deletions).
+   Then the dry run of [`release.md`](release.md#dry-run) on a throwaway `dry-run-<name>` tag:
+   find its run with `gh run list --workflow release.yml --branch <tag>`, check it as in
+   [Checking a release](release.md#checking-a-release) with `--source-ref refs/tags/<tag>`, and
+   clean up with `gh release delete <tag> --yes --cleanup-tag`, all as release.md shows. Treat it
+   as required, not optional: nothing else has run `release.yml`.
 4. Tag and push:
 
    ```sh
@@ -79,11 +83,10 @@ Agents never push tags, dispatch the workflow or publish a release. In order:
 
    The push starts `release.yml`; `prepare` fails unless the tag is `v` plus the workspace version
    and the commit is on `main`.
-5. Wait for `prepare`, four `Build`, `Publish the draft release` and four `Verify` to be green, then
-   check the draft as in [`release.md`](release.md#checking-a-release). When verifying the
-   attestation, pin the workflow and the tag, as the README does: `gh attestation verify <archive>
-   --repo pzmi/site-preview --signer-workflow pzmi/site-preview/.github/workflows/release.yml
-   --source-ref refs/tags/v0.1.0`. With `--repo` alone, an attestation from any workflow or ref,
-   including a dry run, would pass.
+5. Find the run with `gh run list --workflow release.yml --branch v0.1.0`. Wait for `prepare`,
+   four `Build`, `SBOMs`, `Publish the draft release` and four `Verify` to be green, then check
+   the draft as in [`release.md`](release.md#checking-a-release), with the pinned
+   `gh attestation verify ... --signer-workflow ... --source-ref refs/tags/v0.1.0` it gives. With
+   `--repo` alone, an attestation from any workflow or ref, including a dry run, would pass.
 6. Publish by hand: `gh release edit v0.1.0 --draft=false`. Then try the README install command
    from a machine with no Rust, Node or npm, and tick item 11 above.
