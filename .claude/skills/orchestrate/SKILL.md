@@ -90,8 +90,10 @@ ADR numbers reserved for you: <NNNN, ... | none>; create them with
 Gate: <`cargo xtask check` | `cargo xtask quick` | the fallback in CLAUDE.md>, as doc/tasks.md says.
 Run it in the foreground with CARGO_TARGET_DIR=<lane target dir>; commit only on green; never end
 your turn with anything still running; kill only PIDs you started, never by pattern.
-Constraints: commit on <lane> ending with exactly this trailer block, written by hand (no `-s`):
-Signed-off-by: <name> <email>
+Constraints: commit on <lane> with author <name> <public-safe email>, the human driving
+the session (CLAUDE.md; the committer stays the environment's identity),
+ending with exactly this trailer block, written by hand (no `-s`):
+Signed-off-by: <name> <public-safe email>
 <the trailer block from the session's attribution instructions>
 Stage only your own files. Do not push, do not touch main, no `gh`, no PR, no tags.
 Never run `playwright install` (Chromium is preinstalled under /opt/pw-browsers). No model ids
