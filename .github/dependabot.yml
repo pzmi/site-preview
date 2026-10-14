@@ -33,6 +33,13 @@ updates:
     directory: "/tests/e2e/browser"
     schedule:
       interval: "weekly"
+    # Each @playwright/test release launches one Chromium build. The agent sandbox has only
+    # build 1194 (/opt/pw-browsers), which is 1.56.x (ADR 0009, ADR 0016); 1.57 and later
+    # fail to launch there, and xtask's CHROMIUM_BUILD and tools/versions.toml name 1194.
+    # 1.56.x patches still come through. Drop this when the sandbox browser is upgraded.
+    ignore:
+      - dependency-name: "@playwright/test"
+        versions: [">=1.57.0"]
     groups:
       minor-and-patch:
         update-types:
