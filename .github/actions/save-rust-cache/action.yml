@@ -16,13 +16,19 @@ runs:
     # Shrinks the entry before it counts against the repository's cache quota (ADR 0072). The
     # workspace crates' own outputs are dead weight: a fresh checkout has newer sources, so cargo
     # rebuilds them anyway. Registry dependencies, the fingerprints of other crates and the
-    # installed tools stay. A missing directory is not an error; a failing `cargo metadata` is.
+    # installed tools stay. `target/release-check` (the release-check build, ADR 0076) is a separate
+    # profile tree no other job restores, so it is dropped. A missing `target` is not an error
+    # (the job built nothing); a failing `cargo metadata` is.
     - name: Prune the workspace crates' build outputs
       if: github.event_name == 'push' && github.ref == 'refs/heads/main' && inputs.hit != 'true'
       shell: bash
       run: |
         set -euo pipefail
-        rm -rf target/nextest
+        if [ ! -d target ]; then
+          echo 'no target directory; nothing to prune'
+          exit 0
+        fi
+        rm -rf target/nextest target/release-check
         find target -type d -name incremental -prune -exec rm -rf {} +
         names="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[].name')"
         find target -type d \( -name .fingerprint -o -name build -o -name deps \) -prune -print0 |

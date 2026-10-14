@@ -27,8 +27,10 @@
 
 use core::fmt;
 
+use preview_domain::warning_code::WarningCode;
+
 /// The warning code (plan.md §6 step 8).
-pub(crate) const CSP_BLOCKS_LIVE_RELOAD: &str =
+pub(crate) const CSP_BLOCKS_LIVE_RELOAD: WarningCode =
     preview_domain::warning_code::CSP_BLOCKS_LIVE_RELOAD;
 
 /// What a page's policy blocks: the effective directive that stops each request, if any.

@@ -83,17 +83,19 @@ mod tests {
     use std::ffi::OsStr;
     use std::sync::Mutex;
 
+    use preview_domain::warning_code::WarningCode;
+
     use super::*;
 
     #[derive(Default)]
     struct Warnings(Mutex<Vec<(String, String)>>);
 
     impl WarningSink for Warnings {
-        fn warn(&self, code: &str, message: &str) {
+        fn warn(&self, code: WarningCode, message: &str) {
             self.0
                 .lock()
                 .expect("lock")
-                .push((code.to_owned(), message.to_owned()));
+                .push((code.to_string(), message.to_owned()));
         }
     }
 

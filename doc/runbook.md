@@ -294,17 +294,18 @@ binary with `PATH=/usr/bin:/bin` to prove it).
 
 | Platform | Minimum | Why |
 |:--|:--|:--|
-| Linux x86_64 | kernel 3.2 | the floor of the Rust standard library for this target; the binary adds no newer syscall |
-| Linux aarch64 | kernel 4.1 | the same floor for this target |
+| Linux x86_64 | kernel 3.2 | inherited: the floor Rust documents for its glibc `x86_64-unknown-linux-gnu` target; the musl target the binary uses states none, and the binary adds no newer syscall |
+| Linux aarch64 | kernel 4.1 | inherited in the same way from Rust's glibc `aarch64-unknown-linux-gnu` target |
 | Linux, either | inotify (`CONFIG_INOTIFY_USER`, kernel 2.6.27 for `inotify_init1`) | the live watcher; without it the server starts with `warning[watch-unavailable]` and serves without live reload |
 | macOS | 11 (arm64) / 10.12 (x86_64), FSEvents | the Rust floor; one recursive FSEvents stream (ADR 0075) |
 
-The file-serving confinement uses only `openat`, `fstatat` and `fstat` with `O_NOFOLLOW` and
-`O_DIRECTORY` (through `rustix`), all present since kernel 2.6.16. It does not use `openat2`,
+The file-serving confinement uses only `openat`, `fstatat`, `fstat`, `fcntl` and `read` with
+`O_NOFOLLOW` and `O_DIRECTORY` (through `rustix`), all present since kernel 2.6.16. It does not use `openat2`,
 `io_uring` or any syscall from a recent kernel, so an old kernel or a container with a
 restrictive seccomp profile fails only if it blocks those basics. CI exercises kernels of the
-GitHub-hosted runners (Ubuntu 24.04, macOS 15) only; the table above is the toolchain's
-documented floor, not a tested one. The inotify quotas below apply to every Linux machine.
+GitHub-hosted runners (Ubuntu 24.04, macOS 15) only; the table above is the floor Rust
+documents for its glibc targets, inherited rather than measured for the musl builds, and not
+a tested one. The inotify quotas below apply to every Linux machine.
 
 ## Shutdown
 

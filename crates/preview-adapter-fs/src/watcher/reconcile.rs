@@ -132,7 +132,9 @@ enum Named {
 /// path now a link loop). Any other failure (`EIO`, `ESTALE`, `ETIMEDOUT`, `ENOTCONN` from a
 /// network or FUSE file system, `EACCES` on a parent, `ENOMEM`, `EINTR`) may pass, so it is
 /// not a removal: the reconcile goes on through the held descriptor, and the next reconcile
-/// checks again. A removal hidden by such a failure is found by the next reconcile any change
+/// checks again. `ENAMETOOLONG` is classified explicitly as transient too: the path was
+/// accepted when the server started, so a limit error now is a file-system or mount fault, not
+/// proof that no directory is there (it is not in the removal list on purpose). A removal hidden by such a failure is found by the next reconcile any change
 /// asks for, as when the parent cannot be watched (ADR 0073). Pinned by
 /// `should_count_only_a_missing_path_as_removed_when_stat_fails`,
 /// `should_count_removed_when_held_directory_has_no_link_whatever_the_path_says` and
@@ -143,7 +145,12 @@ fn removed(unlinked: bool, named: Named) -> bool {
         || match named {
             Named::Same => false,
             Named::Other => true,
-            Named::Failed(errno) => matches!(errno, Errno::NOENT | Errno::NOTDIR | Errno::LOOP),
+            Named::Failed(errno) => match errno {
+                Errno::NOENT | Errno::NOTDIR | Errno::LOOP => true,
+                // Explicitly not a removal (see above); every other errno is the same.
+                Errno::NAMETOOLONG => false,
+                _ => false,
+            },
         }
 }
 

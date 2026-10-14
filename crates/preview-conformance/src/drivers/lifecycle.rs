@@ -419,5 +419,5 @@ impl StartupReporter for Quiet {
 }
 
 impl WarningSink for Quiet {
-    fn warn(&self, _code: &str, _message: &str) {}
+    fn warn(&self, _code: preview_composition::warning_code::WarningCode, _message: &str) {}
 }

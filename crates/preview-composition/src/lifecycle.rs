@@ -703,6 +703,7 @@ mod tests {
 
     use preview_application::{ChangeBatch, ChangeSource, SourceFailure};
     use preview_domain::ChangeEvent;
+    use preview_domain::warning_code::WarningCode;
     use preview_testkit::poll::wait_until;
     use tempfile::TempDir;
 
@@ -733,11 +734,11 @@ mod tests {
     }
 
     impl WarningSink for Warnings {
-        fn warn(&self, code: &str, message: &str) {
+        fn warn(&self, code: WarningCode, message: &str) {
             self.0
                 .lock()
                 .expect("unpoisoned")
-                .push((code.to_owned(), message.to_owned()));
+                .push((code.to_string(), message.to_owned()));
         }
     }
 

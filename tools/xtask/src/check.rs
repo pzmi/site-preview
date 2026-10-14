@@ -226,7 +226,7 @@ mod tests {
     /// Reads the job table of a workflow without a YAML parser: job ids at two spaces, steps as
     /// `      - ` items. Comment lines are ignored, so prose naming the command counts for
     /// nothing. A step that runs `cargo xtask check --only` with `continue-on-error` or its own
-    /// `if:`, or in a job that has `continue-on-error`, is listed in `softened`: the gate would
+    /// `if:`, or in a job that has `continue-on-error` or a job-level `if:` (four spaces), is listed in `softened`: the gate would
     /// pass without having run (or passed) that stage.
     fn parse_ci(text: &str) -> ParsedCi {
         let mut out = ParsedCi::default();
@@ -234,6 +234,8 @@ mod tests {
         let mut job = String::new();
         let mut in_needs = false;
         let mut job_soft = false;
+        let mut job_if = false;
+        let mut job_gate = false;
         let mut step_soft = false;
         let mut step_gate = false;
         for line in text.lines() {
@@ -258,6 +260,8 @@ mod tests {
                 out.needs.entry(job.clone()).or_default();
                 in_needs = false;
                 job_soft = false;
+                job_if = false;
+                job_gate = false;
                 step_soft = false;
                 step_gate = false;
                 continue;
@@ -282,8 +286,12 @@ mod tests {
             if line.starts_with("    continue-on-error:") {
                 job_soft = true;
             }
+            if line.starts_with("    if:") {
+                job_if = true;
+            }
             if let Some(args) = line.split("cargo xtask check --only ").nth(1) {
                 step_gate = true;
+                job_gate = true;
                 // `--only a,b` and `--only a --only b` both name stages
                 let args = args.replace("--only ", "");
                 let list = out.stages.get_mut(&job).unwrap();
@@ -300,6 +308,12 @@ mod tests {
                 in_needs = false;
             }
             let note = format!("{job}: a step running `check --only`");
+            // A job-level `if:` can skip the whole job (a skipped job satisfies `needs`), wherever
+            // in the job it is written relative to the gate step.
+            let job_note = format!("{job}: a job running `check --only` has a job-level `if:`");
+            if job_gate && job_if && !out.softened.contains(&job_note) {
+                out.softened.push(job_note);
+            }
             if step_gate && (step_soft || job_soft) && !out.softened.contains(&note) {
                 out.softened.push(note);
             }
@@ -424,6 +438,28 @@ mod tests {
 
         // then
         assert_eq!(parsed.softened.len(), 1, "{:?}", parsed.softened);
+    }
+
+    #[test]
+    fn should_flag_a_gate_job_when_it_has_a_job_level_if() {
+        // given
+        let before = "jobs:\n  a:\n    if: github.event_name == 'push'\n    steps:\n      - run: cargo xtask check --only clippy\n";
+        let after = "jobs:\n  a:\n    steps:\n      - run: cargo xtask check --only clippy\n  b:\n    if: always()\n    steps:\n      - run: cargo xtask check --only fmt\n";
+        let no_gate = "jobs:\n  required:\n    if: always()\n    steps:\n      - run: echo ok\n";
+
+        // when
+        let (a, b, c) = (parse_ci(before), parse_ci(after), parse_ci(no_gate));
+
+        // then
+        assert_eq!(
+            a.softened,
+            ["a: a job running `check --only` has a job-level `if:`"]
+        );
+        assert_eq!(
+            b.softened,
+            ["b: a job running `check --only` has a job-level `if:`"]
+        );
+        assert!(c.softened.is_empty(), "{:?}", c.softened);
     }
 
     #[test]

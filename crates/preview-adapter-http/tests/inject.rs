@@ -15,6 +15,7 @@ use preview_adapter_http::{
     StreamLimit, WarningSink, build_router,
 };
 use preview_application::{Opened, ReloadState, SiteContent};
+use preview_domain::warning_code::WarningCode;
 use preview_domain::{BoundAddr, ChangeSet, HostPolicy, SiteState, decode_request_path};
 use preview_testkit::{FixedInstanceIds, InMemorySite};
 use tower::ServiceExt;
@@ -26,11 +27,11 @@ const PAGE: &str = "<!doctype html><html><head><title>t</title></head>\
 struct Recorder(Mutex<Vec<(String, String)>>);
 
 impl WarningSink for Recorder {
-    fn warn(&self, code: &str, message: &str) {
+    fn warn(&self, code: WarningCode, message: &str) {
         self.0
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .push((code.to_owned(), message.to_owned()));
+            .push((code.to_string(), message.to_owned()));
     }
 }
 

@@ -24,9 +24,10 @@ use crate::errors::plain;
 use crate::mime::html_content_type;
 use crate::stream::stream_body;
 use crate::warnings::{OncePerPath, SilentWarnings, WarningSink};
+use preview_domain::warning_code::WarningCode;
 
 /// The warning code for a page the rewriter refused (plan.md §6 step 6).
-const REWRITE_FAILED: &str = preview_domain::warning_code::HTML_REWRITE_FAILED;
+const REWRITE_FAILED: WarningCode = preview_domain::warning_code::HTML_REWRITE_FAILED;
 
 /// What HTML serving needs beyond the content port: where warnings go and the memory budget.
 ///
@@ -157,7 +158,7 @@ pub(crate) async fn html_response(
         let page = prepare(file, len, input, &snapshot)?;
         if let (Some(warnings), Some(path), Some((code, message))) = (warnings, path, &page.warning)
         {
-            warnings.warn(code, &path, message);
+            warnings.warn(*code, &path, message);
         }
         Ok::<_, io::Error>((page, permit))
     })
@@ -178,7 +179,7 @@ pub(crate) async fn html_response(
 struct Prepared {
     bytes: Vec<u8>,
     utf8: bool,
-    warning: Option<(&'static str, String)>,
+    warning: Option<(WarningCode, String)>,
 }
 
 /// Reads the page, checks its encoding, decides and rewrites. Blocking.
@@ -231,7 +232,7 @@ fn prepare(
     })
 }
 
-fn csp_warning(warning: super::CspWarning) -> (&'static str, String) {
+fn csp_warning(warning: super::CspWarning) -> (WarningCode, String) {
     (CSP_BLOCKS_LIVE_RELOAD, warning.to_string())
 }
 

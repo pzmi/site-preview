@@ -14,7 +14,7 @@ use preview_composition::{
 
 /// One warning line in the ADR 0020 format: `site-preview: warning[<code>]: <message>`.
 /// Pinned by `should_format_warning_line_when_rendered`.
-pub fn warning_line(code: &str, message: &str) -> String {
+pub fn warning_line(code: warning_code::WarningCode, message: &str) -> String {
     format!("site-preview: warning[{code}]: {message}")
 }
 
@@ -89,7 +89,7 @@ fn watcher_event(state: WatcherState) -> String {
 pub struct StderrWarnings;
 
 impl WarningSink for StderrWarnings {
-    fn warn(&self, code: &str, message: &str) {
+    fn warn(&self, code: warning_code::WarningCode, message: &str) {
         // One `writeln!` on the locked handle, so concurrent warnings never interleave; a
         // closed stderr has nowhere left to report to.
         let _ = writeln!(io::stderr().lock(), "{}", warning_line(code, message));
@@ -276,7 +276,10 @@ mod tests {
     #[test]
     fn should_format_warning_line_when_rendered() {
         // given
-        let (code, message) = ("html-too-large", "/big.html: HTML is larger than 8 MiB");
+        let (code, message) = (
+            warning_code::HTML_TOO_LARGE,
+            "/big.html: HTML is larger than 8 MiB",
+        );
 
         // when
         let line = warning_line(code, message);

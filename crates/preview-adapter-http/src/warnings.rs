@@ -7,6 +7,8 @@
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex, PoisonError};
 
+use preview_domain::warning_code::WarningCode;
+
 /// Receives warnings from the HTTP adapter.
 ///
 /// `code` is a stable warning code (`html-too-large`, `html-not-utf8`,
@@ -15,7 +17,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 /// Called from blocking threads, so an implementation may write to a stream directly.
 pub trait WarningSink: Send + Sync {
     /// Reports one warning.
-    fn warn(&self, code: &str, message: &str);
+    fn warn(&self, code: WarningCode, message: &str);
 }
 
 /// A sink that drops every warning; the default for an [`crate::Injection`] built in tests.
@@ -23,7 +25,7 @@ pub trait WarningSink: Send + Sync {
 pub struct SilentWarnings;
 
 impl WarningSink for SilentWarnings {
-    fn warn(&self, _code: &str, _message: &str) {}
+    fn warn(&self, _code: WarningCode, _message: &str) {}
 }
 
 /// How many `(code, path)` pairs are remembered. Past it, a new pair is not reported at all,
@@ -37,7 +39,7 @@ const MAX_REMEMBERED: usize = 4096;
 /// and `should_stop_reporting_when_memo_is_full` below.
 pub(crate) struct OncePerPath {
     sink: Arc<dyn WarningSink>,
-    seen: Mutex<HashSet<(&'static str, String)>>,
+    seen: Mutex<HashSet<(WarningCode, String)>>,
 }
 
 impl OncePerPath {
@@ -49,7 +51,7 @@ impl OncePerPath {
     }
 
     /// Reports `message` for `path` under `code` unless that pair was reported before.
-    pub(crate) fn warn(&self, code: &'static str, path: &str, message: &str) {
+    pub(crate) fn warn(&self, code: WarningCode, path: &str, message: &str) {
         let first = {
             let mut seen = self.seen.lock().unwrap_or_else(PoisonError::into_inner);
             seen.len() < MAX_REMEMBERED && seen.insert((code, path.to_owned()))
@@ -62,13 +64,15 @@ impl OncePerPath {
 
 #[cfg(test)]
 mod tests {
+    use preview_domain::warning_code;
+
     use super::*;
 
     #[derive(Default)]
     struct Recorder(Mutex<Vec<String>>);
 
     impl WarningSink for Recorder {
-        fn warn(&self, code: &str, message: &str) {
+        fn warn(&self, code: WarningCode, message: &str) {
             self.0
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
@@ -92,10 +96,10 @@ mod tests {
         let once = OncePerPath::new(recorder.clone());
 
         // when
-        once.warn("html-too-large", "/a.html", "big");
-        once.warn("html-too-large", "/a.html", "big");
-        once.warn("html-not-utf8", "/a.html", "latin1");
-        once.warn("html-too-large", "/b.html", "big");
+        once.warn(warning_code::HTML_TOO_LARGE, "/a.html", "big");
+        once.warn(warning_code::HTML_TOO_LARGE, "/a.html", "big");
+        once.warn(warning_code::HTML_NOT_UTF8, "/a.html", "latin1");
+        once.warn(warning_code::HTML_TOO_LARGE, "/b.html", "big");
 
         // then
         assert_eq!(
@@ -114,11 +118,11 @@ mod tests {
         let recorder = Arc::new(Recorder::default());
         let once = OncePerPath::new(recorder.clone());
         for i in 0..MAX_REMEMBERED {
-            once.warn("html-too-large", &format!("/{i}.html"), "big");
+            once.warn(warning_code::HTML_TOO_LARGE, &format!("/{i}.html"), "big");
         }
 
         // when
-        once.warn("html-too-large", "/one-more.html", "big");
+        once.warn(warning_code::HTML_TOO_LARGE, "/one-more.html", "big");
 
         // then
         assert_eq!(recorder.lines().len(), MAX_REMEMBERED);

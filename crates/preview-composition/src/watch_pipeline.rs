@@ -27,6 +27,7 @@ use preview_application::{
 };
 use preview_domain::{
     ChangeEvent, DegradeReason, DomainEvent, Tick, WatcherHealthRefusal, warning_code,
+    warning_code::WarningCode,
 };
 
 use crate::server::{DegradedReason, WatcherEvents, WatcherState};
@@ -113,7 +114,7 @@ impl Clock for TokioClock {
 pub(crate) fn warning_for(
     event: &DomainEvent,
     detail: Option<&str>,
-) -> Option<(&'static str, String)> {
+) -> Option<(WarningCode, String)> {
     let DomainEvent::WatcherDegraded { reason } = event else {
         return None;
     };
@@ -591,11 +592,11 @@ mod tests {
     struct Recorder(Mutex<Vec<(String, String)>>);
 
     impl WarningSink for Recorder {
-        fn warn(&self, code: &str, message: &str) {
+        fn warn(&self, code: WarningCode, message: &str) {
             self.0
                 .lock()
                 .expect("unpoisoned")
-                .push((code.to_owned(), message.to_owned()));
+                .push((code.to_string(), message.to_owned()));
         }
     }
 
@@ -1295,11 +1296,17 @@ mod tests {
 
         // then
         let (code, message) = runtime.expect("a warning");
-        assert_eq!(code, "watch-failed");
+        assert_eq!(code, warning_code::WATCH_FAILED);
         assert!(message.starts_with("file watching failed; "), "{message}");
-        assert_eq!(exhausted.map(|(code, _)| code), Some("reload-exhausted"));
+        assert_eq!(
+            exhausted.map(|(code, _)| code),
+            Some(warning_code::RELOAD_EXHAUSTED)
+        );
         assert_eq!(registration, None);
-        assert_eq!(removed.map(|(code, _)| code), Some("root-removed"));
+        assert_eq!(
+            removed.map(|(code, _)| code),
+            Some(warning_code::ROOT_REMOVED)
+        );
         assert_eq!(recovered, None);
     }
 

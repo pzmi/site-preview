@@ -1,20 +1,44 @@
 //! The stable codes of every warning the product prints as `warning[<code>]` (ADR 0020).
 //!
-//! This module is the single registry. Production code names a code only through these
-//! constants, never as a literal, so the set cannot grow without being listed here. The
-//! `docs` stage of `cargo xtask check` reads this file and fails when a code is missing from
-//! the README "Warnings" table (or the table lists a code that is not here), and fails when
-//! production code passes a string literal to `warn(` or `warning_line(` (ADR 0077). A new
-//! code is one line in the macro invocation below. Pinned by
-//! `should_list_every_constant_in_all_when_codes_are_declared` and
+//! This module is the single registry. A code is a [`WarningCode`], whose field is private to
+//! this module, so only the macro below can construct one and every emit site (`warn`,
+//! `warning_line`) takes the newtype: a string literal does not compile, and the set cannot
+//! grow without being listed here. The `docs` stage of `cargo xtask check` reads this file and
+//! fails when a code is missing from the README "Warnings" table or the table lists a code
+//! that is not here (ADR 0077). A new code is one line in the macro invocation below. Pinned
+//! by `should_list_every_constant_in_all_when_codes_are_declared` and
 //! `should_use_lowercase_kebab_case_when_codes_are_declared`.
+
+use std::fmt;
+
+/// A registered warning code; constructible only by the registry below.
+///
+/// ```compile_fail
+/// let _ = preview_domain::warning_code::WarningCode("made-up");
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct WarningCode(&'static str);
+
+impl WarningCode {
+    /// The code as printed in `warning[<code>]`.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        self.0
+    }
+}
+
+impl fmt::Display for WarningCode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.0)
+    }
+}
 
 macro_rules! warning_codes {
     ($($(#[$meta:meta])* $name:ident = $code:literal;)+) => {
-        $($(#[$meta])* pub const $name: &str = $code;)+
+        $($(#[$meta])* pub const $name: WarningCode = WarningCode($code);)+
 
         /// Every code, in declaration order.
-        pub const ALL: &[&str] = &[$($code),+];
+        pub const ALL: &[WarningCode] = &[$($name),+];
     };
 }
 
@@ -79,8 +103,9 @@ mod tests {
         // when
         let bad: Vec<_> = ALL
             .iter()
+            .map(|code| code.as_str())
             .filter(|code| {
-                !seen.insert(**code)
+                !seen.insert(*code)
                     || code.is_empty()
                     || !code
                         .chars()

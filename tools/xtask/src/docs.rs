@@ -14,8 +14,9 @@
 //! 4. Every `serve` flag in the built binary's `--help` is in the README flags table and the
 //!    table names no flag the binary lacks.
 //! 5. Every warning code in `preview-domain`'s `warning_code` registry is in the README
-//!    "Warnings" table and the table lists no other; production code never passes a literal
-//!    code to `warn(` or `warning_line(`, so the registry is the complete list.
+//!    "Warnings" table and the table lists no other. The registry's `WarningCode` newtype has a
+//!    private field, so only the registry can build the argument of `warn` and `warning_line`
+//!    and the registry is the complete list without scanning call sites.
 //! 6. Every relative Markdown link resolves, `#anchor`s into Markdown files included.
 //! 7. The commands in `AGENTS.md` are the rows of the agent workflow spec's `EXERCISED` map
 //!    and of its comment table.
@@ -45,9 +46,6 @@ const WARNING_REGISTRY: &str = "crates/preview-domain/src/warning_code.rs";
 const NEGATIVE_FIXTURES: &str = "tests/docs-invalid";
 const POSITIVE_FIXTURES: &str = "tests/docs-valid";
 
-/// Crates whose sources are test support, not product: they may name codes freely.
-const TEST_ONLY_CRATES: &[&str] = &["preview-testkit", "preview-conformance"];
-
 /// The `docs` stage.
 pub fn stage() -> Stage {
     Stage::in_process("docs", "cargo xtask check --only docs", run)
@@ -67,7 +65,7 @@ fn run() -> i32 {
 
 /// Every check over the repository at `root`.
 fn check_repository(root: &Path) -> Vec<String> {
-    let mut problems = check_tree(root, &known_commands());
+    let mut problems = check_tree(root, &known_commands(), true);
     let read = |rel: &str| fs::read_to_string(root.join(rel)).map_err(|e| format!("{rel}: {e}"));
     let rules: Vec<&str> = crate::architecture::Rule::ALL
         .iter()
@@ -84,7 +82,6 @@ fn check_repository(root: &Path) -> Vec<String> {
     match (read(README), read(WARNING_REGISTRY)) {
         (Ok(readme), Ok(registry)) => {
             problems.extend(check_warning_codes(&readme, &registry));
-            problems.extend(check_literal_codes(&product_sources(root)));
         }
         (Err(err), _) | (_, Err(err)) => problems.push(err),
     }
@@ -97,9 +94,13 @@ fn check_repository(root: &Path) -> Vec<String> {
 
 /// The checks that need only a tree of files: ADRs, xtask commands and links. Fixtures are
 /// whole trees of this shape.
-fn check_tree(root: &Path, known: &[String]) -> Vec<String> {
+///
+/// `require_adrs` is true for the repository itself, which must have `doc/adr` with at least
+/// one ADR (a vanished directory must not pass as "nothing to check"); the fixture trees
+/// that exercise other checks have none and pass false.
+fn check_tree(root: &Path, known: &[String], require_adrs: bool) -> Vec<String> {
     let files = markdown_files(root);
-    let mut problems = check_adrs(root);
+    let mut problems = check_adrs(root, require_adrs);
     problems.extend(check_xtask_commands(root, &files, known));
     problems.extend(check_links(root, &files));
     problems.sort();
@@ -121,22 +122,62 @@ fn known_commands() -> Vec<String> {
 /// Directory names never searched: build output, dependencies, work state.
 const SKIPPED_DIRS: &[&str] = &[".git", "target", "node_modules", ".work"];
 
-/// Every `.md` file under `root`, as sorted root-relative paths with `/` separators. The
-/// fixture trees are not part of the repository's documentation.
+/// Every `.md` file of the documentation under `root`, as sorted root-relative paths with `/`
+/// separators. The fixture trees are not part of the repository's documentation.
+///
+/// In a git work tree the list is `git ls-files --cached --others --exclude-standard`: the
+/// tracked files plus new files not yet added, minus everything ignored. Tracked-only would
+/// let `check` pass before `git add` on a document that then breaks the next run; walking the
+/// disk would read build output, scratch copies and other untracked clutter that git ignores
+/// and that is not documentation. Outside git (the unit tests' temporary trees) it walks the
+/// directory, skipping [`SKIPPED_DIRS`].
 fn markdown_files(root: &Path) -> Vec<String> {
-    let mut found = Vec::new();
-    walk(
-        root,
-        root,
-        &mut |rel| {
-            rel.ends_with(".md")
-                && !rel.starts_with(&format!("{NEGATIVE_FIXTURES}/"))
-                && !rel.starts_with(&format!("{POSITIVE_FIXTURES}/"))
-        },
-        &mut found,
-    );
+    let wanted = |rel: &str| {
+        rel.ends_with(".md")
+            && !rel.starts_with(&format!("{NEGATIVE_FIXTURES}/"))
+            && !rel.starts_with(&format!("{POSITIVE_FIXTURES}/"))
+    };
+    let mut found = match git_files(root) {
+        Some(listed) => listed
+            .into_iter()
+            .filter(|rel| wanted(rel) && root.join(rel).is_file())
+            .collect(),
+        None => {
+            let mut walked = Vec::new();
+            walk(root, root, &mut |rel| wanted(rel), &mut walked);
+            walked
+        }
+    };
     found.sort();
+    found.dedup();
     found
+}
+
+/// The files git knows under `root` (tracked, or untracked and not ignored), or `None` when
+/// `root` is not inside a git work tree or git cannot run.
+fn git_files(root: &Path) -> Option<Vec<String>> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args([
+            "ls-files",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+            "-z",
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    Some(
+        String::from_utf8_lossy(&output.stdout)
+            .split('\0')
+            .filter(|rel| !rel.is_empty())
+            .map(str::to_owned)
+            .collect(),
+    )
 }
 
 /// Collects root-relative files for which `keep` is true.
@@ -170,35 +211,6 @@ fn relative(root: &Path, path: &Path) -> String {
         .map(|c| c.as_os_str().to_string_lossy().into_owned())
         .collect::<Vec<_>>()
         .join("/")
-}
-
-/// The production Rust sources: `crates/*/src/**/*.rs` of the non-test crates, up to each
-/// file's first `#[cfg(test)]`, as `(root-relative path, text)`.
-fn product_sources(root: &Path) -> Vec<(String, String)> {
-    let mut files = Vec::new();
-    walk(
-        root,
-        &root.join("crates"),
-        &mut |rel| {
-            let mut parts = rel.split('/');
-            let _crates = parts.next();
-            let krate = parts.next().unwrap_or_default();
-            rel.ends_with(".rs")
-                && rel.contains("/src/")
-                && !TEST_ONLY_CRATES.contains(&krate)
-                && !rel.ends_with("/tests.rs")
-        },
-        &mut files,
-    );
-    files.sort();
-    files
-        .into_iter()
-        .filter_map(|rel| {
-            let text = fs::read_to_string(root.join(&rel)).ok()?;
-            let end = text.find("#[cfg(test)]").unwrap_or(text.len());
-            Some((rel, text[..end].to_owned()))
-        })
-        .collect()
 }
 
 // ---------------------------------------------------------------------------------------
@@ -752,8 +764,15 @@ fn index_rows(index: &str) -> Vec<IndexRow> {
 }
 
 /// The ADR checks: files against the index and against themselves.
-fn check_adrs(root: &Path) -> Vec<String> {
+fn check_adrs(root: &Path, require_adrs: bool) -> Vec<String> {
     let (adrs, mut problems) = read_adrs(root);
+    if require_adrs {
+        if !root.join(ADR_DIR).is_dir() {
+            problems.push(format!("{ADR_DIR}:1: the ADR directory is missing"));
+        } else if adrs.is_empty() {
+            problems.push(format!("{ADR_DIR}:1: no ADRs found"));
+        }
+    }
     let mut by_number: BTreeMap<&str, Vec<&Adr>> = BTreeMap::new();
     for adr in &adrs {
         by_number.entry(adr.number.as_str()).or_default().push(adr);
@@ -887,8 +906,11 @@ fn help_flags(help: &str) -> Vec<String> {
         if !trimmed.starts_with('-') {
             continue;
         }
-        if let Some(at) = trimmed.find("--") {
-            let name: String = trimmed[at + 2..]
+        // The flag column ends at the first run of two spaces; a description may mention
+        // other flags (`--foo`) that are not options of this command.
+        let column = trimmed.split("  ").next().unwrap_or(trimmed);
+        if let Some(at) = column.find("--") {
+            let name: String = column[at + 2..]
                 .chars()
                 .take_while(|c| c.is_ascii_alphanumeric() || *c == '-')
                 .collect();
@@ -1006,34 +1028,6 @@ fn check_warning_codes(readme: &str, registry: &str) -> Vec<String> {
             problems.push(format!(
                 "{README}:{line}: the Warnings table lists `{code}`, which {WARNING_REGISTRY} does not declare"
             ));
-        }
-    }
-    problems
-}
-
-/// Production code names a warning code only through the registry's constants: a string
-/// literal as the first argument of `warn(` or `warning_line(` is a code the table cannot
-/// know about.
-fn check_literal_codes(sources: &[(String, String)]) -> Vec<String> {
-    let mut problems = Vec::new();
-    for (file, text) in sources {
-        for call in ["warn(", "warning_line("] {
-            for (at, _) in text.match_indices(call) {
-                let before = text[..at].chars().next_back();
-                if before.is_some_and(|c| c.is_alphanumeric() || c == '_') && call == "warn(" {
-                    // `unwarn(`-style identifiers; `fn warn(` has no literal after it anyway
-                    continue;
-                }
-                let after = text[at + call.len()..].trim_start();
-                if let Some(literal) = after.strip_prefix('"') {
-                    let code = literal.split('"').next().unwrap_or_default();
-                    let line = text[..at].matches('\n').count() + 1;
-                    problems.push(format!(
-                        "{file}:{line}: warning code \"{code}\" is a literal; declare it in \
-                         {WARNING_REGISTRY} and use the constant"
-                    ));
-                }
-            }
         }
     }
     problems
@@ -1195,7 +1189,7 @@ fn check_fixtures(root: &Path) -> Vec<String> {
                     "{name}: a positive fixture must expect no diagnostic"
                 ));
             }
-            let actual = check_tree(&case.path(), &known);
+            let actual = check_tree(&case.path(), &known, false);
             if actual != expected {
                 problems.push(format!(
                     "{name}: expected diagnostics {expected:?} but got {actual:?}"
@@ -1278,7 +1272,7 @@ mod tests {
         );
 
         // when
-        let problems = check_adrs(dir.path());
+        let problems = check_adrs(dir.path(), false);
 
         // then
         assert_eq!(
@@ -1298,7 +1292,7 @@ mod tests {
         );
 
         // when
-        let problems = check_adrs(dir.path());
+        let problems = check_adrs(dir.path(), false);
 
         // then
         assert_eq!(
@@ -1331,7 +1325,7 @@ mod tests {
         );
 
         // when
-        let problems = check_adrs(dir.path());
+        let problems = check_adrs(dir.path(), false);
 
         // then
         assert_eq!(
@@ -1356,7 +1350,7 @@ mod tests {
         );
 
         // when
-        let problems = check_adrs(dir.path());
+        let problems = check_adrs(dir.path(), false);
 
         // then
         assert_eq!(
@@ -1377,7 +1371,7 @@ mod tests {
         );
 
         // when
-        let problems = check_adrs(dir.path());
+        let problems = check_adrs(dir.path(), false);
 
         // then
         assert_eq!(
@@ -1404,7 +1398,7 @@ mod tests {
         );
 
         // when
-        let problems = check_adrs(dir.path());
+        let problems = check_adrs(dir.path(), false);
 
         // then
         assert_eq!(
@@ -1438,7 +1432,7 @@ mod tests {
         );
 
         // when
-        let problems = check_adrs(dir.path());
+        let problems = check_adrs(dir.path(), false);
 
         // then
         assert_eq!(
@@ -1463,7 +1457,7 @@ mod tests {
         );
 
         // when
-        let problems = check_adrs(dir.path());
+        let problems = check_adrs(dir.path(), false);
 
         // then
         assert_eq!(
@@ -1651,23 +1645,59 @@ mod tests {
     }
 
     #[test]
-    fn should_report_literal_code_when_production_code_bypasses_the_registry() {
+    fn should_report_missing_adrs_when_the_repository_has_none() {
         // given
-        let sources = vec![(
-            "crates/x/src/a.rs".to_owned(),
-            "fn f(w: &dyn Sink) {\n    w.warn(\n        \"made-up\",\n        &m,\n    );\n    w.warn(warning_code::OK, &m);\n    fn warn(&self) {}\n}\n".to_owned(),
-        )];
+        let dir = tempfile::tempdir().unwrap();
+        let empty = dir.path().join("doc/adr");
+        fs::create_dir_all(&empty).unwrap();
 
         // when
-        let problems = check_literal_codes(&sources);
+        let missing_dir = check_adrs(&dir.path().join("elsewhere"), true);
+        let no_adrs = check_adrs(dir.path(), true);
+        let fixture = check_adrs(dir.path(), false);
 
         // then
-        assert_eq!(
-            problems,
-            [
-                "crates/x/src/a.rs:2: warning code \"made-up\" is a literal; declare it in crates/preview-domain/src/warning_code.rs and use the constant"
-            ]
-        );
+        assert_eq!(missing_dir, ["doc/adr:1: the ADR directory is missing"]);
+        assert_eq!(no_adrs, ["doc/adr:1: no ADRs found"]);
+        assert!(fixture.is_empty(), "{fixture:?}");
+    }
+
+    #[test]
+    fn should_ignore_flags_in_descriptions_when_reading_help() {
+        // given
+        let help = "Options:\n  -p, --port <PORT>  Port; not --other-port\n      --open     Open it\n          see --also-not\n  -h, --help     Print help\n";
+
+        // when
+        let flags = help_flags(help);
+
+        // then
+        assert_eq!(flags, ["port", "open", "help"]);
+    }
+
+    #[test]
+    fn should_skip_ignored_files_when_the_tree_is_a_git_work_tree() {
+        // given
+        let dir = tempfile::tempdir().unwrap();
+        let git = |args: &[&str]| {
+            let ok = Command::new("git")
+                .arg("-C")
+                .arg(dir.path())
+                .args(args)
+                .status()
+                .is_ok_and(|s| s.success());
+            assert!(ok, "git {args:?}");
+        };
+        git(&["init", "-q"]);
+        fs::write(dir.path().join(".gitignore"), "scratch/\n").unwrap();
+        fs::create_dir_all(dir.path().join("scratch")).unwrap();
+        fs::write(dir.path().join("scratch/old.md"), "# x\n").unwrap();
+        fs::write(dir.path().join("new.md"), "# y\n").unwrap();
+
+        // when
+        let files = markdown_files(dir.path());
+
+        // then
+        assert_eq!(files, ["new.md"]);
     }
 
     #[test]

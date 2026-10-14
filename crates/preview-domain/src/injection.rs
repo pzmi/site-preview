@@ -22,7 +22,7 @@
 
 use core::fmt;
 
-use crate::warning_code;
+use crate::warning_code::{self, WarningCode};
 
 /// The largest HTML body the adapter rewrites: 8 MiB, inclusive (plan.md §6 step 3).
 ///
@@ -165,7 +165,7 @@ pub enum InjectionWarning {
 impl InjectionWarning {
     /// The stable warning code printed as `warning[<code>]`.
     #[must_use]
-    pub const fn code(self) -> &'static str {
+    pub const fn code(self) -> WarningCode {
         match self {
             Self::HtmlTooLarge => warning_code::HTML_TOO_LARGE,
             Self::HtmlNotUtf8 => warning_code::HTML_NOT_UTF8,
@@ -302,7 +302,7 @@ mod tests {
         assert_eq!(decision, InjectionDecision::Skip(SkipReason::TooLarge));
         assert_eq!(
             SkipReason::TooLarge.warning().map(InjectionWarning::code),
-            Some("html-too-large")
+            Some(warning_code::HTML_TOO_LARGE)
         );
     }
 
@@ -465,7 +465,7 @@ mod tests {
         assert_eq!(decision, InjectionDecision::Skip(SkipReason::NotUtf8));
         assert_eq!(
             SkipReason::NotUtf8.warning().map(InjectionWarning::code),
-            Some("html-not-utf8")
+            Some(warning_code::HTML_NOT_UTF8)
         );
     }
 

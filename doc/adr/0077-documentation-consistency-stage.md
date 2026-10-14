@@ -36,9 +36,15 @@ style of call.
   task).
 - **Warning codes have one registry**, `preview-domain::warning_code`, a macro that declares
   each constant and the `ALL` list together. Production code names a code only through it
-  (re-exported by `preview-composition` for the CLI, which may not depend on the domain). The
-  stage reads that file, and fails when production code passes a string literal to `warn(` or
-  `warning_line(`, so a code cannot be emitted without being listed and documented.
+  (re-exported by `preview-composition` for the CLI, which may not depend on the domain). A
+  code is a `WarningCode` newtype with a private field, so only the registry macro can build
+  one and `WarningSink::warn` and `warning_line` accept nothing else: a literal does not
+  compile, which replaced an earlier scan of call sites that a local constant or a tuple
+  could slip past. The stage reads the registry file and compares it with the README table.
+- **Which files**: Markdown files come from `git ls-files --cached --others --exclude-standard`
+  (tracked, plus new and not ignored, so a document is checked before `git add`), and from a
+  directory walk outside git. The repository run requires `doc/adr` with at least one ADR;
+  only the fixture trees may have none.
 - **Fixtures**: `tests/docs-invalid/<case>/` are small trees with an `expected.txt` listing
   the exact diagnostics (an unindexed ADR, an unknown xtask command, a broken link and
   anchor, a duplicate ADR number, an invalid status, a title number that differs from the file

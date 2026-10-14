@@ -82,7 +82,8 @@ The check took any failure of the path's `stat` for a removal, so a transient `E
 parent, or `ENOMEM` disabled live reload for good. Now only a definite answer counts: the
 held directory has no link left; the path names another object (device and inode differ);
 or the `stat` fails with `ENOENT`, `ENOTDIR` (a component is a file now) or `ELOOP` (the path
-is a link loop now), none of which names a directory at all. Any other failure is ignored:
+is a link loop now), none of which names a directory at all. Any other failure is ignored (`ENAMETOOLONG` is classified explicitly as transient: the path
+was accepted at start-up, so a limit error now is a file-system fault, not proof of absence):
 the reconcile goes on through the held descriptor as if the root stood, and the next
 reconcile checks again. The decision is a pure function over the two `stat` results
 (`removed` in `reconcile.rs`), unit-tested for every errno case.
