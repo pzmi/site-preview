@@ -80,10 +80,16 @@ skipped-but-green check. Run the gate in the foreground and commit only on green
 
 ## Commits
 
-- Credit the human driving the session: the commit author, committer and `Signed-off-by` are
-  that person's identity (`git config user.name` / `user.email`, as they gave it), never the
-  agent's or a placeholder; ask before the first commit when it is not known. The agent is
-  credited only by the `Co-Authored-By` and `Claude-Session` trailers.
+- Credit the human driving the session: the commit author and `Signed-off-by` are that person's
+  identity as they gave it (`git config author.name` / `author.email`), with a public-safe
+  email, their GitHub no-reply address unless they name a public one (this repository is
+  public, and a private address is refused at push), never a placeholder; ask
+  before the first commit when it is not known. The committer stays the environment's own
+  identity, because the environment signs every commit with its key and GitHub verifies a
+  signature against the committer. The agent is otherwise credited only by the
+  `Co-Authored-By` and `Claude-Session` trailers.
+- PRs are squash-merged: GitHub signs the squash commit, while a rebase merge drops the
+  signature.
 - DCO sign-off on every commit. Subject `<ID>: summary`, imperative, under 72 chars; the body
   says why. Use the trailer block your instructions give, exactly; add none of your own.
 - The trailer block is last, in this order: `Signed-off-by`, `Co-Authored-By`,
