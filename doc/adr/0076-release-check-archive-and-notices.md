@@ -4,7 +4,9 @@ Date: 2026-10-13
 
 ## Status
 
-Proposed
+Proposed. Amended 2026-10-14 (checkpoint OPS-06 review): fixed notice sections for the Rust
+standard library and musl, a corrected preface, stricter archive checks and a reproducible
+archive; see "Amendment".
 
 ## Context
 
@@ -55,3 +57,27 @@ runs on four native runners and needs one command that builds, packages and test
 - A new dependency under a licence outside `about.toml`'s `accepted` list fails the generator, in
   addition to `cargo deny`.
 - The archive has a top directory; OPS-07's install command extracts with `--strip-components=1`.
+
+## Amendment (2026-10-14): what `cargo about` cannot see, and a reproducible archive
+
+The checkpoint review found that `THIRD-PARTY-NOTICES` covered only Cargo's graph: it omitted
+the Rust standard library, which the compiler builds into every binary, and musl libc, which is
+linked statically into the `*-linux-musl` binaries and whose MIT licence requires its notice in
+every copy. It also found the MPL-2.0 preface naming the Servo repositories as the source of all
+four crates, which is wrong (`dtoa-short` is not a Servo project).
+
+- **Fixed sections.** `release-check` appends two committed texts after `cargo about`'s output:
+  `tools/notices/rust-std.txt` (every target: the Rust Project's copyright, the dual licence,
+  the MIT text verbatim from rust-lang/rust 1.97.0, the Apache-2.0 text being `LICENSE-APACHE`
+  of the archive, the LLVM-exception parts, and where the per-component list is) and
+  `tools/notices/musl-libc.txt` (`*-linux-musl`: musl 1.2.5's `COPYRIGHT`, unchanged, with its
+  source address). The musl version is the one the Rust target ships; a toolchain that moves to
+  another musl changes the heading and the text together. Both are in the generated file, so
+  the "archived equals fresh" check covers them, and `release-check` fails when a section the
+  target needs (or musl's copyright line) is missing.
+- **Preface.** The MPL-2.0 source sentence names only the crates.io address on each entry line
+  (each crate's own repository is linked from there); "linked into" is now "built into".
+- **Entries.** An entry is exactly `* <name> <version> https://crates.io/crates/<name>/<version>`;
+  other lines that start with `* ` are not counted.
+- **Logs.** The stderr of `cargo fetch` and `cargo about` goes to `logs/notices*.log`.
+- **Archive.** Reproducible and checked before extraction, as in ADR 0078's amendment.

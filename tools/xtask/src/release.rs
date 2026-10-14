@@ -9,11 +9,19 @@
 //! a dynamic port, serves `/`, sends an event-stream `reload` after a file edit, exits 0 on
 //! SIGTERM, and leaves the served tree exactly as the edit left it.
 //!
-//! The notices are checked three ways, each failing the command: the archived copy must equal a
-//! fresh `cargo about` run, every crate of the shipped graph (`cargo tree -e normal` for the
-//! target) must have an entry in it, and the four MPL-2.0 crates of ADR 0043 must come with the
-//! licence text and a source location (MPL-2.0 section 3.2). A missing `cargo-about` is an
-//! install hint, never a skip (ADR 0010). OPS-06 calls this once per native runner.
+//! The notices are `cargo about`'s output followed by fixed sections for what the compiler adds
+//! outside Cargo's graph: the Rust standard library on every target and musl libc on the
+//! `*-linux-musl` targets (`tools/notices/`, ADR 0076). They are checked four ways, each failing
+//! the command: the archived copy must equal a fresh run, every crate of the shipped graph
+//! (`cargo tree -e normal` for the target) must have an entry in it, the four MPL-2.0 crates of
+//! ADR 0043 must come with the licence text and a source location (MPL-2.0 section 3.2), and the
+//! fixed sections the target needs must be present. A missing `cargo-about` is an install hint,
+//! never a skip (ADR 0010). OPS-06 calls this once per native runner.
+//!
+//! The build and the archive are reproducible from the commit (ADR 0078): the build remaps the
+//! checkout and `$CARGO_HOME` out of the binary (and fails if either path is still in it), and
+//! the archive is a ustar of sorted entries with fixed modes, owner 0 and the commit time
+//! (`SOURCE_DATE_EPOCH` when set), compressed with `gzip -n`.
 //!
 //! `--archive PATH` (with `--target T`) skips the build and the notices and runs the extraction
 //! check and the smoke on an existing archive, such as one read back from a draft release by
@@ -63,6 +71,22 @@ const ARCHIVE_FILES: [&str; 5] = [
 /// Wait for the server to print `ready`, to exit after SIGTERM, or for a reload.
 const DEADLINE: Duration = Duration::from_secs(30);
 
+/// The Rust standard library's notice, appended to every target's notices (ADR 0076).
+const RUST_STD_NOTICE: &str = include_str!("../../notices/rust-std.txt");
+
+/// musl libc's notice (its `COPYRIGHT`, MIT), appended for the `*-linux-musl` targets, whose
+/// binaries link musl statically: the MIT terms require the notice in every copy.
+const MUSL_NOTICE: &str = include_str!("../../notices/musl-libc.txt");
+
+/// The heading line of [`RUST_STD_NOTICE`], which `release-check` requires in every archive.
+const RUST_STD_HEADING: &str = "The Rust standard library (MIT OR Apache-2.0)";
+
+/// The heading line of [`MUSL_NOTICE`], required in the archive of a `*-linux-musl` target.
+const MUSL_HEADING: &str = "musl libc 1.2.5 (MIT)";
+
+/// musl's copyright line, which must ship with a static musl binary.
+const MUSL_COPYRIGHT: &str = "Copyright \u{a9} 2005-2020 Rich Felker, et al.";
+
 /// Runs the command and returns its exit code. With `archive`, the build and packaging are
 /// skipped and that existing archive is extracted and smoked instead (OPS-06's `verify` job).
 pub fn run(target: Option<&str>, archive: Option<&Path>) -> i32 {
@@ -106,12 +130,30 @@ fn check(target_arg: Option<&str>) -> Result<Vec<String>, String> {
     reset_dir(&out_dir)?;
     fs::create_dir_all(&logs).map_err(|e| format!("cannot create {}: {e}", logs.display()))?;
 
-    let binary = build(&root, &target)?;
+    let epoch = crate::sbom::source_date_epoch(&root)?;
+    let cargo_home = cargo_home()?;
+    let binary = build(&root, &cargo_home, &target)?;
+    let leaked = build_path_problems(
+        &fs::read(&binary).map_err(|e| format!("cannot read {}: {e}", binary.display()))?,
+        &[&root, &cargo_home],
+    );
+    if !leaked.is_empty() {
+        return Err(format!(
+            "the binary still names a build path: {}",
+            leaked.join(", ")
+        ));
+    }
     let shipped = shipped_crates(&root, &target)?;
-    let notices = generate_notices(&root, &target)?;
-    let archive = package(&root, &out_dir, &target, &binary, &notices)?;
+    let notices = full_notices(&root, &target, &logs.join("notices.log"))?;
+    let archive = package(&root, &out_dir, &target, &binary, &notices, epoch)?;
     summary.push(format!("target {target}"));
-    summary.push(format!("archive {}", archive.display()));
+    summary.push(
+        "binary: names neither the checkout nor $CARGO_HOME (--remap-path-prefix)".to_owned(),
+    );
+    summary.push(format!(
+        "archive {} (ustar, sorted, mtime {epoch}, owner 0, gzip -n)",
+        archive.display()
+    ));
 
     let scratch = tempfile::tempdir().map_err(|e| format!("cannot make a temp dir: {e}"))?;
     let extracted = extract(&archive, scratch.path(), &target)?;
@@ -119,15 +161,16 @@ fn check(target_arg: Option<&str>) -> Result<Vec<String>, String> {
 
     let archived = fs::read_to_string(extracted.join(NOTICES))
         .map_err(|e| format!("cannot read the archived {NOTICES}: {e}"))?;
-    let fresh = generate_notices(&root, &target)?;
-    verify_notices(&archived, &fresh, &shipped)?;
+    let fresh = full_notices(&root, &target, &logs.join("notices-fresh.log"))?;
+    verify_notices(&archived, &fresh, &shipped, &target)?;
     let mpl = MPL_CRATES
         .iter()
         .filter(|name| shipped.iter().any(|(n, _)| n == *name))
         .count();
     summary.push(format!(
-        "{NOTICES}: matches a fresh cargo-about run; {} shipped crates listed; {mpl} MPL-2.0 crates with licence text and source",
-        shipped.len()
+        "{NOTICES}: matches a fresh cargo-about run; {} shipped crates listed; {mpl} MPL-2.0 crates with licence text and source; fixed sections: {}",
+        shipped.len(),
+        fixed_section_headings(&target).join(", ")
     ));
 
     smoke(
@@ -266,19 +309,57 @@ fn ensure_target_installed(target: &str) -> Result<(), String> {
     }
 }
 
-/// Linux musl builds link with the distribution's musl C library; the workspace's own crates
-/// are pure Rust, but a C-backed dependency (or the linker) would need `musl-tools`.
+/// Linux musl builds link with the musl C library the Rust target ships (self-contained
+/// `libc.a` and start files) through the system `cc`; no `musl-gcc` is needed while no
+/// dependency compiles C (`Cargo.lock` has no `cc` crate; ADR 0078). A C-backed dependency would
+/// bring `musl-tools` back, and this hint says so.
 fn musl_hint(target: &str) -> &'static str {
     if target.ends_with("-musl") {
-        " (and 'sudo apt-get install musl-tools' if linking fails)"
+        " (a dependency that compiles C needs 'sudo apt-get install musl-tools', see ADR 0078)"
     } else {
         ""
     }
 }
 
-fn build(root: &Path, target: &str) -> Result<PathBuf, String> {
+/// `$CARGO_HOME`, or `$HOME/.cargo` as Cargo defaults it.
+fn cargo_home() -> Result<PathBuf, String> {
+    if let Some(home) = std::env::var_os("CARGO_HOME").filter(|h| !h.is_empty()) {
+        return Ok(PathBuf::from(home));
+    }
+    std::env::var_os("HOME")
+        .filter(|h| !h.is_empty())
+        .map(|home| PathBuf::from(home).join(".cargo"))
+        .ok_or_else(|| "neither CARGO_HOME nor HOME is set".to_owned())
+}
+
+/// The rustc flags of the release build: the registry sources under `$CARGO_HOME` and the
+/// checkout are remapped to fixed names, so the binary carries no path of the machine that
+/// built it (panic locations, debug info) and two builders produce the same bytes. Passed as
+/// `CARGO_ENCODED_RUSTFLAGS` (separated by 0x1f), so a path with a space stays one argument
+/// (`should_remap_cargo_home_and_the_checkout_when_release_flags_are_built`).
+fn remap_flags(root: &Path, cargo_home: &Path) -> String {
+    [
+        format!("--remap-path-prefix={}=/cargo", cargo_home.display()),
+        format!("--remap-path-prefix={}=/build", root.display()),
+    ]
+    .join("\u{1f}")
+}
+
+/// Each of `paths` that still occurs in `bytes`, the binary: a remap that missed one.
+fn build_path_problems(bytes: &[u8], paths: &[&Path]) -> Vec<String> {
+    paths
+        .iter()
+        .map(|p| p.display().to_string())
+        .filter(|p| !p.is_empty() && bytes.windows(p.len()).any(|w| w == p.as_bytes()))
+        .collect()
+}
+
+fn build(root: &Path, cargo_home: &Path, target: &str) -> Result<PathBuf, String> {
     eprintln!("release-check: building site-preview for {target}");
     let status = Command::new("cargo")
+        // Only the remap flags: the release build takes no RUSTFLAGS from the environment.
+        .env("CARGO_ENCODED_RUSTFLAGS", remap_flags(root, cargo_home))
+        .env_remove("RUSTFLAGS")
         .args([
             "build",
             "--release",
@@ -390,46 +471,99 @@ fn generate_args(target: &str) -> Vec<&str> {
     ]
 }
 
+/// The complete `THIRD-PARTY-NOTICES` for `target`: `cargo about`'s output, then the fixed
+/// sections of [`fixed_sections`]. The generator's stderr goes to `log` (`logs/`), kept on
+/// failure by the workflow.
+fn full_notices(root: &Path, target: &str, log: &Path) -> Result<String, String> {
+    let mut text = generate_notices(root, target, log)?;
+    text.push_str(&fixed_sections(target));
+    Ok(text)
+}
+
+/// The sections no Cargo metadata describes: the Rust standard library, built into every
+/// binary, and musl libc, linked statically into the `*-linux-musl` ones.
+fn fixed_sections(target: &str) -> String {
+    let mut text = format!("\n{RUST_STD_NOTICE}");
+    if is_musl(target) {
+        text.push_str(&format!("\n{MUSL_NOTICE}"));
+    }
+    if !text.ends_with('\n') {
+        text.push('\n');
+    }
+    text
+}
+
+/// The headings of [`fixed_sections`] for `target`.
+fn fixed_section_headings(target: &str) -> Vec<&'static str> {
+    if is_musl(target) {
+        vec![RUST_STD_HEADING, MUSL_HEADING]
+    } else {
+        vec![RUST_STD_HEADING]
+    }
+}
+
+fn is_musl(target: &str) -> bool {
+    target.ends_with("-linux-musl")
+}
+
+/// Runs `command`, appending its stderr to `log`, and returns its stdout. A failure names the
+/// log and quotes the end of the stderr.
+fn run_logged(mut command: Command, what: &str, log: &Path) -> Result<Vec<u8>, String> {
+    let output = command
+        .output()
+        .map_err(|e| format!("cannot run {what}: {e}"))?;
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log)
+        .map_err(|e| format!("cannot open {}: {e}", log.display()))?;
+    writeln!(file, "$ {what}").map_err(|e| format!("cannot write {}: {e}", log.display()))?;
+    file.write_all(&output.stderr)
+        .map_err(|e| format!("cannot write {}: {e}", log.display()))?;
+    if output.status.success() {
+        Ok(output.stdout)
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let tail: Vec<&str> = stderr.lines().rev().take(20).collect();
+        let tail: Vec<&str> = tail.into_iter().rev().collect();
+        Err(format!(
+            "{what} failed (stderr in {}): {}",
+            log.display(),
+            tail.join("\n").trim()
+        ))
+    }
+}
+
 /// The notices `cargo about` generates for `target`, from `about.toml` and `about.hbs`.
-fn generate_notices(root: &Path, target: &str) -> Result<String, String> {
-    let fetched = Command::new("cargo")
-        .args(fetch_args())
-        .current_dir(root)
-        .output()
-        .map_err(|e| format!("cannot run cargo fetch: {e}"))?;
-    if !fetched.status.success() {
-        return Err(format!(
-            "cargo fetch failed: {}",
-            String::from_utf8_lossy(&fetched.stderr).trim()
-        ));
-    }
-    let output = Command::new("cargo")
-        .args(generate_args(target))
-        .current_dir(root)
-        .output()
-        .map_err(|e| format!("cannot run cargo about: {e}"))?;
-    if !output.status.success() {
-        return Err(format!(
-            "cargo about generate failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
-    }
-    let mut text = String::from_utf8(output.stdout)
-        .map_err(|e| format!("cargo about printed invalid UTF-8: {e}"))?;
+fn generate_notices(root: &Path, target: &str, log: &Path) -> Result<String, String> {
+    let mut fetch = Command::new("cargo");
+    fetch.args(fetch_args()).current_dir(root);
+    run_logged(fetch, "cargo fetch", log)?;
+    let mut about = Command::new("cargo");
+    about.args(generate_args(target)).current_dir(root);
+    let stdout = run_logged(about, "cargo about generate", log)?;
+    let mut text =
+        String::from_utf8(stdout).map_err(|e| format!("cargo about printed invalid UTF-8: {e}"))?;
     if !text.ends_with('\n') {
         text.push('\n');
     }
     Ok(text)
 }
 
-/// The `(name, version)` of every entry line (`* name version ...`) of the notices.
+/// The `(name, version)` of every entry line of the notices: exactly
+/// `* <name> <version> https://crates.io/crates/<name>/<version>`, so prose that happens to
+/// start with `* ` is never counted as an entry
+/// (`should_count_only_entries_with_their_crates_io_address_when_notices_are_read`).
 fn listed_crates(notices: &str) -> BTreeSet<(String, String)> {
     notices
         .lines()
         .filter_map(|line| line.strip_prefix("* "))
         .filter_map(|rest| {
             let mut words = rest.split_whitespace();
-            Some((words.next()?.to_owned(), words.next()?.to_owned()))
+            let (name, version, source) = (words.next()?, words.next()?, words.next()?);
+            let anchored = source == format!("https://crates.io/crates/{name}/{version}")
+                && words.next().is_none();
+            anchored.then(|| (name.to_owned(), version.to_owned()))
         })
         .collect()
 }
@@ -439,6 +573,7 @@ fn notices_problems(
     archived: &str,
     fresh: &str,
     shipped: &BTreeSet<(String, String)>,
+    target: &str,
 ) -> Vec<String> {
     let mut problems = Vec::new();
     if archived != fresh {
@@ -463,6 +598,15 @@ fn notices_problems(
             problems.push(format!("{NOTICES} gives no source location {source}"));
         }
     }
+    let lines: BTreeSet<&str> = archived.lines().map(str::trim_end).collect();
+    for heading in fixed_section_headings(target) {
+        if !lines.contains(heading) {
+            problems.push(format!("{NOTICES} lacks the section '{heading}'"));
+        }
+    }
+    if is_musl(target) && !archived.contains(MUSL_COPYRIGHT) {
+        problems.push(format!("{NOTICES} lacks musl's copyright notice"));
+    }
     problems
 }
 
@@ -470,8 +614,9 @@ fn verify_notices(
     archived: &str,
     fresh: &str,
     shipped: &BTreeSet<(String, String)>,
+    target: &str,
 ) -> Result<(), String> {
-    let problems = notices_problems(archived, fresh, shipped);
+    let problems = notices_problems(archived, fresh, shipped, target);
     if problems.is_empty() {
         Ok(())
     } else {
@@ -492,12 +637,50 @@ fn tar_owner_flags(version_output: &str) -> Vec<&'static str> {
     }
 }
 
+/// The `tar` arguments that write `entries` (already sorted) into `tar_path`, flavour-neutral:
+/// ustar (no extended headers, so no atime, ctime or xattrs), no recursion (the entry order is
+/// the given one, not the file system's), owner 0 (`tar_owner_flags`).
+fn tar_create_args(
+    owner_flags: &[&'static str],
+    tar_path: &Path,
+    stage: &Path,
+    entries: &[String],
+) -> Vec<String> {
+    let mut args: Vec<String> = owner_flags.iter().map(|f| (*f).to_owned()).collect();
+    args.extend(
+        ["--format=ustar", "--no-recursion", "--no-xattrs", "-cf"]
+            .iter()
+            .map(|f| (*f).to_owned()),
+    );
+    args.push(tar_path.display().to_string());
+    args.push("-C".to_owned());
+    args.push(stage.display().to_string());
+    args.extend(entries.iter().cloned());
+    args
+}
+
+/// Sets the mode and modification time of a staged entry, so the archive does not depend on the
+/// builder's umask or clock.
+fn normalise_entry(path: &Path, mode: u32, mtime: std::time::SystemTime) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(mode))
+        .map_err(|e| format!("cannot chmod {}: {e}", path.display()))?;
+    fs::File::open(path)
+        .and_then(|f| f.set_modified(mtime))
+        .map_err(|e| format!("cannot set the time of {}: {e}", path.display()))
+}
+
+/// Packs `site-preview-<target>/` reproducibly: every entry has mode 0755 (directory, binary)
+/// or 0644, owner 0, the modification time `epoch` (the commit time, or `SOURCE_DATE_EPOCH`),
+/// in sorted order, and gzip records no name or time (`-n`). The same inputs give the same
+/// bytes on any machine (`should_write_the_same_bytes_when_the_same_inputs_are_packaged_twice`).
 fn package(
     root: &Path,
     out_dir: &Path,
     target: &str,
     binary: &Path,
     notices: &str,
+    epoch: u64,
 ) -> Result<PathBuf, String> {
     let top = format!("site-preview-{target}");
     let stage = out_dir.join("stage");
@@ -514,30 +697,109 @@ fn package(
     }
     fs::write(dir.join(NOTICES), notices).map_err(|e| format!("cannot write {NOTICES}: {e}"))?;
 
+    let mtime = std::time::UNIX_EPOCH + Duration::from_secs(epoch);
+    let mut files: Vec<&str> = ARCHIVE_FILES.to_vec();
+    files.sort_unstable();
+    for name in &files {
+        let mode = if *name == "site-preview" {
+            0o755
+        } else {
+            0o644
+        };
+        normalise_entry(&dir.join(name), mode, mtime)?;
+    }
+    // Last, so writing the files does not move the directory's time again.
+    normalise_entry(&dir, 0o755, mtime)?;
+    let mut entries = vec![top.clone()];
+    entries.extend(files.iter().map(|name| format!("{top}/{name}")));
+
     let archive = out_dir.join(archive_name(target));
+    let tar_path = out_dir.join(format!("site-preview-{target}.tar"));
     let version = Command::new("tar")
         .arg("--version")
         .output()
         .map_err(|e| format!("cannot run tar: {e}"))?;
+    let owner = tar_owner_flags(&String::from_utf8_lossy(&version.stdout));
     let status = Command::new("tar")
-        .args(tar_owner_flags(&String::from_utf8_lossy(&version.stdout)))
-        .arg("-czf")
-        .arg(&archive)
-        .arg("-C")
-        .arg(&stage)
-        .arg(&top)
+        .args(tar_create_args(&owner, &tar_path, &stage, &entries))
+        // macOS: no AppleDouble `._` entries.
+        .env("COPYFILE_DISABLE", "1")
         .status()
         .map_err(|e| format!("cannot run tar: {e}"))?;
     if !status.success() {
         return Err("tar could not create the archive".to_owned());
     }
+    let status = Command::new("gzip")
+        .args(["-n", "-9", "-f"])
+        .arg(&tar_path)
+        .status()
+        .map_err(|e| format!("cannot run gzip: {e}"))?;
+    if !status.success() || !archive.is_file() {
+        return Err("gzip could not compress the archive".to_owned());
+    }
     fs::remove_dir_all(&stage).map_err(|e| format!("cannot remove {}: {e}", stage.display()))?;
     Ok(archive)
 }
 
-/// Extracts the archive below `scratch` and returns its top directory, after checking it holds
-/// exactly [`ARCHIVE_FILES`].
+/// What is wrong with an archive's `tar -tvzf` listing, empty when it holds exactly one
+/// directory `top` and the regular files [`ARCHIVE_FILES`] in it. The type is the first
+/// character of the mode column (`d`, `-`; a symlink is `l`, a hard link `h` or a second `-`
+/// line naming its target), the name is the last field; GNU tar and bsdtar both list this way.
+/// A name with a space, an absolute or `..` path, an extra top-level entry or a second copy of
+/// a file all fail (`should_refuse_a_listing_when_it_holds_a_symlink_or_an_extra_entry`).
+fn listing_problems(listing: &str, top: &str) -> Vec<String> {
+    let mut want: BTreeSet<(char, String)> = ARCHIVE_FILES
+        .iter()
+        .map(|name| ('-', format!("{top}/{name}")))
+        .collect();
+    want.insert(('d', top.to_owned()));
+    let mut seen = Vec::new();
+    let mut problems = Vec::new();
+    for line in listing.lines().filter(|l| !l.trim().is_empty()) {
+        let kind = line.chars().next().unwrap_or(' ');
+        let name = line.split_whitespace().last().unwrap_or("");
+        let name = name
+            .strip_prefix("./")
+            .unwrap_or(name)
+            .trim_end_matches('/');
+        if kind != 'd' && kind != '-' {
+            problems.push(format!(
+                "{name} is not a regular file or a directory ({line})"
+            ));
+        }
+        seen.push((kind, name.to_owned()));
+    }
+    let found: BTreeSet<(char, String)> = seen.iter().cloned().collect();
+    if found.len() != seen.len() {
+        problems.push("an entry is listed twice".to_owned());
+    }
+    for (kind, name) in found.difference(&want) {
+        problems.push(format!("unexpected entry {name} ({kind})"));
+    }
+    for (kind, name) in want.difference(&found) {
+        problems.push(format!("missing entry {name} ({kind})"));
+    }
+    problems
+}
+
+/// Lists the archive, checks the listing ([`listing_problems`]), extracts it below `scratch`,
+/// checks the extracted tree again (one top directory, exactly [`ARCHIVE_FILES`], each a
+/// regular file) and returns the top directory.
 fn extract(archive: &Path, scratch: &Path, target: &str) -> Result<PathBuf, String> {
+    let top_name = format!("site-preview-{target}");
+    let listed = Command::new("tar")
+        .arg("-tvzf")
+        .arg(archive)
+        .env("LC_ALL", "C")
+        .output()
+        .map_err(|e| format!("cannot run tar: {e}"))?;
+    if !listed.status.success() {
+        return Err("tar could not list the archive".to_owned());
+    }
+    let problems = listing_problems(&String::from_utf8_lossy(&listed.stdout), &top_name);
+    if !problems.is_empty() {
+        return Err(format!("the archive is malformed: {}", problems.join("; ")));
+    }
     let into = scratch.join("extract");
     fs::create_dir_all(&into).map_err(|e| format!("cannot create {}: {e}", into.display()))?;
     let status = Command::new("tar")
@@ -550,17 +812,34 @@ fn extract(archive: &Path, scratch: &Path, target: &str) -> Result<PathBuf, Stri
     if !status.success() {
         return Err("tar could not extract the archive".to_owned());
     }
-    let top = into.join(format!("site-preview-{target}"));
-    let mut found: Vec<String> = fs::read_dir(&top)
-        .map_err(|e| format!("the archive has no site-preview-{target}/ directory: {e}"))?
-        .filter_map(Result::ok)
-        .map(|entry| entry.file_name().to_string_lossy().into_owned())
-        .collect();
-    found.sort();
+    let names = |dir: &Path| -> Result<Vec<String>, String> {
+        let mut names: Vec<String> = fs::read_dir(dir)
+            .map_err(|e| format!("cannot read {}: {e}", dir.display()))?
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        Ok(names)
+    };
+    let tops = names(&into)?;
+    if tops != [top_name.clone()] {
+        return Err(format!(
+            "the archive's top level holds {tops:?}, expected [{top_name:?}]"
+        ));
+    }
+    let top = into.join(&top_name);
+    let found = names(&top)?;
     let mut want: Vec<String> = ARCHIVE_FILES.iter().map(|s| (*s).to_owned()).collect();
     want.sort();
     if found != want {
         return Err(format!("the archive holds {found:?}, expected {want:?}"));
+    }
+    for name in &found {
+        let meta =
+            fs::symlink_metadata(top.join(name)).map_err(|e| format!("cannot stat {name}: {e}"))?;
+        if !meta.file_type().is_file() {
+            return Err(format!("{name} in the archive is not a regular file"));
+        }
     }
     Ok(top)
 }
@@ -715,10 +994,7 @@ fn smoke(root: &Path, binary: &Path, scratch: &Path, logs: &Path) -> Result<(), 
         .ok_or("the server's stdout is not piped")?;
     let lines = spawn_line_reader(stdout, logs.join("stdout.log"))?;
 
-    let ready = lines
-        .recv_timeout(DEADLINE)
-        .map_err(|e| format!("no `ready` line within {DEADLINE:?}: {e}"))?;
-    let url = parse_ready_url(&ready).ok_or_else(|| format!("not a `ready` event: {ready}"))?;
+    let url = wait_for_ready(&lines, DEADLINE)?;
     let authority = authority_of(&url).ok_or_else(|| format!("no authority in {url}"))?;
 
     let (status, body) = http_get(&authority, "/")?;
@@ -750,6 +1026,25 @@ fn smoke(root: &Path, binary: &Path, scratch: &Path, logs: &Path) -> Result<(), 
         return Err("the repository fixture changed".to_owned());
     }
     Ok(())
+}
+
+/// The URL of the first `ready` event among the server's stdout lines. JSON lines before it
+/// (a warning, say) are skipped; a line that is not JSON, or no `ready` within `deadline`,
+/// fails (`should_skip_json_warnings_when_waiting_for_ready`).
+fn wait_for_ready(lines: &mpsc::Receiver<String>, deadline: Duration) -> Result<String, String> {
+    let until = Instant::now() + deadline;
+    loop {
+        let left = until.saturating_duration_since(Instant::now());
+        let line = lines
+            .recv_timeout(left)
+            .map_err(|e| format!("no `ready` line within {deadline:?}: {e}"))?;
+        if let Some(url) = parse_ready_url(&line) {
+            return Ok(url);
+        }
+        if !line.trim_start().starts_with('{') {
+            return Err(format!("a line before `ready` is not JSON: {line}"));
+        }
+    }
 }
 
 /// Forwards the child's stdout lines to a channel and a log file, until it closes.
@@ -895,13 +1190,18 @@ preview-domain v0.1.0 (/work/crates/preview-domain)
 clap v4.6.7 (*)
 ";
 
-    fn notices_for(entries: &[(&str, &str)]) -> String {
+    const LINUX: &str = "x86_64-unknown-linux-musl";
+    const MAC: &str = "aarch64-apple-darwin";
+
+    /// Notices as `cargo about` and [`fixed_sections`] would write them for `target`.
+    fn notices_for(entries: &[(&str, &str)], target: &str) -> String {
         let mut text = String::from("Mozilla Public License Version 2.0\n");
         for (name, version) in entries {
             text.push_str(&format!(
-                "* {name} {version} (https://crates.io/crates/{name}/{version})\n"
+                "* {name} {version} https://crates.io/crates/{name}/{version}\n"
             ));
         }
+        text.push_str(&fixed_sections(target));
         text
     }
 
@@ -983,14 +1283,17 @@ clap v4.6.7 (*)
     fn should_accept_notices_when_every_shipped_crate_is_listed() {
         // given
         let shipped = parse_shipped(TREE);
-        let notices = notices_for(&[
-            ("clap", "4.6.7"),
-            ("serde_derive", "1.0.229"),
-            ("selectors", "0.36.1"),
-        ]);
+        let notices = notices_for(
+            &[
+                ("clap", "4.6.7"),
+                ("serde_derive", "1.0.229"),
+                ("selectors", "0.36.1"),
+            ],
+            LINUX,
+        );
 
         // when
-        let problems = notices_problems(&notices, &notices, &shipped);
+        let problems = notices_problems(&notices, &notices, &shipped, LINUX);
 
         // then
         assert!(problems.is_empty(), "{problems:?}");
@@ -1000,11 +1303,14 @@ clap v4.6.7 (*)
     fn should_fail_when_a_crate_entry_is_deleted_from_the_archived_notices() {
         // given
         let shipped = parse_shipped(TREE);
-        let fresh = notices_for(&[
-            ("clap", "4.6.7"),
-            ("serde_derive", "1.0.229"),
-            ("selectors", "0.36.1"),
-        ]);
+        let fresh = notices_for(
+            &[
+                ("clap", "4.6.7"),
+                ("serde_derive", "1.0.229"),
+                ("selectors", "0.36.1"),
+            ],
+            MAC,
+        );
         let archived: String = fresh
             .lines()
             .filter(|line| !line.starts_with("* clap "))
@@ -1012,7 +1318,7 @@ clap v4.6.7 (*)
             .collect();
 
         // when
-        let problems = notices_problems(&archived, &fresh, &shipped);
+        let problems = notices_problems(&archived, &fresh, &shipped, MAC);
 
         // then
         assert!(
@@ -1031,10 +1337,10 @@ clap v4.6.7 (*)
     fn should_fail_when_a_listed_crate_is_missing_even_if_the_copy_is_fresh() {
         // given
         let shipped = parse_shipped(TREE);
-        let notices = notices_for(&[("clap", "4.6.7"), ("selectors", "0.36.1")]);
+        let notices = notices_for(&[("clap", "4.6.7"), ("selectors", "0.36.1")], LINUX);
 
         // when
-        let problems = notices_problems(&notices, &notices, &shipped);
+        let problems = notices_problems(&notices, &notices, &shipped, LINUX);
 
         // then
         assert_eq!(problems.len(), 1, "{problems:?}");
@@ -1045,10 +1351,13 @@ clap v4.6.7 (*)
     fn should_fail_when_an_mpl_crate_has_no_licence_text_or_source() {
         // given
         let shipped = set(&[("selectors", "0.36.1")]);
-        let notices = "* selectors 0.36.1\n";
+        let notices = format!(
+            "* selectors 0.36.1 https://crates.io/crates/selectors/0.36\n{}",
+            fixed_sections(MAC)
+        );
 
         // when
-        let problems = notices_problems(notices, notices, &shipped);
+        let problems = notices_problems(&notices, &notices, &shipped, MAC);
 
         // then
         assert!(problems.iter().any(|p| p.contains("MPL-2.0 licence text")));
@@ -1063,10 +1372,11 @@ clap v4.6.7 (*)
     fn should_not_demand_mpl_text_when_no_mpl_crate_ships() {
         // given
         let shipped = set(&[("clap", "4.6.7")]);
-        let notices = "* clap 4.6.7\n";
+        let notices = notices_for(&[("clap", "4.6.7")], MAC)
+            .replace("Mozilla Public License Version 2.0\n", "");
 
         // when
-        let problems = notices_problems(notices, notices, &shipped);
+        let problems = notices_problems(&notices, &notices, &shipped, MAC);
 
         // then
         assert!(problems.is_empty(), "{problems:?}");
@@ -1199,6 +1509,222 @@ clap v4.6.7 (*)
         // then
         let message = result.unwrap_err();
         assert!(message.contains("install.sh"), "{message}");
+    }
+
+    #[test]
+    fn should_count_only_entries_with_their_crates_io_address_when_notices_are_read() {
+        // given
+        let notices = "\
+* clap 4.6.7 https://crates.io/crates/clap/4.6.7
+* serde 1.0.229 https://crates.io/crates/clap/4.6.7
+* bullet point in some licence text
+* tokio 1.0.0 https://crates.io/crates/tokio/1.0.0 extra
+  * nested 1.0.0 https://crates.io/crates/nested/1.0.0
+";
+
+        // when
+        let listed = listed_crates(notices);
+
+        // then
+        assert_eq!(listed, set(&[("clap", "4.6.7")]));
+    }
+
+    #[test]
+    fn should_require_the_fixed_sections_when_the_target_needs_them() {
+        // given
+        let shipped = set(&[("clap", "4.6.7")]);
+        let mac = notices_for(&[("clap", "4.6.7")], MAC);
+        let linux = notices_for(&[("clap", "4.6.7")], LINUX);
+
+        // when
+        let mac_on_linux = notices_problems(&mac, &mac, &shipped, LINUX);
+        let mac_ok = notices_problems(&mac, &mac, &shipped, MAC);
+        let linux_ok = notices_problems(&linux, &linux, &shipped, LINUX);
+        let without_std = linux.replace(RUST_STD_HEADING, "Rust");
+        let no_std = notices_problems(&without_std, &without_std, &shipped, LINUX);
+
+        // then
+        assert!(
+            mac_on_linux.iter().any(|p| p.contains(MUSL_HEADING)),
+            "{mac_on_linux:?}"
+        );
+        assert!(
+            mac_on_linux.iter().any(|p| p.contains("musl's copyright")),
+            "{mac_on_linux:?}"
+        );
+        assert!(mac_ok.is_empty(), "{mac_ok:?}");
+        assert!(linux_ok.is_empty(), "{linux_ok:?}");
+        assert!(
+            no_std.iter().any(|p| p.contains(RUST_STD_HEADING)),
+            "{no_std:?}"
+        );
+    }
+
+    #[test]
+    fn should_ship_the_notice_texts_when_the_fixed_sections_are_read() {
+        // given
+        let (std_text, musl_text) = (RUST_STD_NOTICE, MUSL_NOTICE);
+
+        // when
+        let std_lines: Vec<&str> = std_text.lines().collect();
+        let musl_lines: Vec<&str> = musl_text.lines().collect();
+
+        // then
+        assert!(std_lines.contains(&RUST_STD_HEADING));
+        assert!(std_text.contains("Copyright (c) The Rust Project Contributors"));
+        assert!(std_text.contains("Permission is hereby granted, free of charge"));
+        assert!(musl_lines.contains(&MUSL_HEADING));
+        assert!(musl_text.contains(MUSL_COPYRIGHT));
+        assert!(
+            musl_text.contains("The above copyright notice and this permission notice shall be")
+        );
+        assert!(!fixed_sections(MAC).contains(MUSL_HEADING));
+        assert!(fixed_sections(LINUX).contains(MUSL_HEADING));
+    }
+
+    #[test]
+    fn should_remap_cargo_home_and_the_checkout_when_release_flags_are_built() {
+        // given
+        let (root, home) = (Path::new("/w/site preview"), Path::new("/h/.cargo"));
+
+        // when
+        let flags = remap_flags(root, home);
+
+        // then
+        let args: Vec<&str> = flags.split('\u{1f}').collect();
+        assert_eq!(
+            args,
+            [
+                "--remap-path-prefix=/h/.cargo=/cargo",
+                "--remap-path-prefix=/w/site preview=/build"
+            ]
+        );
+    }
+
+    #[test]
+    fn should_report_a_build_path_when_the_binary_still_names_it() {
+        // given
+        let binary = b"\x7fELF...panicked at /h/.cargo/registry/src/x.rs...";
+
+        // when
+        let leaked = build_path_problems(binary, &[Path::new("/w/sp"), Path::new("/h/.cargo")]);
+
+        // then
+        assert_eq!(leaked, ["/h/.cargo"]);
+        assert!(build_path_problems(b"/cargo/registry", &[Path::new("/h/.cargo")]).is_empty());
+    }
+
+    /// A fake repository root with the files [`package`] copies.
+    fn fake_root() -> tempfile::TempDir {
+        let root = tempfile::tempdir().unwrap();
+        for name in ["README.md", "LICENSE-MIT", "LICENSE-APACHE", "site-preview"] {
+            fs::write(root.path().join(name), format!("{name}\n")).unwrap();
+        }
+        root
+    }
+
+    #[test]
+    fn should_write_the_same_bytes_when_the_same_inputs_are_packaged_twice() {
+        // given
+        use std::os::unix::fs::PermissionsExt;
+        let root = fake_root();
+        let binary = root.path().join("site-preview");
+        let (one, two) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let first = package(root.path(), one.path(), MAC, &binary, "n\n", 1_700_000_000).unwrap();
+        // A different builder: other times and modes on the inputs.
+        for name in ["README.md", "site-preview"] {
+            let path = root.path().join(name);
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+            fs::File::open(&path)
+                .unwrap()
+                .set_modified(std::time::UNIX_EPOCH + Duration::from_secs(5))
+                .unwrap();
+        }
+
+        // when
+        let second = package(root.path(), two.path(), MAC, &binary, "n\n", 1_700_000_000).unwrap();
+
+        // then
+        assert_eq!(fs::read(&first).unwrap(), fs::read(&second).unwrap());
+        let listing = Command::new("tar")
+            .arg("-tvzf")
+            .arg(&second)
+            .output()
+            .unwrap();
+        let listing = String::from_utf8_lossy(&listing.stdout);
+        assert!(
+            listing_problems(&listing, "site-preview-aarch64-apple-darwin").is_empty(),
+            "{listing}"
+        );
+        let scratch = tempfile::tempdir().unwrap();
+        let top = extract(&second, scratch.path(), MAC).unwrap();
+        let mode = fs::metadata(top.join("site-preview"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o755);
+    }
+
+    #[test]
+    fn should_refuse_a_listing_when_it_holds_a_symlink_or_an_extra_entry() {
+        // given
+        let top = "site-preview-x86_64-apple-darwin";
+        let mut good = format!("drwxr-xr-x 0/0 0 2026-10-13 10:00 {top}/\n");
+        for name in ARCHIVE_FILES {
+            good.push_str(&format!("-rw-r--r-- 0/0 5 2026-10-13 10:00 {top}/{name}\n"));
+        }
+        let bsd = good.replace("0/0", "0 0     ");
+        let symlink = good.replace(
+            &format!("-rw-r--r-- 0/0 5 2026-10-13 10:00 {top}/README.md"),
+            &format!("lrwxrwxrwx 0/0 0 2026-10-13 10:00 {top}/README.md -> /etc/passwd"),
+        );
+        let extra = format!("{good}-rw-r--r-- 0/0 5 2026-10-13 10:00 other.txt\n");
+        let twice = format!("{good}-rw-r--r-- 0/0 5 2026-10-13 10:00 {top}/README.md\n");
+
+        // when
+        let results = [&good, &bsd, &symlink, &extra, &twice].map(|l| listing_problems(l, top));
+
+        // then
+        assert!(results[0].is_empty(), "{:?}", results[0]);
+        assert!(results[1].is_empty(), "{:?}", results[1]);
+        assert!(
+            results[2].iter().any(|p| p.contains("not a regular file")),
+            "{:?}",
+            results[2]
+        );
+        assert!(
+            results[3]
+                .iter()
+                .any(|p| p.contains("unexpected entry other.txt")),
+            "{:?}",
+            results[3]
+        );
+        assert!(
+            results[4].iter().any(|p| p.contains("listed twice")),
+            "{:?}",
+            results[4]
+        );
+    }
+
+    #[test]
+    fn should_skip_json_warnings_when_waiting_for_ready() {
+        // given
+        let (send, lines) = mpsc::channel();
+        send.send(r#"{"event":"warning","code":"W1"}"#.to_owned())
+            .unwrap();
+        send.send(r#"{"event":"ready","url":"http://127.0.0.1:4000/"}"#.to_owned())
+            .unwrap();
+        let (send_bad, bad) = mpsc::channel();
+        send_bad.send("Serving on port 4000".to_owned()).unwrap();
+        drop(send_bad);
+
+        // when
+        let url = wait_for_ready(&lines, Duration::from_secs(5));
+        let refused = wait_for_ready(&bad, Duration::from_secs(5));
+
+        // then
+        assert_eq!(url.as_deref(), Ok("http://127.0.0.1:4000/"));
+        assert!(refused.is_err_and(|e| e.contains("not JSON")));
     }
 
     /// The release workflow, parsed (JSON-compatible YAML, so `on` stays a string key).
@@ -1367,6 +1893,162 @@ clap v4.6.7 (*)
         assert!(
             want.iter()
                 .all(|(t, _)| RELEASE_TARGETS.contains(&t.as_str()))
+        );
+    }
+
+    /// Every `run` script of `job`.
+    fn run_scripts(doc: &yaml_rust2::Yaml, job: &str) -> Vec<String> {
+        doc["jobs"][job]["steps"]
+            .as_vec()
+            .expect("steps")
+            .iter()
+            .filter_map(|step| step["run"].as_str().map(str::to_owned))
+            .collect()
+    }
+
+    #[test]
+    fn should_build_nothing_in_publish_when_release_yml_is_read() {
+        // given
+        let (_, doc) = release_workflow();
+
+        // when
+        let steps = doc["jobs"]["publish"]["steps"].as_vec().expect("steps");
+        let uses: Vec<&str> = steps.iter().filter_map(|s| s["uses"].as_str()).collect();
+        let scripts = run_scripts(&doc, "publish");
+
+        // then
+        for script in &scripts {
+            let words: BTreeSet<&str> = script
+                .split(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '_'))
+                .collect();
+            for banned in ["cargo", "rustup", "install-tools", "npm", "pip", "make"] {
+                assert!(!words.contains(banned), "publish runs {banned}: {script}");
+            }
+        }
+        for action in &uses {
+            let name = action.split('@').next().unwrap_or("");
+            assert!(
+                [
+                    "actions/download-artifact",
+                    "actions/upload-artifact",
+                    "actions/attest-build-provenance"
+                ]
+                .contains(&name),
+                "publish uses {action}"
+            );
+        }
+        let sbom = &doc["jobs"]["sbom"];
+        assert!(write_scopes(&sbom["permissions"]).is_empty());
+        assert!(
+            sbom["needs"].as_str() == Some("build")
+                || sbom["needs"]
+                    .as_vec()
+                    .is_some_and(|n| n.iter().any(|x| x.as_str() == Some("build")))
+        );
+        assert!(
+            run_scripts(&doc, "sbom")
+                .iter()
+                .any(|s| s.contains("cargo xtask sbom"))
+        );
+        let needs: Vec<&str> = doc["jobs"]["publish"]["needs"]
+            .as_vec()
+            .expect("needs")
+            .iter()
+            .filter_map(|n| n.as_str())
+            .collect();
+        assert!(
+            needs.contains(&"sbom") && needs.contains(&"build"),
+            "{needs:?}"
+        );
+    }
+
+    /// Each `(path, value)` of a scalar string below `node`, the path the mapping keys.
+    fn strings(
+        node: &yaml_rust2::Yaml,
+        path: &mut Vec<String>,
+        out: &mut Vec<(Vec<String>, String)>,
+    ) {
+        match node {
+            yaml_rust2::Yaml::String(value) => out.push((path.clone(), value.clone())),
+            yaml_rust2::Yaml::Array(items) => {
+                for item in items {
+                    strings(item, path, out);
+                }
+            }
+            yaml_rust2::Yaml::Hash(map) => {
+                for (key, value) in map {
+                    path.push(key.as_str().unwrap_or("?").to_owned());
+                    strings(value, path, out);
+                    path.pop();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    #[test]
+    fn should_read_inputs_and_the_ref_name_only_in_env_values_when_release_yml_is_read() {
+        // given
+        let (text, doc) = release_workflow();
+        let mut found = Vec::new();
+        strings(&doc, &mut Vec::new(), &mut found);
+
+        // when
+        let tainted: Vec<_> = found
+            .iter()
+            .filter(|(_, v)| v.contains("${{ inputs.") || v.contains("${{ github.ref_name"))
+            .collect();
+
+        // then
+        assert!(!tainted.is_empty(), "the test sees the env values");
+        for (path, value) in &tainted {
+            let in_env = path.len() >= 2 && path[path.len() - 2] == "env";
+            let whole = value.trim().starts_with("${{") && value.trim().ends_with("}}");
+            assert!(in_env && whole, "{} = {value}", path.join("."));
+        }
+        let raw = text.matches("${{ inputs.").count() + text.matches("${{ github.ref_name").count();
+        assert_eq!(raw, tainted.len(), "an expression outside a string value");
+    }
+
+    #[test]
+    fn should_pin_the_signer_and_the_tag_when_attestations_are_verified() {
+        // given
+        let (text, doc) = release_workflow();
+
+        // when
+        let verify = run_scripts(&doc, "verify").join("\n");
+        let publish = run_scripts(&doc, "publish").join("\n");
+        let prepare = run_scripts(&doc, "prepare").join("\n");
+
+        // then
+        for script in [&verify, &publish] {
+            assert!(
+                script.contains(
+                    "--signer-workflow \"$GITHUB_REPOSITORY/.github/workflows/release.yml\""
+                ) || script.contains("--signer-workflow $GH_REPO/.github/workflows/release.yml"),
+                "{script}"
+            );
+            assert!(script.contains("--source-ref"), "{script}");
+            assert!(script.contains("refs/tags/$TAG"), "{script}");
+        }
+        assert!(text.contains("dist/SHA256SUMS"), "SHA256SUMS is attested");
+        assert!(
+            publish.contains("git/ref/tags/"),
+            "publish re-reads the tag"
+        );
+        assert!(publish.contains("--prerelease"));
+        assert!(prepare.contains("check-runs"), "prepare checks Required");
+        assert_eq!(
+            doc["jobs"]["prepare"]["permissions"]["checks"].as_str(),
+            Some("read")
+        );
+        let ancestry = prepare
+            .lines()
+            .find(|l| l.contains("merge-base --is-ancestor"))
+            .expect("the ancestry check");
+        assert!(
+            !ancestry.starts_with(' '),
+            "ancestry is checked in both modes: {ancestry}"
         );
     }
 

@@ -402,12 +402,10 @@ jobs:
           tools: cargo-about
 
       # The Linux release archives are musl builds (plan section 11 M5): the standard library of
-      # the target and the distribution's musl linker driver.
+      # the target, which brings its own musl; rustc links it with the system cc, so no
+      # musl-tools (ADR 0078).
       - name: Install the musl target
-        run: |
-          rustup target add x86_64-unknown-linux-musl
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends musl-tools
+        run: rustup target add x86_64-unknown-linux-musl
 
       # Builds the musl release binary, packages site-preview-<target>.tar.gz with the
       # THIRD-PARTY-NOTICES that cargo-about generates, extracts it into a fresh directory and

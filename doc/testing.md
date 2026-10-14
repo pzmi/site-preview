@@ -284,7 +284,7 @@ an unknown name exits 2 and lists the stage names). The same command reproduces 
 | `coverage` (Coverage) | `coverage,changed-lines` | `cargo-nextest`, `cargo-llvm-cov`, `cargo-deny`, Gitleaks, actionlint, shellcheck, Quint | `lcov.info` always, JUnit on failure |
 | `security` (Security) | `deny,deny-fuzz,secrets,workflows,action-pins` | `cargo-deny`, Gitleaks, actionlint, shellcheck | none |
 | `browser` (Browser) | `browser` | Playwright and Chromium | Playwright `test-results/` (traces, screenshots) on failure |
-| `artifact-smoke` (Artifact smoke) | none: `cargo xtask release-check --target x86_64-unknown-linux-musl` (ADR 0076) | `cargo-about`, the musl target and `musl-tools` | logs on failure |
+| `artifact-smoke` (Artifact smoke) | none: `cargo xtask release-check --target x86_64-unknown-linux-musl` (ADR 0076) | `cargo-about` and the musl target (no `musl-tools`, ADR 0078) | logs on failure |
 | `required` (Required) | none | none | none |
 
 `required` needs every other job and fails unless each finished `success` (a failed, cancelled or

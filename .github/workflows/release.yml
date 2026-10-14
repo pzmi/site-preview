@@ -7,13 +7,18 @@ name: Release
 # creates or moves a tag and never publishes to crates.io (D24). It restores no cache (ADR 0061),
 # so nothing cached reaches a release artifact. Only `publish` can write, and only with
 # GITHUB_TOKEN; tools/xtask/src/release.rs (should_grant_write_permissions_only_to_publish_when_release_yml_is_read)
-# keeps it that way.
+# keeps it that way. `publish` builds and installs nothing: every compiler, tool and crate runs
+# in a read-only job (`build`, `sbom`), and `publish` only moves their artifacts
+# (should_build_nothing_in_publish_when_release_yml_is_read).
 #
 # Two ways in, both run from the tag itself, so the provenance names the commit that was built:
-# - a push of a `v*` tag: a release, `v<workspace version>`, on a commit of `main`;
+# - a push of a `v*` tag: a release, `v<workspace version>`;
 # - a manual dispatch from the tag (`gh workflow run release.yml --ref <tag> -f tag=<tag>`):
 #   with `dry_run` (the default) the tag must be named `dry-run-<name>` and the draft is titled
 #   and flagged as a dry run; without it, the tag must be a release tag as above (a rerun).
+# Either way the tagged commit must be on `main` and its CI `Required` check green. Inputs and
+# the ref name reach scripts only through `env:`
+# (should_read_inputs_and_the_ref_name_only_in_env_values_when_release_yml_is_read).
 
 on:
   push:
@@ -47,9 +52,12 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: read
+      checks: read # the `Required` check run of the tagged commit
     outputs:
       tag: ${{ steps.tag.outputs.tag }}
+      commit: ${{ steps.tag.outputs.commit }}
       dry_run: ${{ steps.tag.outputs.dry_run }}
+      prerelease: ${{ steps.tag.outputs.prerelease }}
       title: ${{ steps.tag.outputs.title }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -90,20 +98,48 @@ jobs:
           tagged="$(git rev-parse --verify --quiet "refs/tags/$tag^{commit}")" || fail "no tag $tag"
           running="$(git rev-parse --verify --quiet "$GITHUB_SHA^{commit}")" || fail "no commit for this run"
           [ "$tagged" = "$running" ] || fail "tag $tag points to $tagged, but this run is for $running (was it moved?)"
+          # A dry run too: it rehearses a release of main, and its provenance is as valid as one.
+          git merge-base --is-ancestor "$tagged" origin/main || fail "$tag is not on main"
           if [ "$dry_run" = false ]; then
             version="$(git show "$tagged:Cargo.toml" | sed -n 's/^version = "\([^"]*\)"$/\1/p' | head -n 1)"
             [ "$tag" = "v$version" ] || fail "tag $tag does not match the workspace version $version"
-            git merge-base --is-ancestor "$tagged" origin/main || fail "$tag is not on main"
             title="site-preview $tag"
           else
             title="DRY RUN $tag (delete, never publish)"
           fi
+          # A semver pre-release (v1.2.0-rc.1) is never marked Latest; neither is a dry run.
+          prerelease=false
+          if [ "$dry_run" = true ] || [[ "$tag" == *-* ]]; then
+            prerelease=true
+          fi
           {
             echo "tag=$tag"
+            echo "commit=$tagged"
             echo "dry_run=$dry_run"
+            echo "prerelease=$prerelease"
             echo "title=$title"
           } >> "$GITHUB_OUTPUT"
-          echo "release $tag (dry run: $dry_run) from $tagged"
+          echo "release $tag (dry run: $dry_run, pre-release: $prerelease) from $tagged"
+
+      # main must be green (doc/required-checks.md): the latest run of the CI job `Required`
+      # (ci.yml, by GitHub Actions, not another app) on the tagged commit concluded success.
+      - name: Require a green Required check on the tagged commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMIT: ${{ steps.tag.outputs.commit }}
+        run: |
+          set -euo pipefail
+          runs="$(gh api "repos/$GITHUB_REPOSITORY/commits/$COMMIT/check-runs?check_name=Required&filter=latest&per_page=100" \
+            --jq '.check_runs[] | select(.app.slug == "github-actions") | .status + "/" + (.conclusion // "none")')"
+          if [ -z "$runs" ]; then
+            echo "::error::no Required check ran on $COMMIT; release a commit CI has checked on main"
+            exit 1
+          fi
+          echo "Required on $COMMIT: $(tr '\n' ' ' <<< "$runs")"
+          if grep -vqx 'completed/success' <<< "$runs"; then
+            echo "::error::Required is not green on $COMMIT"
+            exit 1
+          fi
 
   # One archive per target on its native runner (plan section 11 M5): release-check builds with
   # --locked, packages site-preview-<target>.tar.gz with its THIRD-PARTY-NOTICES, and smokes the
@@ -141,12 +177,8 @@ jobs:
           rustup show active-toolchain || rustup toolchain install
           rustup target add "$TARGET"
 
-      - name: Install the musl linker driver
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends musl-tools
-
+      # No musl-tools: rustc links the musl targets with the system cc and the target's own
+      # self-contained musl, and no dependency compiles C (ADR 0078).
       - name: Install cargo-about
         run: cargo xtask install-tools cargo-about
 
@@ -173,17 +205,15 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
-  # The only job that can write: it creates the draft release (contents), and signs the
-  # provenance with the run's OIDC identity (id-token, attestations). No other secret is used.
-  publish:
-    name: Publish the draft release
-    needs: [prepare, build]
+  # The SBOMs, in a read-only job of their own (ADR 0078): cargo-cyclonedx is third-party code
+  # built from crates.io, so it never runs next to the write token.
+  sbom:
+    name: SBOMs
+    needs: build
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
-      contents: write
-      id-token: write
-      attestations: write
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -194,6 +224,31 @@ jobs:
           rustup show active-toolchain || rustup toolchain install
           cargo xtask install-tools cargo-cyclonedx
 
+      - name: Write one SBOM per archive
+        run: cargo xtask sbom --out "$RUNNER_TEMP/sbom"
+
+      - name: Keep the SBOMs
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sboms
+          path: ${{ runner.temp }}/sbom/site-preview-*.cdx.json
+          if-no-files-found: error
+          retention-days: 30
+
+  # The only job that can write: it creates the draft release (contents), and signs the
+  # provenance with the run's OIDC identity (id-token, attestations). No other secret is used.
+  # It checks out nothing and builds nothing: it downloads the artifacts of `build` and `sbom`,
+  # writes SHA256SUMS, attests, re-reads the tag, creates the draft and reads it back.
+  publish:
+    name: Publish the draft release
+    needs: [prepare, build, sbom]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
       - name: Download the archives
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -201,8 +256,11 @@ jobs:
           merge-multiple: true
           path: dist
 
-      - name: Write one SBOM per archive
-        run: cargo xtask sbom --out dist
+      - name: Download the SBOMs
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: sboms
+          path: dist
 
       - name: Write SHA256SUMS
         run: |
@@ -228,11 +286,36 @@ jobs:
           subject-path: |
             dist/site-preview-*.tar.gz
             dist/site-preview-*.cdx.json
+            dist/SHA256SUMS
+
+      # The tag may have moved since `prepare` read it. The remote tag is peeled to its commit
+      # (an annotated tag through its tag objects) and must still be the commit this run built
+      # (GITHUB_SHA, peeled by `prepare`). The owner's tag ruleset (doc/release.md) keeps it from
+      # moving after this.
+      - name: Require the tag to still name the built commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          COMMIT: ${{ needs.prepare.outputs.commit }}
+        run: |
+          set -euo pipefail
+          object="$(gh api "repos/$GH_REPO/git/ref/tags/$TAG" --jq '.object.type + " " + .object.sha')"
+          for _ in 1 2 3 4 5; do
+            [ "${object%% *}" = tag ] || break
+            object="$(gh api "repos/$GH_REPO/git/tags/${object#* }" --jq '.object.type + " " + .object.sha')"
+          done
+          if [ "${object%% *}" != commit ] || [ "${object#* }" != "$COMMIT" ] || [ "$COMMIT" != "$GITHUB_SHA" ]; then
+            echo "::error::tag $TAG now names $object, not the built commit $COMMIT (run $GITHUB_SHA)"
+            exit 1
+          fi
+          echo "tag $TAG still names $COMMIT"
 
       # A draft only: `--draft` is not a mode of this step, it is the only thing it does.
       # `--verify-tag` refuses to run unless the tag already exists on GitHub, so gh never
       # creates one, and an existing release for the tag (draft or not) stops the job instead of
-      # receiving new assets.
+      # receiving new assets. A dry run or a semver pre-release is created a pre-release, so it
+      # never becomes Latest, and stays one when the owner publishes it.
       - name: Create the draft release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -240,6 +323,7 @@ jobs:
           TAG: ${{ needs.prepare.outputs.tag }}
           TITLE: ${{ needs.prepare.outputs.title }}
           DRY_RUN: ${{ needs.prepare.outputs.dry_run }}
+          PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
@@ -260,11 +344,11 @@ jobs:
             echo
             echo '```sh'
             echo 'sha256sum --ignore-missing -c SHA256SUMS   # macOS: shasum -a 256 --ignore-missing -c SHA256SUMS'
-            echo "gh attestation verify site-preview-<target>.tar.gz --repo $GH_REPO"
+            echo "gh attestation verify site-preview-<target>.tar.gz --repo $GH_REPO --signer-workflow $GH_REPO/.github/workflows/release.yml --source-ref refs/tags/$TAG"
             echo '```'
           } > "$notes"
           args=(--draft --verify-tag --title "$TITLE" --notes-file "$notes")
-          if [ "$DRY_RUN" = true ]; then
+          if [ "$PRERELEASE" = true ]; then
             args+=(--prerelease)
           fi
           gh release create "$TAG" "${args[@]}" dist/*
@@ -355,19 +439,25 @@ jobs:
             exit 1
           fi
 
-      - name: Verify the provenance attestation
+      # As a user verifies (doc/release.md), plus the commit and no self-hosted runner: signed by
+      # this repository's release.yml, for the tag's ref, so an attestation of a dry run or of a
+      # run from another ref does not pass.
+      - name: Verify the provenance attestations
         env:
           GH_TOKEN: ${{ github.token }}
           TARGET: ${{ matrix.target }}
+          TAG: ${{ needs.prepare.outputs.tag }}
         run: |
           set -euo pipefail
           command -v gh > /dev/null || { echo "::error::gh is not installed on this runner"; exit 1; }
-          gh attestation verify "$RUNNER_TEMP/published/site-preview-$TARGET.tar.gz" \
-            --repo "$GITHUB_REPOSITORY" \
-            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
-            --source-ref "$GITHUB_REF" \
-            --source-digest "$GITHUB_SHA" \
-            --deny-self-hosted-runners
+          for file in "site-preview-$TARGET.tar.gz" SHA256SUMS; do
+            gh attestation verify "$RUNNER_TEMP/published/$file" \
+              --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
+              --source-ref "refs/tags/$TAG" \
+              --source-digest "$GITHUB_SHA" \
+              --deny-self-hosted-runners
+          done
 
       - name: Smoke the published archive
         env:

@@ -5,8 +5,8 @@
 //! `crates/preview-cli` with that target, without build-only dependencies, and writes
 //! `DIR/site-preview-<target>.cdx.json` (default `DIR`: `target/sbom`). `cargo cyclonedx` writes
 //! one file next to every workspace manifest; the `preview-cli` one is moved out and the others
-//! are deleted, so the tree is left as it was. `SOURCE_DATE_EPOCH` is the commit time of `HEAD`,
-//! so the same commit gives the same timestamp.
+//! are deleted, so the tree is left as it was. `SOURCE_DATE_EPOCH` is the commit time of `HEAD`
+//! (or the value already set), so the same commit gives the same timestamp.
 //!
 //! Each SBOM is then read back and must describe `preview-cli` at the workspace version and list
 //! every crate of `cargo tree -e normal --target <target>` (the graph `release-check` ships and
@@ -45,7 +45,7 @@ fn generate_all(out: Option<&Path>) -> Result<Vec<PathBuf>, String> {
     crate::tools::require("cargo-cyclonedx")?;
     let out = out.map_or_else(|| root.join("target/sbom"), Path::to_path_buf);
     fs::create_dir_all(&out).map_err(|e| format!("cannot create {}: {e}", out.display()))?;
-    let epoch = commit_epoch(&root)?;
+    let epoch = source_date_epoch(&root)?.to_string();
     let members = member_dirs(&root)?;
     let mut written = Vec::new();
     for target in RELEASE_TARGETS {
@@ -69,7 +69,11 @@ fn generate_all(out: Option<&Path>) -> Result<Vec<PathBuf>, String> {
         moved?;
         let raw = fs::read_to_string(&dest)
             .map_err(|e| format!("cannot read {}: {e}", dest.display()))?;
-        let text = strip_checkout(&raw, &root.display().to_string());
+        let root_text = root.display().to_string();
+        let text = strip_checkout(&raw, &root_text);
+        if let Some(problem) = checkout_problem(&text, &root_text) {
+            return Err(format!("{}: {problem}", dest.display()));
+        }
         fs::write(&dest, &text).map_err(|e| format!("cannot write {}: {e}", dest.display()))?;
         let shipped = shipped_crates(&root, target)?;
         let problems = sbom_problems(&text, env!("CARGO_PKG_VERSION"), &shipped);
@@ -87,6 +91,14 @@ fn generate_all(out: Option<&Path>) -> Result<Vec<PathBuf>, String> {
 /// machine (`should_drop_the_checkout_directory_when_bom_refs_are_absolute`).
 fn strip_checkout(text: &str, root: &str) -> String {
     text.replace(&format!("file://{root}/"), "file:///")
+}
+
+/// Why `text` still names the checkout `root` after [`strip_checkout`], if it does: a
+/// `cargo cyclonedx` that writes the path in a form other than a `file://` URL would otherwise
+/// leak it unnoticed (`should_fail_when_the_checkout_path_survives_the_strip`).
+fn checkout_problem(text: &str, root: &str) -> Option<String> {
+    (!root.is_empty() && text.contains(root))
+        .then(|| format!("still names the checkout directory {root}"))
 }
 
 /// The output file stem for `target`: `cargo cyclonedx` appends `.json`.
@@ -127,6 +139,23 @@ fn generate(root: &Path, target: &str, stem: &str, epoch: &str) -> Result<(), St
             String::from_utf8_lossy(&output.stderr).trim()
         ))
     }
+}
+
+/// The time a release artifact records: `SOURCE_DATE_EPOCH` when it is set (all digits), else
+/// the committer time of `HEAD`. `release-check` stamps the archive entries with it and the
+/// SBOMs carry it, so a rebuild of the same commit gives the same bytes.
+pub fn source_date_epoch(root: &Path) -> Result<u64, String> {
+    if let Some(set) = std::env::var("SOURCE_DATE_EPOCH")
+        .ok()
+        .filter(|v| !v.is_empty())
+    {
+        return set
+            .parse()
+            .map_err(|_| format!("SOURCE_DATE_EPOCH '{set}' is not a number of seconds"));
+    }
+    commit_epoch(root)?
+        .parse()
+        .map_err(|e| format!("bad commit time: {e}"))
 }
 
 /// The committer time of `HEAD` in seconds, for `SOURCE_DATE_EPOCH`.
@@ -291,6 +320,23 @@ mod tests {
         assert_eq!(
             stripped,
             r#""bom-ref": "path+file:///crates/preview-cli#0.1.0""#
+        );
+    }
+
+    #[test]
+    fn should_fail_when_the_checkout_path_survives_the_strip() {
+        // given
+        let root = "/home/runner/work/sp/sp";
+        let leaked = r#""bom-ref": "path+file:///home/runner/work/sp/sp/crates/preview-cli#0.1.0", "x": "/home/runner/work/sp/sp/Cargo.toml""#;
+
+        // when
+        let stripped = strip_checkout(leaked, root);
+
+        // then
+        assert!(checkout_problem(&stripped, root).is_some_and(|p| p.contains(root)));
+        assert_eq!(
+            checkout_problem(&strip_checkout(leaked, "/nowhere"), "/nowhere"),
+            None
         );
     }
 

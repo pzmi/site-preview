@@ -1,6 +1,6 @@
 # cargo-about configuration for THIRD-PARTY-NOTICES (OPS-05, ADR 0076). `cargo xtask
 # release-check` runs `cargo about generate --locked --manifest-path crates/preview-cli/Cargo.toml
-# --config about.toml --target <triple> about.hbs`, so the notices describe the crates linked
+# --config about.toml --target <triple> about.hbs`, so the notices describe the crates built
 # into the binary for that target: the normal dependency graph of `preview-cli`, without
 # dev-dependencies (test tools) or build-only dependencies.
 

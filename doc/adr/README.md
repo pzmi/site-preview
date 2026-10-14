@@ -78,6 +78,6 @@ This directory holds the decisions behind site-preview, one file per decision, i
 | [0073](0073-root-removal-through-the-parent-watch.md) | A root's removal is notified through a watch on its parent | Proposed |
 | [0074](0074-native-platform-matrix.md) | Native platform matrix: a `platform` job on four runners, one extra non-gate stage | Proposed |
 | [0075](0075-macos-single-recursive-stream.md) | macOS: one recursive FSEvents stream, ignored subtrees dropped in the bridge | Proposed |
-| [0076](0076-release-check-archive-and-notices.md) | `release-check`: one archive layout, notices from `cargo about`, a smoke of the extracted binary | Proposed |
+| [0076](0076-release-check-archive-and-notices.md) | `release-check`: one archive layout, notices from `cargo about`, a smoke of the extracted binary | Proposed. Amended (fixed notice sections, reproducible archive) |
 | [0077](0077-documentation-consistency-stage.md) | Documentation consistency stage: a warning-code registry and the `docs` checks | Proposed |
-| [0078](0078-release-workflow.md) | The release workflow: tag-run only, drafts only, write in one job, dry runs on `dry-run-*` tags | Proposed |
+| [0078](0078-release-workflow.md) | The release workflow: tag-run only, drafts only, write in one job, dry runs on `dry-run-*` tags | Proposed. Amended (release trust boundary) |
