@@ -90,7 +90,8 @@ ADR numbers reserved for you: <NNNN, ... | none>; create them with
 Gate: <`cargo xtask check` | `cargo xtask quick` | the fallback in CLAUDE.md>, as doc/tasks.md says.
 Run it in the foreground with CARGO_TARGET_DIR=<lane target dir>; commit only on green; never end
 your turn with anything still running; kill only PIDs you started, never by pattern.
-Constraints: commit on <lane> ending with exactly this trailer block, written by hand (no `-s`):
+Constraints: commit on <lane> as <name> <email>, the human driving the session (CLAUDE.md),
+ending with exactly this trailer block, written by hand (no `-s`):
 Signed-off-by: <name> <email>
 <the trailer block from the session's attribution instructions>
 Stage only your own files. Do not push, do not touch main, no `gh`, no PR, no tags.

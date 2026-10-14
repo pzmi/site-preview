@@ -80,6 +80,10 @@ skipped-but-green check. Run the gate in the foreground and commit only on green
 
 ## Commits
 
+- Credit the human driving the session: the commit author, committer and `Signed-off-by` are
+  that person's identity (`git config user.name` / `user.email`, as they gave it), never the
+  agent's or a placeholder; ask before the first commit when it is not known. The agent is
+  credited only by the `Co-Authored-By` and `Claude-Session` trailers.
 - DCO sign-off on every commit. Subject `<ID>: summary`, imperative, under 72 chars; the body
   says why. Use the trailer block your instructions give, exactly; add none of your own.
 - The trailer block is last, in this order: `Signed-off-by`, `Co-Authored-By`,
