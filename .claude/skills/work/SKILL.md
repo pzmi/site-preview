@@ -24,6 +24,10 @@ Every station that says "the gate" means the command `doc/tasks.md` names as liv
 
 `quick` is not `check` (foundation.md §9). Never report `quick` as the full gate.
 
+Run the gate in the foreground, with the lane's own `CARGO_TARGET_DIR` when the caller names one
+(else one under the scratchpad; `/dev/shm` is RAM, only when memory allows), and delete that dir when the task
+ends. Local green but CI red, or the reverse: `cargo xtask doctor` first.
+
 ## Tooling without `gh`
 
 | | Agent without `gh` (sandbox) | With `gh` |
@@ -43,7 +47,9 @@ Never:
 - Run a repeatable job as a bare ad-hoc command once an `xtask` subcommand covers it (`cargo xtask architecture`, not a hand-rolled `cargo metadata | jq`); a missing repeatable job becomes an `xtask` subcommand
 - Loosen `architecture.toml`, `[workspace.lints]`, `deny.toml` or a test to get green, unless the task says so; add `#[allow(...)]` without an ADR, `#[ignore]`, or a sleep in a deterministic test
 - Add a dependency other than with `cargo add` (name it and why in the commit message)
-- Commit without polish, or without `-s`
+- Commit without polish, without a green gate on the exact tree, or without a sign-off
+- End the turn with the gate, a build or a server still running in the background, or waiting on one
+- Kill a process by name pattern (`pkill -f`, `killall`): only PIDs you started
 - Force-push, bypass hooks (`--no-verify`), push tags, or merge a PR
 - Review your own diff inline: the review station dispatches `/review` subagents
 - Run `playwright install` (Chromium is preinstalled; `PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers`)
@@ -54,10 +60,10 @@ Always:
 - Read `CLAUDE.md` first, and pass its rules to every subagent
 - Read `stations/{name}.md` before entering that station
 - Write `.work/<id>/<station>.json` after every station and update `.work/<id>/work-order.json` before the next (see `work-order.md`)
-- Commit with `git commit -s`; the subject is `<ID>: <summary>`
+- Commit with the subject `<ID>: <summary>` and a trailer block last, in the order `Signed-off-by`, `Co-Authored-By`, `Claude-Session` (the `commits` stage checks it). `git commit -s` appends `Signed-off-by` after an existing trailer block, so with the caller's trailers write every line by hand and drop `-s`
 - Use the trailer block the caller's instructions give; add none of your own
 - Stage only files you changed (never `git add -A` or `git add .`)
-- Record an architectural decision as an ADR: a change that adds or reverses one adds a new `doc/adr/NNNN-kebab-title.md` (next free number, Nygard format: Status, Context, Decision, Consequences; listed in `doc/adr/README.md`) or supersedes an existing one, in the same commit
+- Record an architectural decision as an ADR: a change that adds or reverses one adds a new record with `cargo xtask adr new "<title>"` (`--number N` when the caller reserved one; Nygard format: Status, Context, Decision, Consequences; `cargo xtask adr index --fix` updates `doc/adr/README.md`) or supersedes an existing one, in the same commit
 - Stop at every checkpoint task (⛳ in `doc/tasks.md`) after the commit: report that a `/review` range is due, and do not start the next task
 
 ## Input

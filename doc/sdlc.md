@@ -45,17 +45,17 @@ procedure; this section summarises it.
    lifecycle, watcher or reload change; writes failing tests before the smallest implementation;
    runs `cargo xtask quick` while working and `cargo xtask check` before the commit; and reports
    exactly which gates ran and which did not.
-3. **Land.** The agent makes exactly one commit on its lane branch with `git commit -s`: subject
-   `<ID>: <summary>` (imperative, under 72 characters), a body that says why, an `Impact:` line,
-   the sign-off, and the attribution trailer block the session supplies. Only its own files are
-   staged. The agent does not push, tag or touch `main`. The orchestrator reads the report,
-   spot-checks it, then brings the commit onto `main` (`git merge --ff-only`, or
-   `git cherry-pick` when `main` moved).
-4. **Gate.** The orchestrator runs `cargo xtask check` on the merged tree. A failure that is
-   green in the lane but red when merged is an interaction bug and goes back to an agent; the
-   orchestrator does not patch it.
-5. **Push.** `git push origin main`, confirmed with `git ls-remote origin main`. A rejected push
-   is fetched, rebased, gated again and pushed again. Never a force-push, never a tag push.
+3. **Land.** The agent makes exactly one commit on its lane branch: subject `<ID>: <summary>`
+   (imperative, under 72 characters), a body that says why, an `Impact:` line, then the trailer
+   block (`Signed-off-by`, `Co-Authored-By`, `Claude-Session`, in that order). Only its own
+   files are staged. The agent does not push, tag or touch `main`. The orchestrator reads the
+   report, spot-checks it, then brings the commit onto `main` with `cargo xtask land <sha> --push origin main`,
+   one commit at a time and only after the previous commit's CI is green.
+4. **Gate.** `land` runs `cargo xtask check` on the merged tree. A failure that is green in the
+   lane but red when merged is an interaction bug and goes back to an agent; the orchestrator
+   does not patch it.
+5. **Push.** `land` pushes only on a green `check`. A rejected push is fetched and landed
+   again. Never a force-push, never a tag push.
 6. **Watch CI.** The orchestrator waits for the run of the pushed commit and reads the
    `Required` result (see [`required-checks.md`](required-checks.md)). Without `gh` it uses the
    GitHub MCP tools (`actions_list`, `actions_get`, `get_job_logs`).
@@ -121,7 +121,7 @@ skipped. The browser stage needs Chromium, which `install-tools` does not instal
 - **Direct on `main`.** Every task is integrated on `main` for the whole plan. No task switches
   to a pull-request flow or enables branch protection or rulesets. A pull-request flow may
   follow only after the plan is complete, through a new ADR (ADR 0032).
-- **One signed-off commit per task**, `git commit -s`, subject `<ID>: <summary>` (ADR 0006).
+- **One signed-off commit per task**, subject `<ID>: <summary>` (ADR 0006).
 - **Only the orchestrator pushes.** Implementing agents never push, tag or change remote
   settings. Checkpoint tags (`checkpoint-<ID>`) are annotated, local and never pushed.
 - **No force-push.** A rejected push is fetched, rebased and gated again. History on `main` is
@@ -146,3 +146,32 @@ skipped. The browser stage needs Chromium, which `install-tools` does not instal
 - **Outside contributions** arrive as pull requests, which run the same CI. The maintainer
   integrates an accepted one as a signed-off commit on `main`
   ([`../CONTRIBUTING.md`](../CONTRIBUTING.md)).
+
+## Lessons from the P0 build
+
+The P0 build ran many agents in parallel on one machine. What went wrong became rules
+([ADR 0079](adr/0079-agent-process-rules.md)); each bullet points at the rule, not a copy of it.
+
+- Commits landed on red CI and interleaved runs hid which one broke: land one commit per green
+  run ([orchestrate: merge back](../.claude/skills/orchestrate/SKILL.md#merge-back-and-gate)).
+- Parallel lanes took the same ADR number: numbers are reserved at dispatch and created with
+  `adr new --number` ([tasks.md rule 7](tasks.md#rules-for-every-task)).
+- Shared registries (the `formal.yml` matrix, the conformance model list, the `testing.md`
+  tables, the ADR index) conflicted on every round: one owning lane per round, or regenerate
+  ([orchestrate: lanes](../.claude/skills/orchestrate/SKILL.md#lanes-and-worktrees)).
+- `git commit -s` put `Signed-off-by` after the trailer block: write the block by hand, in
+  order; the `commits` stage checks it ([CLAUDE.md: commits](../CLAUDE.md#commits)).
+- The local gate passed where CI failed on a missing or wrong tool: `doctor` first
+  ([CLAUDE.md: the gate](../CLAUDE.md#the-gate)).
+- `cfg!()` runtime branches compiled other platforms' code: `#[cfg]` items only, an
+  architecture rule ([CLAUDE.md: enforced rules](../CLAUDE.md#enforced-rules)).
+- Agents ended turns with the gate in the background, and pattern kills took down other lanes'
+  gates: foreground gates, PID-only kills ([CLAUDE.md: sandbox](../CLAUDE.md#sandbox)).
+- Per-worktree `target/` dirs filled the disk: per-lane `CARGO_TARGET_DIR`, `df` before each
+  round, deleted after landing ([CLAUDE.md: sandbox](../CLAUDE.md#sandbox)).
+- Owner-only acceptance criteria were left to agents, and owner decisions piled up: `(owner)`
+  marks, batched at each ⛳ ([tasks.md rule 12](tasks.md#rules-for-every-task),
+  [orchestrate: checkpoints](../.claude/skills/orchestrate/SKILL.md#checkpoints-and-the-owner)).
+- The adversarial second review at each ⛳ caught real bugs the first missed; it stays.
+- CI outages and usage limits stalled the run: the
+  [recovery playbook](../.claude/skills/orchestrate/SKILL.md#recovery).

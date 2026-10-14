@@ -23,7 +23,7 @@ Verify test coverage and run the gate for the working-tree diff.
    - **conformance**: Quint traces replayed against the real code, plus the negative control
    - **browser**: Playwright against a served fixture, when the reload loop changed
 3. Conventions: `should_<outcome>_when_<condition>`, `// given / when / then`, real objects over fakes, no mocking frameworks, no `#[ignore]`, no sleeps (OS-watcher tests: bounded condition polling with a reason), dynamic ports, `tempfile` dirs. Never assert on log lines alone.
-4. Run the gate (`cargo xtask check`, or what `doc/tasks.md` names). Iterate to green. A missing tool is installed pinned or reported; a skipped check is never green.
+4. Run the gate (`cargo xtask check`, or what `doc/tasks.md` names) in the foreground, never in the background. Iterate to green. A missing tool is installed pinned or reported; a skipped check is never green.
 5. Failures outside your diff (someone else's WIP): report them, do not fix or hide them.
 
 ## Output

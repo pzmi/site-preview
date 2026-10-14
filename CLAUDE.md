@@ -37,6 +37,7 @@ cargo xtask quick     # fmt check, clippy, fast unit/component tests: while work
 cargo xtask check     # the full blocking gate (foundation.md §9): before every commit
 cargo xtask architecture   # crate/module policy and its negative fixtures
 cargo xtask list-checks    # every check, machine-readable
+cargo xtask doctor    # every pinned tool `check` needs: run it first when local and CI disagree
 ```
 
 Before `xtask` exists, the gate is:
@@ -48,7 +49,7 @@ cargo fmt --all --check && cargo clippy --workspace --all-targets --locked -- -D
 `doc/tasks.md` says which gate is live. `quick` is not `check`; never report one as the other.
 Once an `xtask` subcommand covers a repeatable job, use it instead of an ad-hoc command; a new
 repeatable job becomes an `xtask` subcommand. A missing tool is an actionable failure, never a
-skipped-but-green check.
+skipped-but-green check. Run the gate in the foreground and commit only on green.
 
 ## Enforced rules
 
@@ -59,6 +60,8 @@ skipped-but-green check.
   structure, never by loosening `architecture.toml` (unless the task says so, with an ADR).
 - **Pure domain** (§2.2, §3.3): no `std::fs`, `std::net`, `std::process`, env, clock,
   randomness, tokio or HTTP in `preview-domain`.
+- **Platform code**: `#[cfg(...)]` items or blocks, never a `cfg!(target_os…)` runtime branch
+  (an architecture rule).
 - **Language** (§3.3, §4): `unsafe_code` forbidden; no `todo!`, `unimplemented!`, `dbg!`; no
   `#[ignore]`; no `#[allow(...)]` without an ADR; zero clippy warnings.
 - **Tests** (§5): `should_<outcome>_when_<condition>` with `// given`, `// when`, `// then`; no
@@ -71,13 +74,19 @@ skipped-but-green check.
   interpolation; no secrets, absolute paths or query strings in logs.
 - **Dependencies**: `cargo add`, named with its reason in the commit message; `Cargo.lock`
   committed, builds `--locked`; GitHub Actions pinned by commit SHA.
-- **Decisions**: a change that adds or reverses an architectural decision adds an ADR (next
-  free number) or supersedes one, in the same commit.
+- **Decisions**: a change that adds or reverses an architectural decision adds an ADR
+  (`cargo xtask adr new "<title>"`, with `--number N` when the orchestrator reserved one) or
+  supersedes one, in the same commit; `cargo xtask adr index --fix` rewrites the index.
 
 ## Commits
 
-- `git commit -s` (DCO sign-off). Subject `<ID>: summary`, imperative, under 72 chars; the
-  body says why. Use the trailer block your instructions give, exactly; add none of your own.
+- DCO sign-off on every commit. Subject `<ID>: summary`, imperative, under 72 chars; the body
+  says why. Use the trailer block your instructions give, exactly; add none of your own.
+- The trailer block is last, in this order: `Signed-off-by`, `Co-Authored-By`,
+  `Claude-Session` (the `commits` stage of `check` enforces it). `git commit -s` appends
+  `Signed-off-by` *after* an existing trailer block, so use `-s` only when the message has no
+  other trailers; otherwise write all the lines by hand.
+- Integration onto `main` goes through `cargo xtask land` (ADR 0079).
 - Stage only your own files (never `git add -A`). Never `--no-verify`, never force-push, never
   push tags; `checkpoint-*` tags are local.
 - No model ids in repo content (code, docs, commit message bodies). The attribution trailer block the
@@ -93,6 +102,11 @@ skipped-but-green check.
 - Hooks: SessionStart installs the pinned toolchain and fetches crates (remote sessions);
   every edited `*.rs` is rustfmt'ed; Stop runs the fast gate when Rust files changed.
 - Temporary files go in the session scratchpad, never `/tmp` or the repo.
+- Kill only PIDs you started, never by name pattern (`pkill -f`, `killall`): another lane's gate
+  may match.
+- Never end a turn with the gate or other work still running in the background.
+- Each lane builds with its own `CARGO_TARGET_DIR` and deletes it when done. `/dev/shm` is RAM:
+  use it only when memory allows (a lane with coverage takes about 10 GB), else the scratchpad.
 
 ## Public repository
 
