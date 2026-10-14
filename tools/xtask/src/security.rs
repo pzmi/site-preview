@@ -29,7 +29,11 @@ pub fn stages() -> Vec<Stage> {
             run_secrets,
         )
         .needs("gitleaks"),
-        Stage::new("workflows", "actionlint", &[]).needs("actionlint"),
+        // actionlint checks `run:` scripts only through shellcheck and skips them silently
+        // when it is not on PATH, so the stage requires it (OPS-06).
+        Stage::new("workflows", "actionlint", &[])
+            .needs("actionlint")
+            .and_needs("shellcheck"),
         Stage::in_process(
             "action-pins",
             "check .github/workflows and .github/actions for unpinned uses:",

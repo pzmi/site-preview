@@ -63,6 +63,15 @@ method = "manual"
 url = "https://github.com/rhysd/actionlint/releases/tag/v1.7.12"
 probe = ["actionlint", "-version"]
 
+# actionlint runs shellcheck over every `run:` script and skips those checks without it, so the
+# `workflows` stage requires it (OPS-06). The version is the one Ubuntu 24.04 packages; CI installs
+# the release binary through the install-scanners action, which pins its SHA-256.
+[tools.shellcheck]
+version = "0.9.0"
+method = "manual"
+url = "https://github.com/koalaman/shellcheck/releases/tag/v0.9.0"
+probe = ["shellcheck", "--version"]
+
 # Apalache is the version the pinned quint release downloads and is validated against; it is
 # run by the scheduled formal lane only (`cargo xtask formal-verify`, ADR 0061). Quint would
 # download it unchecked, so `formal-verify` fetches the release tarball itself, refuses it

@@ -213,7 +213,7 @@ jobs:
             want+=("site-preview-$target.tar.gz" "site-preview-$target.cdx.json")
           done
           expected="$(printf '%s\n' "${want[@]}" | LC_ALL=C sort)"
-          present="$(ls -1 | LC_ALL=C sort)"
+          present="$(shopt -s nullglob; printf '%s\n' * | LC_ALL=C sort)"
           if [ "$present" != "$expected" ]; then
             echo "::error::dist/ does not hold exactly the four archives and their SBOMs"
             diff <(echo "$expected") <(echo "$present") || true
@@ -284,7 +284,8 @@ jobs:
           gh release download "$TAG" --dir "$published"
           cd "$published"
           sha256sum -c SHA256SUMS
-          if [ "$(ls -1 | LC_ALL=C sort)" != "$(ls -1 "$GITHUB_WORKSPACE/dist" | LC_ALL=C sort)" ]; then
+          names() { (cd "$1" && shopt -s nullglob && printf '%s\n' * | LC_ALL=C sort); }
+          if [ "$(names .)" != "$(names "$GITHUB_WORKSPACE/dist")" ]; then
             echo "::error::the draft release does not hold exactly the uploaded assets"
             exit 1
           fi
@@ -348,7 +349,7 @@ jobs:
             shasum -a 256 -c SHA256SUMS
           fi
           listed="$(awk '{ print $2 }' SHA256SUMS | LC_ALL=C sort)"
-          present="$(ls -1 | grep -vx SHA256SUMS | LC_ALL=C sort)"
+          present="$(shopt -s nullglob; for f in *; do [ "$f" = SHA256SUMS ] || printf '%s\n' "$f"; done | LC_ALL=C sort)"
           if [ "$listed" != "$present" ]; then
             echo "::error::SHA256SUMS does not list exactly the published files"
             exit 1

@@ -1,6 +1,6 @@
 name: Install secret and workflow scanners
 description: >-
-  Downloads the pinned Gitleaks and actionlint release binaries, verifies their SHA-256, and
+  Downloads the pinned Gitleaks, actionlint and shellcheck release binaries, verifies their SHA-256, and
   puts them on PATH. Keep the versions equal to tools/versions.toml; the xtask stages check the
   installed version and fail closed on drift.
 runs:
@@ -13,6 +13,8 @@ runs:
         GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
         ACTIONLINT_VERSION: "1.7.12"
         ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+        SHELLCHECK_VERSION: "0.9.0"
+        SHELLCHECK_SHA256: 700324c6dd0ebea0117591c6cc9d7350d9c7c5c287acbad7630fa17b1d4d9e2f
       run: |
         set -euo pipefail
         bin="$RUNNER_TEMP/scanner-bin"
@@ -27,4 +29,9 @@ runs:
           "$GITLEAKS_SHA256" gitleaks.tar.gz gitleaks
         fetch "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz" \
           "$ACTIONLINT_SHA256" actionlint.tar.gz actionlint
+        # actionlint runs shellcheck over every `run:` script; the stage fails without it.
+        curl --proto '=https' --tlsv1.2 -sSfL -o "$work/shellcheck.tar.xz" \
+          "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.xz"
+        echo "$SHELLCHECK_SHA256  $work/shellcheck.tar.xz" | sha256sum -c -
+        tar -xJf "$work/shellcheck.tar.xz" -C "$bin" --strip-components=1 "shellcheck-v${SHELLCHECK_VERSION}/shellcheck"
         echo "$bin" >> "$GITHUB_PATH"

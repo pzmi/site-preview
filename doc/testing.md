@@ -173,7 +173,7 @@ cargo xtask check          # the full blocking gate, run before every commit
 `quick` is not `check`. `check` runs the `quick` stages other than the tests, then `test`
 (the `ci` profile and the doctests), the `client-js` node tests, the `browser` Playwright specs, then the seven
 conformance stages (`formal-typecheck` to `conformance-controls`), then `coverage` and the `changed-lines` gate
-over its report, then the security stages (`deny`, `deny-fuzz`, `secrets`, `workflows`, `action-pins`). A stage whose tool is missing is reported as
+over its report, then the security stages (`deny`, `deny-fuzz`, `secrets`, `workflows`, `action-pins`; `workflows` needs both actionlint and shellcheck, because actionlint skips the `run:` script checks silently without shellcheck). A stage whose tool is missing is reported as
 `UNAVAILABLE` with the install instruction and a non-success exit; it never counts as passed.
 
 Per level:
@@ -278,11 +278,11 @@ an unknown name exits 2 and lists the stage names). The same command reproduces 
 | `architecture` (Architecture and policy) | `architecture` | none | none |
 | `static` (Static quality) | `fmt-check,fuzz-fmt,clippy,docs` | none | none |
 | `fast-tests` (Fast tests) | `unit-tests,doctests,client-js` | `cargo-nextest`, Node 22 | JUnit on failure |
-| `integration` (Integration) | `integration-tests` | `cargo-nextest`, `cargo-deny`, Gitleaks, actionlint (the xtask security fixtures run them) | JUnit on failure |
+| `integration` (Integration) | `integration-tests` | `cargo-nextest`, `cargo-deny`, Gitleaks, actionlint, shellcheck (the xtask security fixtures run them) | JUnit on failure |
 | `platform` (Platform, a matrix of four legs) | none: `cargo xtask test --only platform-tests` on Linux x86-64 and arm64 and macOS arm64 and x86-64 (ADR 0074) | `cargo-nextest` | JUnit on failure, per leg |
 | `conformance` (Conformance (Quint)) | the seven `formal-*` and `conformance-*` stages | `cargo-nextest`, Quint (`npm ci --prefix formal`) on Node 22 | generated ITF traces and JUnit on failure |
-| `coverage` (Coverage) | `coverage,changed-lines` | `cargo-nextest`, `cargo-llvm-cov`, `cargo-deny`, Gitleaks, actionlint, Quint | `lcov.info` always, JUnit on failure |
-| `security` (Security) | `deny,deny-fuzz,secrets,workflows,action-pins` | `cargo-deny`, Gitleaks, actionlint | none |
+| `coverage` (Coverage) | `coverage,changed-lines` | `cargo-nextest`, `cargo-llvm-cov`, `cargo-deny`, Gitleaks, actionlint, shellcheck, Quint | `lcov.info` always, JUnit on failure |
+| `security` (Security) | `deny,deny-fuzz,secrets,workflows,action-pins` | `cargo-deny`, Gitleaks, actionlint, shellcheck | none |
 | `browser` (Browser) | `browser` | Playwright and Chromium | Playwright `test-results/` (traces, screenshots) on failure |
 | `artifact-smoke` (Artifact smoke) | none: `cargo xtask release-check --target x86_64-unknown-linux-musl` (ADR 0076) | `cargo-about`, the musl target and `musl-tools` | logs on failure |
 | `required` (Required) | none | none | none |

@@ -521,6 +521,7 @@ mod tests {
             "cargo-fuzz",
             "gitleaks",
             "actionlint",
+            "shellcheck",
             "cargo-cyclonedx",
             "quint",
             "@playwright/test",
