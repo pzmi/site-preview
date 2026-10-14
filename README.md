@@ -2,7 +2,7 @@
 
 Zero-configuration local static-site preview server with live reload, as a single Rust binary.
 
-> **Status: pre-alpha.** The server, live reload and `--json` interface work from a source build; there is no release yet, so no install packages (an install section arrives with the first release).
+> **Status: pre-release.** The server, live reload and `--json` interface work. Version 0.1.0 is prepared but **not published until the owner tags `v0.1.0`**; until then the release assets below do not exist and you can [build from source](#development).
 
 ## What it is
 
@@ -281,6 +281,62 @@ See [SECURITY.md](SECURITY.md) for scope and reporting, and [doc/security.md](do
   none and collects nothing.
 - Windows is not supported.
 
+## Install
+
+Release archives exist for four targets. Each unpacks to one directory, `site-preview-<target>/`,
+that holds the `site-preview` binary, this README, both licences and `THIRD-PARTY-NOTICES`. The
+binary needs no Rust, Node or npm. Pick your target:
+
+| Platform | `<target>` |
+|:--|:--|
+| Linux x86_64 (static musl) | `x86_64-unknown-linux-musl` |
+| Linux aarch64 (static musl) | `aarch64-unknown-linux-musl` |
+| macOS Apple silicon | `aarch64-apple-darwin` |
+| macOS Intel | `x86_64-apple-darwin` |
+
+**Minimal install** (replace the target; `--strip-components=1` drops the archive's one top
+directory):
+
+```sh
+mkdir -p ~/.local/bin
+curl -fsSL https://github.com/pzmi/site-preview/releases/download/v0.1.0/site-preview-x86_64-unknown-linux-musl.tar.gz \
+  | tar xz --strip-components=1 -C ~/.local/bin site-preview-x86_64-unknown-linux-musl/site-preview
+site-preview --version
+```
+
+Make sure `~/.local/bin` is on your `PATH`. This trusts the download as is; to check it first, use
+the verified install below.
+
+**Verified install** (recommended): download the archive and `SHA256SUMS`, check both the
+checksum and the build provenance, then unpack.
+
+```sh
+TARGET=x86_64-unknown-linux-musl   # or aarch64-unknown-linux-musl, aarch64-apple-darwin, x86_64-apple-darwin
+BASE=https://github.com/pzmi/site-preview/releases/download/v0.1.0
+curl -fsSLO "$BASE/site-preview-$TARGET.tar.gz"
+curl -fsSLO "$BASE/SHA256SUMS"
+
+# Checksum. Linux (GNU coreutils):
+sha256sum -c --ignore-missing SHA256SUMS
+# macOS (no --ignore-missing in shasum, so check just this archive's line):
+grep " site-preview-$TARGET.tar.gz\$" SHA256SUMS | shasum -a 256 -c
+
+# Provenance (needs the GitHub CLI, `gh`, 2.49 or newer):
+gh attestation verify "site-preview-$TARGET.tar.gz" --repo pzmi/site-preview \
+  --signer-workflow pzmi/site-preview/.github/workflows/release.yml \
+  --source-ref refs/tags/v0.1.0
+
+mkdir -p ~/.local/bin
+tar xz --strip-components=1 -C ~/.local/bin -f "site-preview-$TARGET.tar.gz" "site-preview-$TARGET/site-preview"
+site-preview --version
+```
+
+`SHA256SUMS` also lists the CycloneDX SBOM of each archive (`site-preview-<target>.cdx.json`),
+which `--ignore-missing` skips if you did not download them. The checksum proves the file matches
+the published list; the attestation proves it was built from this repository by its release
+workflow at the `v0.1.0` tag. `--signer-workflow` and `--source-ref` pin the release workflow and the tag; without them, `--repo` alone would accept an attestation from any workflow or ref, including a dry run. How a release is made and checked is in [doc/release.md](doc/release.md). Minimum
+operating system versions are in [doc/runbook.md](doc/runbook.md#minimum-system-expectations-released-binaries).
+
 ## Supported platforms
 
 Linux and macOS (ARM64 and x86_64). Windows is not supported.
@@ -311,6 +367,8 @@ once. See [CONTRIBUTING.md](CONTRIBUTING.md).
 - [doc/testing.md](doc/testing.md) - test levels and commands
 - [doc/sdlc.md](doc/sdlc.md) - how changes are made, gated and integrated
 - [doc/required-checks.md](doc/required-checks.md) - the CI checks that must be green on `main`
+- [doc/release.md](doc/release.md) - how a release is cut and checked
+- [doc/release-checklist.md](doc/release-checklist.md) - the 0.1.0 definition of done, with evidence
 - [CONTRIBUTING.md](CONTRIBUTING.md) - how to contribute
 
 ## License
