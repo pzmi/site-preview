@@ -4,5 +4,8 @@
   "description": "Quint models of site-preview (foundation.md section 6). Development only: the shipped binary never needs Node.",
   "devDependencies": {
     "@informalsystems/quint": "0.33.0"
+  },
+  "overrides": {
+    "adm-zip": "0.6.1"
   }
 }
