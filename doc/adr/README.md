@@ -84,3 +84,4 @@ This directory holds the decisions behind site-preview, one file per decision, i
 | [0079](0079-agent-process-rules.md) | Agent process rules from the P0 build | Accepted |
 | [0080](0080-doctor-and-commit-message-stage.md) | Doctor asserts the gate's toolset, a `commits` stage, and no `cfg!` platform branches | Accepted |
 | [0081](0081-adr-allocation-and-landing-command.md) | ADR allocation and landing command | Accepted |
+| [0082](0082-external-oss-services-scorecard-codecov-and-an-ai-pr-reviewer.md) | External OSS services: Scorecard, Codecov and an AI PR reviewer | Accepted |

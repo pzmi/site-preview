@@ -14,7 +14,7 @@ Test names are `should_*` functions; paths are relative to the repository root.
 | A web page in the developer's browser (any origin) | Send requests to `127.0.0.1:<port>`, guess the port, rebind a DNS name to the loopback address | Host gate (421), Origin guard on the event stream, no CORS headers, no state-changing routes |
 | A request (or a site file) naming a path outside the site | Traverse (`..`, encoded separators), follow or race a symlink, ask for dotfiles, editor backups, `node_modules` | One-decode path rules, the eligibility predicate, per-component confined opens |
 | A machine on the LAN, only with `--allow-remote` | Read the site; hold event-stream slots | Nothing but the Host gate: there is no authentication (see Limitations) |
-| The supply chain | A malicious or vulnerable dependency, a leaked secret, a mutable CI action | cargo-deny, Gitleaks, pinned actions, CodeQL, Dependabot |
+| The supply chain | A malicious or vulnerable dependency, a leaked secret, a mutable CI action | cargo-deny, Gitleaks, pinned actions, CodeQL, Dependabot, OpenSSF Scorecard |
 
 Site Preview is a developer preview server for a directory of static files. It binds loopback
 by default, writes nothing to the site, and makes no outbound network request.
@@ -283,6 +283,8 @@ user or browser (plan.md §7.1).
 | CodeQL (Rust) with `security-events: write` on that job only | `.github/workflows/codeql.yml` | the pin check and `actionlint` |
 | Dependabot weekly for `cargo`, `github-actions` and the two npm directories, minor and patch grouped | `.github/dependabot.yml` | review |
 | The `security` workflow runs the same `cargo xtask security` stage as local development | `.github/workflows/security.yml` | CI |
+| OpenSSF Scorecard on each push to `main` and weekly, results in code scanning and the README badge; `security-events: write` and `id-token: write` on that job only (ADR 0082) | `.github/workflows/scorecard.yml` | the pin check and `actionlint` |
+| The Codecov upload holds `id-token: write` in a `workflow_run` job that checks nothing out and runs no repository code; no Codecov token is stored (ADR 0082) | `.github/workflows/coverage-report.yml` | the pin check and `actionlint` |
 
 `Cargo.lock` is committed and builds use `--locked`. A passing advisory scan is not a
 guarantee that dependencies are safe (foundation.md §8).
