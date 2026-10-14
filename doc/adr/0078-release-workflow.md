@@ -4,7 +4,7 @@ Date: 2026-10-13
 
 ## Status
 
-Proposed (planner default — owner may override). Implements D23 (ADR 0024) for releases;
+Accepted (owner, 2026-10-14). Implements D23 (ADR 0024) for releases;
 keeps D24 (ADR 0025, no crates.io) and ADR 0061 (no caches in the release workflow). Amended
 2026-10-14 (checkpoint OPS-06 review): the trust boundary of `publish`, pinned verification,
 pre-releases, the tag and CI re-checks, reproducible archives; see "Amendment".

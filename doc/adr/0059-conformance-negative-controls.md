@@ -4,7 +4,7 @@ Date: 2026-10-12
 
 ## Status
 
-Proposed (planner default — owner may override). Amended by ADR 0060 (the controls run in
+Accepted (owner, 2026-10-14). Amended by ADR 0060 (the controls run in
 the `conformance-controls` stage, not in `unit-tests`) and by ADR 0070 (three lifecycle
 controls and a shutdown control; the claim narrowed to the faulted fields, with every projected
 field held by `field_sensitivity.rs`).

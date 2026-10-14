@@ -4,7 +4,7 @@ Date: 2026-10-13
 
 ## Status
 
-Proposed (planner default — owner may override). Amends ADR 0062.
+Accepted (owner, 2026-10-14). Amends ADR 0062.
 
 ## Context
 

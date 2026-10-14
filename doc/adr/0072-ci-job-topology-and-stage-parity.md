@@ -4,7 +4,7 @@ Date: 2026-10-13
 
 ## Status
 
-Proposed (planner default — owner may override). Amends 0060 (`formal.yml` no longer runs on
+Accepted (owner, 2026-10-14). Amends 0060 (`formal.yml` no longer runs on
 push or pull request) and 0069 (which kept it there until OPS-04 decided).
 
 ## Context

@@ -4,7 +4,7 @@ Date: 2026-10-12
 
 ## Status
 
-Proposed (planner default — owner may override). Root deletion amended by
+Accepted (owner, 2026-10-14). Root deletion amended by
 [ADR 0067](0067-root-removal-and-watcher-review-fixes.md): a removed root now degrades the
 watcher with `RootRemoved`, for good.
 

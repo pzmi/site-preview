@@ -4,7 +4,7 @@ Date: 2026-10-13
 
 ## Status
 
-Proposed (planner default — owner may override)
+Accepted (owner, 2026-10-14)
 
 Amends [ADR 0067](0067-root-removal-and-watcher-review-fixes.md) (how a root removal reaches
 a reconcile).

@@ -4,7 +4,7 @@ Date: 2026-10-12
 
 ## Status
 
-Proposed (planner default — owner may override). Amended by ADR 0051: the pipeline runs
+Accepted (owner, 2026-10-14). Amended by ADR 0051: the pipeline runs
 the reconcile under `block_in_place`, off the async workers.
 
 ## Context

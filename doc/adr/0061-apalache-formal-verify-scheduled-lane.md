@@ -4,7 +4,7 @@ Date: 2026-10-13
 
 ## Status
 
-Proposed (planner default — owner may override). Amended 2026-10-13 (checkpoint FORMAL-10
+Accepted (owner, 2026-10-14). Amended 2026-10-13 (checkpoint FORMAL-10
 review): the Apalache release is verified by its SHA-256 before it runs; see "Amendment".
 
 ## Context

@@ -4,7 +4,8 @@ Date: 2026-10-13
 
 ## Status
 
-Proposed (planner default — owner may override). Amended by ADR 0073: the root's removal
+Accepted (owner, 2026-10-14). The owner confirmed that a root's removal stops watching for
+good, with no recovery. Amended by ADR 0073: the root's removal
 reaches a reconcile through a watch on the root's parent (Linux). Amended by the OPS-04
 review: only a definite answer is a removal (see Amendment).
 

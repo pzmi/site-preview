@@ -4,7 +4,7 @@ Date: 2026-10-13
 
 ## Status
 
-Proposed. Amended 2026-10-14 (checkpoint OPS-06 review): fixed notice sections for the Rust
+Accepted (owner, 2026-10-14). Amended 2026-10-14 (checkpoint OPS-06 review): fixed notice sections for the Rust
 standard library and musl, a corrected preface, stricter archive checks and a reproducible
 archive; see "Amendment".
 

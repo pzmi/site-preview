@@ -4,7 +4,7 @@ Date: 2026-10-12
 
 ## Status
 
-Proposed (planner default — owner may override). Amended by ADR 0070: `apply_with_model`
+Accepted (owner, 2026-10-14). Amended by ADR 0070: `apply_with_model`
 receives a `ModelView` holding only the paths the driver declares in `Driver::MODEL_READS`
 (`browsers.*.doc` here), not the whole state.
 

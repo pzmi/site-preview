@@ -4,7 +4,7 @@ Date: 2026-10-13
 
 ## Status
 
-Proposed (planner default — owner may override)
+Accepted (owner, 2026-10-14)
 
 Amends [ADR 0056](0056-lifecycle-conformance-driver.md) (the lifecycle observation),
 [ADR 0057](0057-reload-conformance-driver.md) (`Driver::apply_with_model`),

@@ -4,7 +4,7 @@ Date: 2026-10-13
 
 ## Status
 
-Proposed (planner default — owner may override). Amends 0047 (the watcher), whose consequence
+Accepted (owner, 2026-10-14). Amends 0047 (the watcher), whose consequence
 on FSEvents restarts OPS-03 was to verify.
 
 ## Context

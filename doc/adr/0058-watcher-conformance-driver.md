@@ -4,7 +4,7 @@ Date: 2026-10-12
 
 ## Status
 
-Proposed (planner default — owner may override). Amended by ADR 0070: the driver runs
+Accepted (owner, 2026-10-14). Amended by ADR 0070: the driver runs
 composition's `WatchDecisions`, the pipeline's own synchronous decision step, instead of
 restating it; a refused readiness is a divergence; the claim that the lifecycle driver covers
 the pipeline is withdrawn.
