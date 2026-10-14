@@ -12,17 +12,18 @@ use crate::process::Stage;
 use crate::repo;
 
 /// The Chromium build number the pinned `@playwright/test` expects (`tools/versions.toml`).
-const CHROMIUM_BUILD: &str = "1194";
+pub(crate) const CHROMIUM_BUILD: &str = "1194";
 
-/// The browser stage, `needs("node")` so a missing or wrong Node shows as `UNAVAILABLE`.
+/// The browser stage. It needs Node and the Chromium build, so a missing or wrong one shows as
+/// `UNAVAILABLE` and `doctor` lists both (ADR 0080).
 pub fn stage() -> Stage {
-    let mut stage = Stage::in_process(
+    Stage::in_process(
         "browser",
         "cargo build --locked -p preview-cli, npm ci --prefix tests/e2e/browser, npx playwright test",
         run,
-    );
-    stage.tool = Some("node");
-    stage
+    )
+    .needs("node")
+    .and_needs(crate::tools::CHROMIUM)
 }
 
 /// The directory that holds Playwright's browsers: `PLAYWRIGHT_BROWSERS_PATH`, else the
@@ -63,11 +64,15 @@ fn run_command(command: &mut Command, label: &str) -> i32 {
     }
 }
 
-fn run() -> i32 {
+/// [`require_chromium`] in the directory this environment points Playwright at.
+pub(crate) fn require_installed_chromium() -> Result<(), String> {
     let env_path = std::env::var("PLAYWRIGHT_BROWSERS_PATH").ok();
     let home = std::env::var("HOME").ok();
-    let dir = browsers_dir(env_path.as_deref(), home.as_deref());
-    if let Err(err) = require_chromium(dir.as_deref()) {
+    require_chromium(browsers_dir(env_path.as_deref(), home.as_deref()).as_deref())
+}
+
+fn run() -> i32 {
+    if let Err(err) = require_installed_chromium() {
         eprintln!("xtask: {err}");
         return 1;
     }
@@ -163,15 +168,15 @@ mod tests {
     }
 
     #[test]
-    fn should_require_node_when_the_stage_is_built() {
+    fn should_require_node_and_chromium_when_the_stage_is_built() {
         // given
         let stage = stage();
 
         // when
-        let tool = stage.tool;
+        let tools = (stage.tool, stage.also_tool);
 
         // then
-        assert_eq!(tool, Some("node"));
+        assert_eq!(tools, (Some("node"), Some("chromium")));
         assert_eq!(stage.name, "browser");
     }
 }

@@ -73,6 +73,17 @@ const MAX_REPAIR_ROUNDS: usize = 4;
 /// what its walk found; the rest is left to a full reconcile (ADR 0050).
 pub(crate) const MAX_RELISTED: usize = 4096;
 
+/// Whether the root is watched by one recursive watch, started once (macOS's FSEvents, ADR
+/// 0075), rather than one non-recursive watch per directory (`inotify`). A `#[cfg]` item, not a
+/// `cfg!` branch, so each platform compiles only its own value (ADR 0080).
+#[cfg(target_os = "macos")]
+const RECURSIVE_ROOT: bool = true;
+/// Whether the root is watched by one recursive watch, started once (macOS's FSEvents, ADR
+/// 0075), rather than one non-recursive watch per directory (`inotify`). A `#[cfg]` item, not a
+/// `cfg!` branch, so each platform compiles only its own value (ADR 0080).
+#[cfg(not(target_os = "macos"))]
+const RECURSIVE_ROOT: bool = false;
+
 /// Why a directory is not watched. A category only: the OS error text and the absolute path
 /// never leave the adapter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -269,7 +280,8 @@ impl NotifyWatcher {
         display_root: &Path,
         handler: H,
     ) -> Result<Self, WatchFault> {
-        if cfg!(target_os = "macos") && display_root.to_str().is_none() {
+        #[cfg(target_os = "macos")]
+        if display_root.to_str().is_none() {
             return Err(WatchFault::Unavailable);
         }
         let inner = RecommendedWatcher::new(handler, Config::default())
@@ -418,7 +430,8 @@ impl NotifyWatcher {
         };
         // The watch may already be gone with its inode. If a link stood there, the watch was
         // its target's, which may be recorded under its own name: `repair` restores it.
-        if !cfg!(target_os = "macos") {
+        #[cfg(not(target_os = "macos"))]
+        {
             let _ = self.inner.unwatch(&path);
             self.withdrawn = true;
         }
@@ -434,7 +447,7 @@ impl NotifyWatcher {
     /// Puts `path` under native watch: a non-recursive watch of the directory, except on macOS
     /// where the one recursive watch of the root covers every directory and is started once.
     fn native_watch(&mut self, path: &Path) -> Result<(), WatchFault> {
-        self.native_watch_with(path, cfg!(target_os = "macos"))
+        self.native_watch_with(path, RECURSIVE_ROOT)
     }
 
     /// [`Self::native_watch`] with the strategy given, so Linux runs the macOS one in a test
@@ -466,7 +479,8 @@ impl NotifyWatcher {
     /// A removed watch frees one of the system's watches, so the watch limit is tried again.
     pub(crate) fn unwatch(&mut self, dirs: BTreeSet<RelPath>) {
         for dir in &dirs {
-            if !cfg!(target_os = "macos") {
+            #[cfg(not(target_os = "macos"))]
+            {
                 let path = self.absolute(dir);
                 let _ = self.inner.unwatch(&path);
             }
@@ -486,15 +500,19 @@ impl NotifyWatcher {
     ///
     /// FSEvents (macOS) watches paths, not inodes, so a replaced directory is still covered
     /// there, and every `watch` call restarts its stream: nothing is done on macOS.
+    #[cfg(not(target_os = "macos"))]
     pub(crate) fn refresh(&mut self, root: &RootDir, dir: &RelPath) -> Result<(), WatchFault> {
-        if cfg!(target_os = "macos") {
-            return Ok(());
-        }
         let refreshed = self.watch_one(root, dir);
         if refreshed.is_err() {
             self.unwatch(BTreeSet::from([dir.clone()]));
         }
         refreshed
+    }
+
+    /// [`Self::refresh`] on macOS: FSEvents covers a replaced directory by its path already.
+    #[cfg(target_os = "macos")]
+    pub(crate) fn refresh(&mut self, _root: &RootDir, _dir: &RelPath) -> Result<(), WatchFault> {
+        Ok(())
     }
 
     /// The absolute path of `dir`: the only place one is built.

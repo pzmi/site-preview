@@ -48,6 +48,11 @@ jobs:
           key: ${{ steps.rust.outputs.cache-key }}
           hit: ${{ steps.rust.outputs.cache-hit }}
 
+  # `doctor` runs first and fails unless every tool a `check` stage needs is installed at its
+  # pinned version, so this job installs the whole gate toolset: CI's toolset is asserted the
+  # same way as a laptop's (ADR 0080). `commits` checks the commit messages of a push to main
+  # (`github.event.before..HEAD`); on a pull request the base is the checked-out merge commit,
+  # so the range is empty and the stage passes with a note.
   static:
     name: Static quality
     runs-on: ubuntu-24.04
@@ -56,15 +61,39 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0 # the commits stage reads the pushed range
 
       - name: Set up Rust
         id: rust
         uses: ./.github/actions/setup-rust
         with:
           job: static
+          tools: cargo-nextest cargo-llvm-cov cargo-deny
+
+      - name: Install Gitleaks and actionlint
+        uses: ./.github/actions/install-scanners
+
+      # Node 22 is the line tools/versions.toml pins (its probe refuses any other major).
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+
+      - name: Install Quint and Chromium
+        run: |
+          npm ci --prefix formal
+          npm ci --prefix tests/e2e/browser
+          npx --prefix tests/e2e/browser playwright install chromium
+
+      - name: Pinned tools
+        run: cargo xtask doctor
 
       - name: Static quality
-        run: cargo xtask check --only fmt-check,fuzz-fmt,clippy,docs
+        env:
+          # The SHA reaches the xtask as an environment variable, never interpolated into a
+          # script; a pull request's base is its own merge commit (an empty range).
+          COMMITS_BASE: ${{ github.event_name == 'push' && github.event.before || github.sha }}
+        run: cargo xtask check --only fmt-check,fuzz-fmt,clippy,docs,commits
 
       - name: Save caches (main only)
         uses: ./.github/actions/save-rust-cache

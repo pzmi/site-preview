@@ -180,6 +180,8 @@ pub struct Facts {
     pub decisions: Vec<Decision>,
     /// Items marked `#[doc(hidden)]`.
     pub hidden: Vec<HiddenItem>,
+    /// `cfg!` invocations that name a platform, with their predicate.
+    pub platform_cfgs: Vec<(Site, String)>,
 }
 
 /// An item marked `#[doc(hidden)]`: a function, a method, a type or a constant.

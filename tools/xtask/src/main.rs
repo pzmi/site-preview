@@ -9,6 +9,7 @@ mod catalog;
 mod changed_lines;
 mod check;
 mod cli;
+mod commits;
 mod conformance;
 mod coverage;
 mod docs;
@@ -63,7 +64,7 @@ fn main() -> ExitCode {
         }
         Command::Sbom { out } => sbom::run(out.as_deref()),
         Command::Bench => bench::run(),
-        Command::Doctor => tools::doctor(),
+        Command::Doctor { json, all } => tools::doctor(*json, *all),
         Command::InstallTools { tools } => tools::install(tools),
     };
     ExitCode::from(u8::try_from(code).unwrap_or(1))

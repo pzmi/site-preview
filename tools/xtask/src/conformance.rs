@@ -148,7 +148,8 @@ pub fn stages(typecheck_only: bool) -> Vec<Stage> {
             "npx --prefix formal --no -- quint typecheck formal/*.qnt",
             typecheck,
         )
-        .needs("node"),
+        .needs("node")
+        .and_needs(tools::QUINT),
     ];
     if !typecheck_only {
         stages.push(
@@ -157,7 +158,8 @@ pub fn stages(typecheck_only: bool) -> Vec<Stage> {
                 "npx --prefix formal --no -- quint test --backend typescript --main <module> --match <its runs> formal/scenarios.qnt",
                 scenarios,
             )
-            .needs("node"),
+            .needs("node")
+        .and_needs(tools::QUINT),
         );
         stages.push(
             Stage::in_process(
@@ -165,7 +167,8 @@ pub fn stages(typecheck_only: bool) -> Vec<Stage> {
                 "npx --prefix formal --no -- quint run --backend typescript --step <relation> --invariants <all> --max-samples 1000 --max-steps 25 formal/<model>.qnt",
                 simulate,
             )
-            .needs("node"),
+            .needs("node")
+        .and_needs(tools::QUINT),
         );
         stages.push(
             Stage::in_process(
@@ -173,7 +176,8 @@ pub fn stages(typecheck_only: bool) -> Vec<Stage> {
                 "npx --prefix formal --no -- quint run --backend typescript --mbt <each trace of formal/traces/regression/manifest.toml>, compared with the committed file",
                 freshness,
             )
-            .needs("node"),
+            .needs("node")
+        .and_needs(tools::QUINT),
         );
         stages.push(
             Stage::in_process(
@@ -181,7 +185,8 @@ pub fn stages(typecheck_only: bool) -> Vec<Stage> {
                 "npx --prefix formal --no -- quint run --backend typescript --mbt --step <relation> --invariant allInvariants --n-traces 30 --max-steps 25 formal/<model>.qnt, recorded in formal/traces/generated/manifest.json",
                 generate,
             )
-            .needs("node"),
+            .needs("node")
+        .and_needs(tools::QUINT),
         );
         stages.push(
             Stage::new("conformance-replay", "cargo", &REPLAY_ARGS)
@@ -1058,11 +1063,16 @@ mod tests {
             let listed = crate::catalog::find(stage.name).expect("listed in the catalog");
             assert!(listed.in_check, "{} is in check (FORMAL-09)", stage.name);
             let want = if stage.name.starts_with("formal-") {
-                "node"
+                ("node", Some(tools::QUINT))
             } else {
-                "cargo-nextest"
+                ("cargo-nextest", None)
             };
-            assert_eq!(stage.tool, Some(want), "{}", stage.name);
+            assert_eq!(
+                (stage.tool, stage.also_tool),
+                (Some(want.0), want.1),
+                "{}",
+                stage.name
+            );
         }
     }
 

@@ -385,6 +385,7 @@ cargo xtask fuzz           # Bounded fuzz run or reproduction
 cargo xtask formal-verify  # Apalache/Kani deep lane (when configured)
 cargo xtask release-check  # Clean packaged artifact tests
 cargo xtask list-checks    # Machine-readable check catalog, policies, owners
+cargo xtask doctor         # Every tool a check stage needs: found, missing or wrong (ADR 0080)
 ```
 
 `check` must run formatting, lint, architecture + negative controls, unit/component/contract/integration/E2E, Rust doctests (nextest alone does not run doctests), conformance, coverage and security. It must not quietly downgrade a failed test to a warning. `quick` is explicitly not equivalent to `check`. If a local tool is absent, report actionable dependency instructions and a non-success exit code rather than claiming a green gate.

@@ -1,6 +1,7 @@
 //! Hygiene and test quality (foundation.md sections 3.3 and 5.2; doc/tasks.md rules 4 and
 //! 5): no unfinished code in production, no ignored tests, no unapproved lint suppression,
-//! no sleeps in tests outside the bounded poll helper, and named, structured tests.
+//! no sleeps in tests outside the bounded poll helper, named, structured tests, and no
+//! `cfg!` platform branches in `crates/*/src` (ADR 0080).
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -64,6 +65,7 @@ impl<'a> Hygiene<'a> {
         self.suppressions(facts, &mut out);
         sleeps(facts, self.policy, &mut out);
         tests(facts, &mut out);
+        platform_branches(facts, &mut out);
         out
     }
 
@@ -415,6 +417,29 @@ fn tests(facts: &Facts, out: &mut Vec<Diagnostic>) {
 }
 
 /// Whether `name` matches `^should_[a-z0-9_]+_when_[a-z0-9_]+$`.
+/// `ARCH-platform-branch` (ADR 0080): a `cfg!` that names a platform, in `crates/*/src`. Such a
+/// branch compiles every platform's arm everywhere, so on Linux the macOS arm is instrumented
+/// but never run, and the changed-lines gate counts it uncovered; `#[cfg]` items or blocks
+/// compile only the platform's own code.
+fn platform_branches(facts: &Facts, out: &mut Vec<Diagnostic>) {
+    if !facts.dir.starts_with("crates/") {
+        return;
+    }
+    let src = format!("{}/src/", facts.dir);
+    for (site, predicate) in &facts.platform_cfgs {
+        if site.file.starts_with(&src) {
+            out.push(Diagnostic::new(
+                Rule::PlatformBranch,
+                format!(
+                    "{} branches at run time on `cfg!({predicate})`: write the platform code as `#[cfg({predicate})]` items or blocks",
+                    facts.package
+                ),
+                site.at(),
+            ));
+        }
+    }
+}
+
 fn well_named(name: &str) -> bool {
     let Some(rest) = name.strip_prefix("should_") else {
         return false;

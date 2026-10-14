@@ -61,6 +61,41 @@ pub fn collect_target(
     }
 }
 
+/// The `cfg` predicate names that select a platform (ADR 0080).
+const PLATFORM_CFGS: &[&str] = &[
+    "target_os",
+    "target_family",
+    "target_vendor",
+    "target_env",
+    "unix",
+    "windows",
+];
+
+/// The predicate of a `cfg!` (also `std::cfg!`, `core::cfg!`) that names a platform.
+fn platform_cfg(mac: &syn::Macro) -> Option<String> {
+    let names: Vec<String> = mac
+        .path
+        .segments
+        .iter()
+        .map(|s| paths::name(&s.ident))
+        .collect();
+    let is_cfg = match names.as_slice() {
+        [cfg] => cfg == "cfg",
+        [krate, cfg] => matches!(krate.as_str(), "std" | "core") && cfg == "cfg",
+        _ => false,
+    };
+    (is_cfg && names_platform(&mac.tokens)).then(|| mac.tokens.to_string())
+}
+
+/// Whether `tokens`, at any depth, hold a platform predicate name.
+fn names_platform(tokens: &proc_macro2::TokenStream) -> bool {
+    tokens.clone().into_iter().any(|tree| match tree {
+        proc_macro2::TokenTree::Ident(ident) => PLATFORM_CFGS.contains(&ident.to_string().as_str()),
+        proc_macro2::TokenTree::Group(group) => names_platform(&group.stream()),
+        _ => false,
+    })
+}
+
 /// Macros whose `#[test]` functions are checked from their tokens (ADR 0036).
 pub const TEST_MACROS: &[&str] = &["proptest"];
 
@@ -533,6 +568,10 @@ impl<'ast> Visit<'ast> for Collector<'_> {
         }
         if is_include(&mac.path) {
             self.include(mac, line);
+        }
+        if let Some(predicate) = platform_cfg(mac) {
+            let site = self.site(line);
+            self.facts.platform_cfgs.push((site, predicate));
         }
         let test_macro = mac
             .path

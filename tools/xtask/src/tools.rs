@@ -209,10 +209,32 @@ fn require_in(tools: &[Tool], name: &str, path: Option<&OsStr>) -> Result<(), St
     }
 }
 
+/// The Quint of `formal/package-lock.json`, checked in `formal/node_modules` by its stages' own
+/// code ([`crate::conformance::require_quint`]), not by a probe of the manifest.
+pub const QUINT: &str = "quint";
+
+/// The Chromium build the pinned Playwright launches (`browser` stage); not in the manifest,
+/// checked by [`crate::browser::require_installed_chromium`].
+pub const CHROMIUM: &str = "chromium";
+
+/// The check of a requirement that is not a probe of `tools/versions.toml`, if `name` is one.
+fn special(name: &str) -> Option<Result<(), String>> {
+    match name {
+        QUINT => Some(crate::conformance::require_quint(
+            &crate::repo::root().join("formal"),
+        )),
+        CHROMIUM => Some(crate::browser::require_installed_chromium()),
+        _ => None,
+    }
+}
+
 /// Fails with an install hint unless `name` is installed at its pinned version. Every stage
 /// that invokes an external tool calls this first.
 pub fn require(name: &str) -> Result<(), String> {
-    require_in(&manifest()?, name, None)
+    match special(name) {
+        Some(result) => result,
+        None => require_in(&manifest()?, name, None),
+    }
 }
 
 /// Like [`require`], probing with `path` as the probe's `PATH` (a test of the missing-tool hint).
@@ -221,9 +243,180 @@ pub fn require_on(name: &str, path: &OsStr) -> Result<(), String> {
     require_in(&manifest()?, name, Some(path))
 }
 
-/// `cargo xtask doctor`: checks every pinned tool, prints one line each, and exits non-zero
-/// when any is missing or at the wrong version.
-pub fn doctor() -> i32 {
+/// What `doctor` found for one tool.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Found {
+    /// Installed at the pinned version.
+    Ok,
+    /// Not installed.
+    Missing,
+    /// Installed at another version; carries what the probe printed.
+    Wrong(String),
+    /// Not checked: the version is owned by a lockfile no `check` stage needs installed.
+    Unchecked,
+}
+
+/// One row of the `doctor` report.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Finding {
+    /// Manifest key, or [`QUINT`] or [`CHROMIUM`].
+    pub tool: String,
+    /// The pinned version.
+    pub version: String,
+    /// What was found.
+    pub found: Found,
+    /// What to do about it; empty when the tool is usable.
+    pub hint: String,
+    /// The `check` stages that need it; empty for a tool only other lanes need.
+    pub stages: Vec<&'static str>,
+}
+
+impl Finding {
+    /// Whether the tool blocks a stage: missing or at the wrong version.
+    fn bad(&self) -> bool {
+        matches!(self.found, Found::Missing | Found::Wrong(_))
+    }
+}
+
+/// Every tool the `stages` declare (`needs` and `and_needs`), with the stages needing each.
+pub fn needed_by(stages: &[crate::process::Stage]) -> BTreeMap<&'static str, Vec<&'static str>> {
+    let mut out: BTreeMap<&'static str, Vec<&'static str>> = BTreeMap::new();
+    for stage in stages {
+        for tool in stage.tool.into_iter().chain(stage.also_tool) {
+            out.entry(tool).or_default().push(stage.name);
+        }
+    }
+    out
+}
+
+/// How `doctor` checks a tool: `probe` runs a manifest probe, `special` answers for a
+/// requirement outside the manifest (tests replace both).
+struct Probes<'a> {
+    probe: &'a dyn Fn(&Tool) -> Status,
+    special: &'a dyn Fn(&str) -> Option<Result<(), String>>,
+}
+
+/// The finding for `name`, needed by `stages`.
+fn finding(name: &str, stages: Vec<&'static str>, tools: &[Tool], probes: &Probes<'_>) -> Finding {
+    let tool = tools.iter().find(|t| t.name == name);
+    let version = match (tool, name) {
+        (Some(tool), _) => tool.version.clone(),
+        (None, CHROMIUM) => crate::browser::CHROMIUM_BUILD.to_owned(),
+        (None, _) => String::new(),
+    };
+    let row = |found, hint: String| Finding {
+        tool: name.to_owned(),
+        version: version.clone(),
+        found,
+        hint,
+        stages: stages.clone(),
+    };
+    if let Some(result) = (probes.special)(name) {
+        return match result {
+            Ok(()) => row(Found::Ok, String::new()),
+            Err(message) if message.starts_with("wrong version") => {
+                let seen = message
+                    .split_once("found '")
+                    .and_then(|(_, rest)| rest.split_once('\''))
+                    .map_or("", |(seen, _)| seen)
+                    .to_owned();
+                row(Found::Wrong(seen), message)
+            }
+            Err(message) => row(Found::Missing, message),
+        };
+    }
+    let Some(tool) = tool else {
+        return row(
+            Found::Missing,
+            format!("unknown tool {name}: add it to tools/versions.toml"),
+        );
+    };
+    if let Method::Lockfile(file) = &tool.method {
+        return row(Found::Unchecked, format!("version owned by {file}"));
+    }
+    match (probes.probe)(&doctor_probe(tool)) {
+        Status::Ok => row(Found::Ok, String::new()),
+        Status::Missing => row(Found::Missing, install_hint(tool)),
+        Status::Wrong(seen) => row(Found::Wrong(seen), install_hint(tool)),
+    }
+}
+
+/// The report: every tool `needs` names, by name, then with `all` every other pinned tool.
+fn findings(
+    tools: &[Tool],
+    needs: &BTreeMap<&'static str, Vec<&'static str>>,
+    all: bool,
+    probes: &Probes<'_>,
+) -> Vec<Finding> {
+    let mut out: Vec<Finding> = needs
+        .iter()
+        .map(|(name, stages)| finding(name, stages.clone(), tools, probes))
+        .collect();
+    if all {
+        out.extend(
+            tools
+                .iter()
+                .filter(|t| !needs.contains_key(t.name.as_str()))
+                .map(|t| finding(&t.name, Vec::new(), tools, probes)),
+        );
+    }
+    out
+}
+
+/// One line per finding: `ok`, `missing`, `wrong` or `note`, the tool, its pin, the stages
+/// that need it and, unless it is usable, the hint.
+fn render_text(findings: &[Finding]) -> String {
+    let mut out = String::new();
+    for f in findings {
+        let stages = if f.stages.is_empty() {
+            " [not in check]".to_owned()
+        } else {
+            format!(" [{}]", f.stages.join(", "))
+        };
+        let head = format!("{} {}{stages}", f.tool, f.version);
+        let line = match &f.found {
+            Found::Ok => format!("ok      {head}"),
+            Found::Missing => format!("missing {head}: {}", f.hint),
+            Found::Wrong(seen) => format!("wrong   {head} (found '{seen}'): {}", f.hint),
+            Found::Unchecked => format!("note    {head}: {}", f.hint),
+        };
+        out.push_str(&line);
+        out.push('\n');
+    }
+    out
+}
+
+/// The findings as a JSON array, in the style of `list-checks`.
+fn render_json(findings: &[Finding]) -> String {
+    use crate::catalog::json_str;
+    let rows: Vec<String> = findings
+        .iter()
+        .map(|f| {
+            let (status, seen) = match &f.found {
+                Found::Ok => ("ok", None),
+                Found::Missing => ("missing", None),
+                Found::Wrong(seen) => ("wrong", Some(seen.as_str())),
+                Found::Unchecked => ("unchecked", None),
+            };
+            let stages: Vec<String> = f.stages.iter().map(|s| json_str(s)).collect();
+            format!(
+                "  {{\"tool\": {}, \"version\": {}, \"status\": {}, \"found\": {}, \"hint\": {}, \"stages\": [{}]}}",
+                json_str(&f.tool),
+                json_str(&f.version),
+                json_str(status),
+                seen.map_or_else(|| "null".to_owned(), json_str),
+                json_str(&f.hint),
+                stages.join(", ")
+            )
+        })
+        .collect();
+    format!("[\n{}\n]\n", rows.join(",\n"))
+}
+
+/// `cargo xtask doctor [--json] [--all]`: checks every tool a `check` stage needs (with `all`,
+/// every pinned tool), prints one line each (or JSON), and exits 1 when any is missing or at
+/// the wrong version (ADR 0080).
+pub fn doctor(json: bool, all: bool) -> i32 {
     let tools = match manifest() {
         Ok(tools) => tools,
         Err(err) => {
@@ -231,26 +424,17 @@ pub fn doctor() -> i32 {
             return 1;
         }
     };
-    let mut bad = 0;
-    for tool in &tools {
-        if matches!(tool.method, Method::Lockfile(_)) {
-            println!(
-                "note {} {}: version owned by {}",
-                tool.name,
-                tool.version,
-                match &tool.method {
-                    Method::Lockfile(f) => f.as_str(),
-                    _ => "",
-                }
-            );
-            continue;
-        }
-        let status = check_with_path(&doctor_probe(tool), None);
-        if status != Status::Ok {
-            bad += 1;
-        }
-        println!("{}", describe(tool, &status));
+    let probes = Probes {
+        probe: &|tool| check_with_path(tool, None),
+        special: &special,
+    };
+    let report = findings(&tools, &needed_by(&crate::check::stages()), all, &probes);
+    if json {
+        print!("{}", render_json(&report));
+    } else {
+        print!("{}", render_text(&report));
     }
+    let bad = report.iter().filter(|f| f.bad()).count();
     if bad > 0 {
         eprintln!("xtask: doctor: {bad} tool(s) missing or at the wrong version");
         1
@@ -403,6 +587,213 @@ mod tests {
         assert_eq!(probed.probe.first().cloned(), expected);
         assert_eq!(probed.probe[1..], apalache.probe[1..]);
         assert_eq!(doctor_probe(&nextest()), nextest());
+    }
+
+    fn fake_probes<'a>(
+        probe: &'a dyn Fn(&Tool) -> Status,
+        special: &'a dyn Fn(&str) -> Option<Result<(), String>>,
+    ) -> Probes<'a> {
+        Probes { probe, special }
+    }
+
+    #[test]
+    fn should_need_every_external_tool_of_the_gate_when_check_stages_are_read() {
+        // given
+        let stages = crate::check::stages();
+
+        // when
+        let needs = needed_by(&stages);
+
+        // then
+        for want in [
+            "actionlint",
+            "cargo-deny",
+            "cargo-llvm-cov",
+            "cargo-nextest",
+            "gitleaks",
+            "node",
+            "shellcheck",
+            QUINT,
+            CHROMIUM,
+        ] {
+            assert!(needs.contains_key(want), "{want} missing from {needs:?}");
+        }
+        assert_eq!(needs["shellcheck"], ["workflows"]);
+        let tools = manifest().unwrap();
+        let unknown: Vec<_> = needs
+            .keys()
+            .filter(|n| **n != CHROMIUM && !tools.iter().any(|t| t.name == **n))
+            .collect();
+        assert!(
+            unknown.is_empty(),
+            "not in tools/versions.toml: {unknown:?}"
+        );
+    }
+
+    #[test]
+    fn should_report_missing_and_wrong_tools_with_hints_when_probes_fail() {
+        // given
+        let tools = manifest().unwrap();
+        let needs = BTreeMap::from([
+            ("shellcheck", vec!["workflows"]),
+            ("cargo-deny", vec!["deny", "deny-fuzz"]),
+            ("node", vec!["client-js"]),
+        ]);
+        let probe = |tool: &Tool| match tool.name.as_str() {
+            "shellcheck" => Status::Missing,
+            "node" => Status::Wrong("v20.1.0".into()),
+            _ => Status::Ok,
+        };
+        let special = |_: &str| None;
+
+        // when
+        let report = findings(&tools, &needs, false, &fake_probes(&probe, &special));
+
+        // then
+        let by = |name: &str| report.iter().find(|f| f.tool == name).unwrap();
+        assert_eq!(report.len(), 3);
+        assert_eq!(by("cargo-deny").found, Found::Ok);
+        assert_eq!(by("cargo-deny").stages, ["deny", "deny-fuzz"]);
+        assert!(by("shellcheck").bad() && by("shellcheck").hint.contains("shellcheck/releases"));
+        assert_eq!(by("node").found, Found::Wrong("v20.1.0".into()));
+        let text = render_text(&report);
+        assert!(
+            text.contains("missing shellcheck 0.9.0 [workflows]: install manually from"),
+            "{text}"
+        );
+        assert!(
+            text.contains("wrong   node v22. [client-js] (found 'v20.1.0')"),
+            "{text}"
+        );
+        assert!(text.contains("ok      cargo-deny"), "{text}");
+    }
+
+    #[test]
+    fn should_check_quint_and_chromium_through_their_stage_code_when_doctor_runs() {
+        // given
+        let tools = manifest().unwrap();
+        let needs = BTreeMap::from([
+            (QUINT, vec!["formal-typecheck"]),
+            (CHROMIUM, vec!["browser"]),
+        ]);
+        let probe = |_: &Tool| Status::Ok;
+        let special = |name: &str| match name {
+            QUINT => Some(Err(
+                "wrong version of quint (found '0.1.0', want 0.33.0): run 'npm ci --prefix formal'"
+                    .to_owned(),
+            )),
+            CHROMIUM => Some(Err(
+                "missing Chromium build 1194: set PLAYWRIGHT_BROWSERS_PATH".to_owned(),
+            )),
+            _ => None,
+        };
+
+        // when
+        let report = findings(&tools, &needs, false, &fake_probes(&probe, &special));
+
+        // then
+        let by = |name: &str| report.iter().find(|f| f.tool == name).unwrap();
+        assert_eq!(by(QUINT).found, Found::Wrong("0.1.0".into()));
+        assert!(by(QUINT).hint.contains("npm ci --prefix formal"));
+        assert_eq!(by(CHROMIUM).found, Found::Missing);
+        assert_eq!(by(CHROMIUM).version, crate::browser::CHROMIUM_BUILD);
+    }
+
+    #[test]
+    fn should_add_the_other_lanes_tools_when_all_is_asked() {
+        // given
+        let tools = manifest().unwrap();
+        let needs = BTreeMap::from([("cargo-nextest", vec!["unit-tests"])]);
+        let probe = |_: &Tool| Status::Ok;
+        let special = |_: &str| None;
+
+        // when
+        let (some, every) = (
+            findings(&tools, &needs, false, &fake_probes(&probe, &special)),
+            findings(&tools, &needs, true, &fake_probes(&probe, &special)),
+        );
+
+        // then
+        assert_eq!(some.len(), 1);
+        assert_eq!(every.len(), tools.len());
+        let playwright = every.iter().find(|f| f.tool == "@playwright/test").unwrap();
+        assert_eq!(playwright.found, Found::Unchecked);
+        assert!(!playwright.bad());
+        assert!(
+            every
+                .iter()
+                .filter(|f| f.tool != "cargo-nextest")
+                .all(|f| f.stages.is_empty())
+        );
+        assert!(render_text(&every).contains("[not in check]"));
+    }
+
+    #[test]
+    fn should_report_an_unknown_tool_as_missing_when_the_manifest_lacks_it() {
+        // given
+        let needs = BTreeMap::from([("cargo-nope", vec!["x"])]);
+        let probe = |_: &Tool| Status::Ok;
+        let special = |_: &str| None;
+
+        // when
+        let report = findings(&[], &needs, false, &fake_probes(&probe, &special));
+
+        // then
+        assert_eq!(report[0].found, Found::Missing);
+        assert!(report[0].hint.contains("add it to tools/versions.toml"));
+    }
+
+    #[test]
+    fn should_render_one_json_object_per_tool_when_json_is_asked() {
+        // given
+        let report = [
+            Finding {
+                tool: "node".into(),
+                version: "v22.".into(),
+                found: Found::Wrong("v20.1.0".into()),
+                hint: "install \"it\"".into(),
+                stages: vec!["client-js", "browser"],
+            },
+            Finding {
+                tool: "gitleaks".into(),
+                version: "8.30.1".into(),
+                found: Found::Ok,
+                hint: String::new(),
+                stages: vec!["secrets"],
+            },
+        ];
+
+        // when
+        let json = render_json(&report);
+
+        // then
+        assert!(json.starts_with("[\n") && json.ends_with("\n]\n"), "{json}");
+        assert!(
+            json.contains(r#"{"tool": "node", "version": "v22.", "status": "wrong", "found": "v20.1.0", "hint": "install \"it\"", "stages": ["client-js", "browser"]}"#),
+            "{json}"
+        );
+        assert!(json.contains(r#""status": "ok", "found": null"#), "{json}");
+    }
+
+    #[test]
+    fn should_parse_json_and_all_flags_when_doctor_is_invoked() {
+        use crate::cli::{Cli, Command};
+        use clap::Parser;
+
+        // given
+        let args = ["xtask", "doctor", "--json", "--all"];
+
+        // when
+        let cli = Cli::try_parse_from(args).unwrap();
+
+        // then
+        assert!(matches!(
+            cli.command,
+            Command::Doctor {
+                json: true,
+                all: true
+            }
+        ));
     }
 
     #[test]

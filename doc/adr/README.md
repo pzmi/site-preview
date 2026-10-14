@@ -81,3 +81,4 @@ This directory holds the decisions behind site-preview, one file per decision, i
 | [0076](0076-release-check-archive-and-notices.md) | `release-check`: one archive layout, notices from `cargo about`, a smoke of the extracted binary | Accepted. Amended (fixed notice sections, reproducible archive) |
 | [0077](0077-documentation-consistency-stage.md) | Documentation consistency stage: a warning-code registry and the `docs` checks | Accepted |
 | [0078](0078-release-workflow.md) | The release workflow: tag-run only, drafts only, write in one job, dry runs on `dry-run-*` tags | Accepted. Amended (release trust boundary) |
+| [0080](0080-doctor-and-commit-message-stage.md) | Doctor asserts the gate's toolset, a `commits` stage, and no `cfg!` platform branches | Accepted |

@@ -106,6 +106,13 @@ pub const CATALOG: &[Check] = &[
         "DOC-05",
         true,
     ),
+    row(
+        "commits",
+        "static",
+        "git log --no-merges <$COMMITS_BASE, else origin/main>..HEAD: `<ID>: summary` under 72 characters, imperative; trailers Signed-off-by, Co-Authored-By, Claude-Session, in that order, last",
+        "FND-05",
+        true,
+    ),
     row("fmt", "tooling", "cargo xtask fmt", "FND-03", false),
     row("quick", "gate", "cargo xtask quick", "FND-03", false),
     row(
@@ -403,7 +410,7 @@ mod tests {
             let line = format!("\"id\": \"{}\"", rule.id());
             assert!(json.contains(&line), "{line} missing from {json}");
             assert!(
-                ["ARCH-0", "FORMAL-"]
+                ["ARCH-0", "FORMAL-", "FND-"]
                     .iter()
                     .any(|task| rule.owner().starts_with(task)),
                 "{}",

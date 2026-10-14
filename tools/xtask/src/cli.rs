@@ -109,8 +109,17 @@ pub enum Command {
     Bench,
     /// Print the check catalog as JSON.
     ListChecks,
-    /// Report missing or wrong-version dev tools.
-    Doctor,
+    /// Report every pinned tool a `check` stage needs: found, missing or at the wrong version,
+    /// with its install hint. Exits 1 when any is missing or wrong.
+    Doctor {
+        /// Print the report as a JSON array instead of one line per tool.
+        #[arg(long)]
+        json: bool,
+        /// Also check the pinned tools only other lanes need (mutation, fuzz, formal-verify,
+        /// release-check, sbom).
+        #[arg(long)]
+        all: bool,
+    },
     /// Install pinned dev tools.
     InstallTools {
         /// Tools to install; all when empty.
@@ -138,7 +147,7 @@ impl Command {
             Self::Sbom { .. } => "sbom",
             Self::Bench => "bench",
             Self::ListChecks => "list-checks",
-            Self::Doctor => "doctor",
+            Self::Doctor { .. } => "doctor",
             Self::InstallTools { .. } => "install-tools",
         }
     }

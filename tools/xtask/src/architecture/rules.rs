@@ -135,6 +135,9 @@ rules! {
     TestStructure => "ARCH-test-structure", "ARCH-07",
         "A test function's body lacks the // given, // when and // then comments in that order.",
         ["missing-given-when-then"];
+    PlatformBranch => "ARCH-platform-branch", "FND-05",
+        "Code under crates/*/src branches at run time on cfg!(target_os, target_family, target_vendor, target_env, unix or windows) instead of #[cfg] items or blocks.",
+        ["cfg-macro-platform-branch"];
     CommandIsolation => "ARCH-command-isolation", "ARCH-09",
         "preview-application command code names crate::queries or an HTTP type (axum, http, hyper, tower, preview_adapter_http), also through re-exports.",
         ["command-imports-query", "command-names-http-dto"];

@@ -72,6 +72,7 @@ pub fn stage() -> Stage {
         run,
     )
     .needs("cargo-llvm-cov")
+    .and_needs("cargo-nextest")
 }
 
 /// The floors in `coverage-floor.toml`.
@@ -729,10 +730,10 @@ end_of_record
         let stage = stage();
 
         // when
-        let tool = stage.tool;
+        let tools = (stage.tool, stage.also_tool);
 
         // then
         assert_eq!(stage.name, "coverage");
-        assert_eq!(tool, Some("cargo-llvm-cov"));
+        assert_eq!(tools, (Some("cargo-llvm-cov"), Some("cargo-nextest")));
     }
 }

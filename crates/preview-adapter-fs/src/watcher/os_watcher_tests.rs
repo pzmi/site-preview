@@ -128,18 +128,18 @@ fn should_not_register_ignored_directory_when_started() {
     // macOS watches the root with one recursive stream (ADR 0075), which reports ignored
     // subtrees to `notify`; the bridge drops them, and the contract case `ignored_subtree`
     // (`tests/change_source_contract.rs`) pins that on every platform.
-    if cfg!(target_os = "macos") {
-        return;
+    #[cfg(not(target_os = "macos"))]
+    {
+        let leaked: Vec<_> = seen
+            .iter()
+            .filter(|path| {
+                ["node_modules", ".git", "docs/vendor"]
+                    .iter()
+                    .any(|ignored| path.starts_with(site.display_path.join(ignored)))
+            })
+            .collect();
+        assert!(leaked.is_empty(), "ignored paths notified: {leaked:?}");
     }
-    let leaked: Vec<_> = seen
-        .iter()
-        .filter(|path| {
-            ["node_modules", ".git", "docs/vendor"]
-                .iter()
-                .any(|ignored| path.starts_with(site.display_path.join(ignored)))
-        })
-        .collect();
-    assert!(leaked.is_empty(), "ignored paths notified: {leaked:?}");
 }
 
 #[test]

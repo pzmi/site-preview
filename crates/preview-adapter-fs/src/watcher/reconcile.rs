@@ -330,9 +330,8 @@ impl NotifyWatcher {
             }
         }
         // FSEvents keeps a path's watch, so the listing of a kept directory is current there.
-        if cfg!(target_os = "macos") {
-            refreshed.clear();
-        }
+        #[cfg(target_os = "macos")]
+        refreshed.clear();
         let added = Traversal {
             dirs: diff.add,
             errors: traversal.errors,

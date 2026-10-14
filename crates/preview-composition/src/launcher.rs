@@ -28,11 +28,11 @@ pub struct SystemOpener;
 
 impl SystemOpener {
     /// The launcher program of this platform.
-    const PROGRAM: &'static str = if cfg!(target_os = "macos") {
-        "open"
-    } else {
-        "xdg-open"
-    };
+    #[cfg(target_os = "macos")]
+    const PROGRAM: &'static str = "open";
+    /// The launcher program of this platform.
+    #[cfg(not(target_os = "macos"))]
+    const PROGRAM: &'static str = "xdg-open";
 }
 
 /// The command that opens `url` with `program`: the URL is a single argument, never parsed
