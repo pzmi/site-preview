@@ -1,6 +1,6 @@
 # Architecture decision records
 
-This directory holds the decisions behind site-preview, one file per decision, in Michael Nygard's lightweight ADR format: `# NNNN. Title`, a date, then **Status**, **Context**, **Decision** and **Consequences**, each record about 30 lines or fewer. To add a record, copy [`template.md`](template.md), use the next free number, and add a row here in the same commit. A decision is never edited away: a reversal is a new ADR, and the old record's status becomes `Superseded by NNNN`. **Accepted** records are owner decisions. **Proposed** records are planner defaults that the owner may override. `doc/tasks.md` cites decision D*n* as ADR *n*+1.
+This directory holds the decisions behind site-preview, one file per decision, in Michael Nygard's lightweight ADR format: `# NNNN. Title`, a date, then **Status**, **Context**, **Decision** and **Consequences**, each record about 30 lines or fewer. To add a record, run `cargo xtask adr new "<title>"` (or `--number N` for a number the orchestrator reserved): it copies [`template.md`](template.md) with the next free number and adds the row here; commit both together. `cargo xtask adr index --fix` rewrites the rows from the files. A decision is never edited away: a reversal is a new ADR, and the old record's status becomes `Superseded by NNNN`. **Accepted** records are owner decisions. **Proposed** records are planner defaults that the owner may override. `doc/tasks.md` cites decision D*n* as ADR *n*+1.
 
 | ADR | Title | Status |
 |---|---|---|
@@ -82,3 +82,4 @@ This directory holds the decisions behind site-preview, one file per decision, i
 | [0077](0077-documentation-consistency-stage.md) | Documentation consistency stage: a warning-code registry and the `docs` checks | Accepted |
 | [0078](0078-release-workflow.md) | The release workflow: tag-run only, drafts only, write in one job, dry runs on `dry-run-*` tags | Accepted. Amended (release trust boundary) |
 | [0080](0080-doctor-and-commit-message-stage.md) | Doctor asserts the gate's toolset, a `commits` stage, and no `cfg!` platform branches | Accepted |
+| [0081](0081-adr-allocation-and-landing-command.md) | ADR allocation and landing command | Accepted |

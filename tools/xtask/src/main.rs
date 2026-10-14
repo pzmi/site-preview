@@ -1,6 +1,7 @@
 //! Repository automation entry point, invoked as `cargo xtask`.
 
 mod action_pins;
+mod adr;
 mod apalache;
 mod architecture;
 mod bench;
@@ -15,6 +16,7 @@ mod coverage;
 mod docs;
 mod formal_verify;
 mod fuzz;
+mod land;
 mod mutation;
 mod process;
 mod quick;
@@ -28,7 +30,7 @@ mod tools;
 use std::process::{Command as Proc, ExitCode};
 
 use clap::Parser;
-use cli::{Cli, Command};
+use cli::{AdrAction, Cli, Command};
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
@@ -66,6 +68,37 @@ fn main() -> ExitCode {
         Command::Bench => bench::run(),
         Command::Doctor { json, all } => tools::doctor(*json, *all),
         Command::InstallTools { tools } => tools::install(tools),
+        Command::Adr { action } => match action {
+            AdrAction::New {
+                title,
+                number,
+                date,
+                status,
+            } => adr::run_new(&adr::NewAdr {
+                title,
+                number: *number,
+                date: date.as_deref(),
+                status,
+            }),
+            AdrAction::Index { fix } => adr::run_index(*fix),
+        },
+        Command::Land {
+            refs,
+            push,
+            also,
+            no_push: _,
+            log,
+        } => {
+            let target = match push.as_deref() {
+                Some([remote, branch]) => land::Target::Push {
+                    remote: remote.clone(),
+                    branch: branch.clone(),
+                    also: also.clone(),
+                },
+                _ => land::Target::NoPush,
+            };
+            land::run(refs, &target, log.clone())
+        }
     };
     ExitCode::from(u8::try_from(code).unwrap_or(1))
 }

@@ -36,8 +36,8 @@ use crate::cli::Cli;
 use crate::process::Stage;
 use crate::repo;
 
-const ADR_DIR: &str = "doc/adr";
-const ADR_INDEX: &str = "doc/adr/README.md";
+pub(crate) const ADR_DIR: &str = "doc/adr";
+pub(crate) const ADR_INDEX: &str = "doc/adr/README.md";
 const RULES_DOC: &str = "doc/architecture-rules.md";
 const README: &str = "README.md";
 const AGENTS: &str = "AGENTS.md";
@@ -59,6 +59,9 @@ fn run() -> i32 {
     problems.dedup();
     for problem in &problems {
         eprintln!("docs: {problem}");
+    }
+    if problems.iter().any(|p| p.starts_with(ADR_INDEX)) {
+        eprintln!("docs: `cargo xtask adr index --fix` rewrites the index rows from the ADR files");
     }
     if problems.is_empty() { 0 } else { 1 }
 }
@@ -599,14 +602,14 @@ fn xtask_mentions(code: &str) -> Vec<String> {
 /// The kinds of ADR status. What follows the kind (`(planner default)`, `. Amended by 0069`)
 /// is annotation.
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum StatusKind {
+pub(crate) enum StatusKind {
     Proposed,
     Accepted,
     Superseded(String),
 }
 
 impl StatusKind {
-    fn shown(&self) -> String {
+    pub(crate) fn shown(&self) -> String {
         match self {
             Self::Proposed => "Proposed".to_owned(),
             Self::Accepted => "Accepted".to_owned(),
@@ -616,7 +619,7 @@ impl StatusKind {
 }
 
 /// Parses the leading status kind of `text`.
-fn parse_status(text: &str) -> Result<StatusKind, String> {
+pub(crate) fn parse_status(text: &str) -> Result<StatusKind, String> {
     let text = text.trim();
     let boundary = |rest: &str| !rest.starts_with(|c: char| c.is_alphanumeric());
     for (word, kind) in [
@@ -642,15 +645,21 @@ fn parse_status(text: &str) -> Result<StatusKind, String> {
 }
 
 /// One ADR file.
-struct Adr {
-    file: String,
-    number: String,
-    title: Option<String>,
-    status: Result<StatusKind, String>,
+pub(crate) struct Adr {
+    /// Root-relative path, `doc/adr/NNNN-slug.md`.
+    pub(crate) file: String,
+    /// The four digits of the file name.
+    pub(crate) number: String,
+    /// The title after `# NNNN. `, when the first line has that shape.
+    pub(crate) title: Option<String>,
+    /// The leading status kind of the status section.
+    pub(crate) status: Result<StatusKind, String>,
+    /// The first paragraph of the status section, joined into one line (`adr index`).
+    pub(crate) status_text: Option<String>,
 }
 
 /// Reads `doc/adr/NNNN-*.md`: file name, title line and status section.
-fn read_adrs(root: &Path) -> (Vec<Adr>, Vec<String>) {
+pub(crate) fn read_adrs(root: &Path) -> (Vec<Adr>, Vec<String>) {
     let mut problems = Vec::new();
     let mut files = Vec::new();
     walk(
@@ -701,7 +710,9 @@ fn read_adrs(root: &Path) -> (Vec<Adr>, Vec<String>) {
                 None
             }
         };
-        let status = status_section(&text)
+        let status_text = status_section(&text);
+        let status = status_text
+            .clone()
             .ok_or_else(|| "no `## Status` section with text".to_owned())
             .and_then(|s| parse_status(&s));
         if let Err(err) = &status {
@@ -712,6 +723,7 @@ fn read_adrs(root: &Path) -> (Vec<Adr>, Vec<String>) {
             number,
             title,
             status,
+            status_text,
         });
     }
     (adrs, problems)

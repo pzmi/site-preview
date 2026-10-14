@@ -296,6 +296,20 @@ pub const CATALOG: &[Check] = &[
         "FND-04",
         false,
     ),
+    row(
+        "adr",
+        "tooling",
+        "cargo xtask adr new <title> [--number N] [--date YYYY-MM-DD] [--status TEXT] | cargo xtask adr index [--fix]",
+        "FND-05",
+        false,
+    ),
+    row(
+        "land",
+        "tooling",
+        "cargo xtask land <ref>... (--push <remote> <branch> [--also <branch>]... | --no-push) [--log <path>]",
+        "FND-05",
+        false,
+    ),
 ];
 
 /// Every catalog row, then one row per architecture rule id (ARCH-01..07): each runs in the

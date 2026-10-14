@@ -205,6 +205,9 @@ cargo xtask doctor --all   # also the tools only other lanes need (mutation, fuz
 cargo xtask doctor --json  # the same report as a JSON array: tool, version, status, found, hint, stages
 cargo xtask install-tools  # install the pinned tools that doctor reports missing
 cargo xtask check --only commits   # commit messages of $COMMITS_BASE..HEAD (default origin/main..HEAD)
+cargo xtask adr new "<title>" [--number N]   # a new ADR from doc/adr/template.md and its index row
+cargo xtask adr index [--fix]                # compare (or rewrite) the ADR index rows with the files
+cargo xtask land <ref>... --push origin main [--also <branch>]   # cherry-pick onto a clean, current main, check, push when green (or --no-push)
 ```
 
 `doctor` reads the tools each `check` stage declares, so it covers what a full `check` will
