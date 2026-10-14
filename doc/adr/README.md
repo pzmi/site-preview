@@ -43,7 +43,7 @@ This directory holds the decisions behind site-preview, one file per decision, i
 | [0037](0037-host-origin-parsing-and-core-net.md) | Host and Origin parsing details; `core::net` value types in the domain | Accepted |
 | [0038](0038-application-port-shapes.md) | Application port shapes: synchronous content, async change source, no adapter types | Accepted |
 | [0039](0039-request-resolution-outcomes.md) | Request resolution outcomes: no existence leak, snapshot before open | Accepted |
-| [0040](0040-change-coordinator-recovery-and-exhaustion.md) | Change coordinator: recovery signal, reconcile requests and revision exhaustion | Accepted |
+| [0040](0040-change-coordinator-recovery-and-exhaustion.md) | Change coordinator: recovery signal, reconcile requests and revision exhaustion | Accepted. Amended by 0054 |
 | [0041](0041-workflow-pin-parsing-and-security-stage-scope.md) | Workflow pin parsing, secret-scan preconditions and the unmaintained-crate scope | Accepted |
 | [0042](0042-command-query-and-observability-rules.md) | Command, query and observability rules: selectors and syntax-level flow | Accepted |
 | [0043](0043-lol-html-rewriter-and-mpl-exceptions.md) | The `lol_html` rewriter: strict parsing, verified output, scoped MPL-2.0 exceptions | Accepted |
@@ -51,21 +51,21 @@ This directory holds the decisions behind site-preview, one file per decision, i
 | [0045](0045-connection-limits-and-bounded-shutdown.md) | Connection limits and a bounded shutdown drain | Accepted |
 | [0046](0046-html-memory-budget-and-warning-sink.md) | HTML memory budget, HEAD parity and the warning sink | Accepted |
 | [0047](0047-notify-watcher-registration.md) | The `notify` watcher: per-directory registration, failure reports, scoped CC0-1.0 exception | Accepted |
-| [0048](0048-watcher-callback-bridge.md) | The watcher's callback bridge: bounded queue, loss and failure flags, adapter-side filtering | Accepted |
+| [0048](0048-watcher-callback-bridge.md) | The watcher's callback bridge: bounded queue, loss and failure flags, adapter-side filtering | Accepted. Amended by 0067 |
 | [0049](0049-watcher-pipeline-task.md) | The watcher pipeline task: deadline-only timer, reconcile hook, cancellation and watcher warnings | Accepted |
-| [0050](0050-watch-set-reconciliation.md) | Watch-set reconciliation: source-held hints, voided entries, in-place refresh, bounded retries | Accepted |
+| [0050](0050-watch-set-reconciliation.md) | Watch-set reconciliation: source-held hints, voided entries, in-place refresh, bounded retries | Accepted. Amended by 0051 |
 | [0051](0051-lifecycle-driven-server-handle.md) | The server handle: start-up and shutdown driven by the domain lifecycle machine | Accepted |
 | [0052](0052-quint-toolchain-and-lifecycle-model.md) | Quint toolchain: lockfile-only evaluator; the lifecycle model's two step relations | Accepted |
 | [0053](0053-conformance-harness.md) | Conformance harness: an explicit ITF replay path; Quint Connect not adopted yet | Accepted |
-| [0054](0054-watcher-model.md) | The watcher model: abstraction, a settled-state encoding of no lost change, a full reload at recovery, root deletion | Accepted |
+| [0054](0054-watcher-model.md) | The watcher model: abstraction, a settled-state encoding of no lost change, a full reload at recovery, root deletion | Accepted. Amended by 0067 |
 | [0056](0056-lifecycle-conformance-driver.md) | Lifecycle conformance driver: composition seams, scripted named traces, a sampling relation | Accepted. Amended by 0070 |
 | [0057](0057-reload-conformance-driver.md) | Reload conformance driver: in-process SSE bodies, the client's choice read from the model | Accepted. Amended by 0070 |
 | [0058](0058-watcher-conformance-driver.md) | Watcher conformance driver: the coordinator in process, the environment from the trace | Accepted. Amended by 0070 |
 | [0059](0059-conformance-negative-controls.md) | Conformance negative controls: faults behind the drivers' seams, a publish seam in the reload driver | Accepted. Amended by 0060, 0070 |
 | [0060](0060-conformance-stage-and-trace-corpus.md) | The `conformance` stage in `check`, the trace corpus manifests and `formal.yml` | Accepted. Amended by 0069, 0072 |
-| [0061](0061-apalache-formal-verify-scheduled-lane.md) | Apalache in a scheduled `formal-verify` lane | Accepted. Amended (SHA-256 pin) |
+| [0061](0061-apalache-formal-verify-scheduled-lane.md) | Apalache in a scheduled `formal-verify` lane | Accepted. Amended 2026-10-13 |
 | [0062](0062-coverage-stage-scope-and-floors.md) | The `coverage` stage: what is measured, and the floors | Accepted. Amended by 0066 |
-| [0063](0063-fuzz-crate-and-architecture-fuzz-only.md) | The fuzz crate: a separate workspace, a `fuzz_only` category and the `xtask fuzz` command | Accepted |
+| [0063](0063-fuzz-crate-and-architecture-fuzz-only.md) | The fuzz crate: a separate workspace, a `fuzz_only` category and the `xtask fuzz` command | Accepted. Amended by 0065 |
 | [0064](0064-changed-line-gate-in-check.md) | The changed-line gate: base, report freshness, and its place in `check` | Accepted. Amended by 0069 |
 | [0065](0065-fuzz-targets-beyond-the-domain-and-fuzz-lockfile-audit.md) | Fuzz targets beyond the domain, and the audit of the fuzz lockfile | Accepted |
 | [0066](0066-coverage-overall-floor-over-crates-only.md) | The overall coverage floor over `crates/` only; `xtask` report only | Accepted |
@@ -78,9 +78,9 @@ This directory holds the decisions behind site-preview, one file per decision, i
 | [0073](0073-root-removal-through-the-parent-watch.md) | A root's removal is notified through a watch on its parent | Accepted |
 | [0074](0074-native-platform-matrix.md) | Native platform matrix: a `platform` job on four runners, one extra non-gate stage | Accepted |
 | [0075](0075-macos-single-recursive-stream.md) | macOS: one recursive FSEvents stream, ignored subtrees dropped in the bridge | Accepted |
-| [0076](0076-release-check-archive-and-notices.md) | `release-check`: one archive layout, notices from `cargo about`, a smoke of the extracted binary | Accepted. Amended (fixed notice sections, reproducible archive) |
+| [0076](0076-release-check-archive-and-notices.md) | `release-check`: one archive layout, notices from `cargo about`, a smoke of the extracted binary | Accepted. Amended 2026-10-14 |
 | [0077](0077-documentation-consistency-stage.md) | Documentation consistency stage: a warning-code registry and the `docs` checks | Accepted |
-| [0078](0078-release-workflow.md) | The release workflow: tag-run only, drafts only, write in one job, dry runs on `dry-run-*` tags | Accepted. Amended (release trust boundary) |
+| [0078](0078-release-workflow.md) | The release workflow: tag-run only, drafts only, write in one job, dry runs on `dry-run-*` tags | Accepted. Amended 2026-10-14 |
 | [0079](0079-agent-process-rules.md) | Agent process rules from the P0 build | Accepted |
 | [0080](0080-doctor-and-commit-message-stage.md) | Doctor asserts the gate's toolset, a `commits` stage, and no `cfg!` platform branches | Accepted |
 | [0081](0081-adr-allocation-and-landing-command.md) | ADR allocation and landing command | Accepted |
