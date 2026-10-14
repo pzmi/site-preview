@@ -182,6 +182,7 @@ Each decision is an ADR. Tasks cite the D-id, and D*n* is ADR *n*+1. ADR 0001 is
 | DOC-05 | Documentation consistency check | OPS-04 | sonnet | | OPS-05 |
 | OPS-06 | `release.yml`: archives, SHA256SUMS, provenance, SBOM | OPS-05, DOC-05 | opus | ⛳ | |
 | OPS-07 | v0.1.0: changelog, install docs, tag handoff | OPS-06, E2E-08 | haiku | | |
+| OPS-08 | External OSS services: Scorecard, Codecov, CodeRabbit | OPS-06 | sonnet | | OPS-07 |
 
 **Execution order:** FND → ARCH → OPS-01, DOC-01, SEC-01..03 interleaved with DOM → TEST-02, APP, TEST-03, APP-04 ⛳ → ARCH-09 with FS-01..04, TEST-04 and ARCH-08 → HTTP-01, HTTP-02 → **CLI-01 (first working binary)** → HTTP-03..05, CLI-02 → E2E-01 ⛳ (M1) → HTTP-06..12 → E2E-02 ⛳ (M2) ∥ HTTP-13..16 (hot-reload client) → FS-05..08, CLI-03, FS-09, TEST-05 → E2E-03 ⛳ (M3) → CLI-04..07 → E2E-04..06, E2E-09 → E2E-07 ⛳ (M4) → FORMAL-01..10 ⛳ → TEST-06..09, SEC-04..05 ⛳ → E2E-08, OPS-02..04 ⛳ → OPS-05, DOC-05, OPS-06 ⛳ → OPS-07.
 
@@ -1060,6 +1061,13 @@ Each decision is an ADR. Tasks cite the D-id, and D*n* is ADR *n*+1. ADR 0001 is
 - **Create/Change:** `CHANGELOG.md` (the 0.1.0 entry). In the README Install section: a minimal `curl … | tar xz` install command per platform, `sha256sum -c` verification, and `gh attestation verify`. Add `doc/release-checklist.md`, mapping each plan §16 item to the evidence (CI job, test name, report). **The owner pushes tag `v0.1.0`**, never an agent.
 - **Accept:** every plan §16 checkbox has linked evidence in `doc/release-checklist.md`. (owner) After the owner tags, the release workflow is green, and the 4 archives preview the fixture on clean runners (the plan §11 M5 exit gate).
 - **Impact:** public API (first release).
+
+### OPS-08: External OSS services: Scorecard, Codecov, CodeRabbit
+- **Depends on:** OPS-06. **Model:** sonnet. **Size:** S. Parallel with OPS-07.
+- **Read:** ADR 0082, ADR 0032, ADR 0066, ADR 0072; `doc/required-checks.md` ("Other workflows").
+- **Create/Change:** `.github/workflows/scorecard.yml` (OpenSSF Scorecard, `publish_results`, SARIF to code scanning, write permissions in its one job). `.github/workflows/coverage-report.yml` (`workflow_run` of CI: the `coverage` job's LCOV artifact of a green push to `main`, uploaded to Codecov with OIDC; no checkout, not in `Required`). `codecov.yml` (path fix, `crates/` only, informational statuses, no comment). `.coderabbit.yaml` (review instructions from `CLAUDE.md`; Clippy, Gitleaks and actionlint off). The Scorecard badge in the README; the new workflows in `doc/required-checks.md` and `doc/security.md`.
+- **Accept:** `cargo xtask check` passes (`workflows` and `action-pins` cover the new files). (owner) The CodeRabbit app is installed, the repository is active on Codecov, secret scanning and push protection are on; then a push to `main` turns `Scorecard` and `Coverage report` green.
+- **Impact:** security boundary (two workflows hold `id-token: write`).
 
 ---
 

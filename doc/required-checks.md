@@ -48,7 +48,10 @@ test in `tools/xtask/src/check.rs` fails when a stage is in none or in two.
 These are not in `required`. `formal.yml` (Apalache, extended simulation, Miri), `fuzz.yml`,
 `mutation.yml` and `security.yml` run on a schedule or by hand. `release.yml` runs on a pushed
 `v*` tag or by hand from a tag, and makes a draft release ([`release.md`](release.md)). `codeql.yml` also runs on pushes
-and pull requests, as its own workflow. A red run of any of them is reported to the owner and
+and pull requests, as its own workflow. `scorecard.yml` (OpenSSF Scorecard) runs on pushes to `main`,
+weekly and by hand. `coverage-report.yml` runs after a green CI run of a push to `main` and
+uploads its LCOV report to Codecov, which only reports and never gates
+([ADR 0082](adr/0082-external-oss-services-scorecard-codecov-and-an-ai-pr-reviewer.md)). A red run of any of them is reported to the owner and
 fixed as a task, but does not make `Required` red.
 
 ## When a check goes red

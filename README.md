@@ -1,5 +1,7 @@
 # site-preview
 
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/pzmi/site-preview/badge)](https://scorecard.dev/viewer/?uri=github.com/pzmi/site-preview)
+
 Zero-configuration local static-site preview server with live reload, as a single Rust binary.
 
 > **Status: pre-release.** The server, live reload and `--json` interface work. Version 0.1.0 is prepared but **not published until the owner tags `v0.1.0`**; until then the release assets below do not exist and you can [build from source](#development).

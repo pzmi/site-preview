@@ -1,0 +1,27 @@
+# Codecov reports the coverage the `coverage` job of ci.yml measures; it never gates (ADR 0082).
+# The gate is coverage-floor.toml and the changed-lines stage of `cargo xtask check`.
+
+codecov:
+  require_ci_to_pass: true
+
+# cargo-llvm-cov writes absolute paths; the report is made on a GitHub-hosted runner.
+fixes:
+  - "/home/runner/work/site-preview/site-preview/::"
+
+# The floored figure is crates/ only; tools/xtask is measured but never floored (ADR 0066).
+ignore:
+  - "tools/**"
+  - "fuzz/**"
+
+coverage:
+  precision: 2
+  round: down
+  status:
+    project:
+      default:
+        informational: true
+    patch:
+      default:
+        informational: true
+
+comment: false

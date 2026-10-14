@@ -1,0 +1,65 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+#
+# CodeRabbit reviews pull requests as a reviewer independent of the agents that write the code
+# (ADR 0082). Its findings are claims to verify, never a gate. Integration is direct on `main`
+# (ADR 0032), so it sees Dependabot's and outside contributors' pull requests. Clippy, Gitleaks
+# and actionlint run in the gate, so their CodeRabbit copies are off.
+
+language: en-US
+
+reviews:
+  profile: chill
+  request_changes_workflow: false
+  high_level_summary: true
+  poem: false
+  review_status: true
+  collapse_walkthrough: true
+  auto_review:
+    enabled: true
+    drafts: false
+  tools:
+    clippy:
+      enabled: false
+    gitleaks:
+      enabled: false
+    actionlint:
+      enabled: false
+  path_instructions:
+    - path: "crates/preview-domain/**"
+      instructions: >-
+        Pure domain (foundation.md section 2.2): flag any use of std::fs, std::net,
+        std::process, environment variables, the clock, randomness, tokio or HTTP.
+    - path: "crates/preview-adapter-fs/**"
+      instructions: >-
+        Path confinement (plan.md section 5): one decode, a component deny list, per-component
+        openat with O_NOFOLLOW. Flag canonicalize followed by starts_with, and any path that
+        follows a symlink below the root.
+    - path: "crates/preview-adapter-http/**"
+      instructions: >-
+        Check the Host and Origin policy (plan.md section 5.4, ADR 0021), the HTML injection
+        contract (plan.md section 6) and the SSE reload protocol (plan.md section 7). Logs must
+        not contain absolute paths, query strings or secrets.
+    - path: "**/*.rs"
+      instructions: >-
+        No unsafe code, todo!, unimplemented!, dbg!, #[ignore], or #[allow] without an ADR.
+        Platform code uses #[cfg] items, never a cfg!(target_os) runtime branch. Tests are named
+        should_<outcome>_when_<condition> with given/when/then comments, use no sleeps and no
+        mocking frameworks.
+    - path: ".github/workflows/**"
+      instructions: >-
+        Every action is pinned by full commit SHA with a version comment; permissions are least
+        privilege per job; no expression is interpolated into a run script.
+    - path: "formal/**"
+      instructions: >-
+        Model first (foundation.md section 6.2): an invariant is never removed to get green.
+
+knowledge_base:
+  code_guidelines:
+    enabled: true
+    filePatterns:
+      - "CLAUDE.md"
+      - "AGENTS.md"
+      - "doc/foundation.md"
+
+chat:
+  auto_reply: true
