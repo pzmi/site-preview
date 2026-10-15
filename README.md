@@ -327,6 +327,8 @@ grep " site-preview-$TARGET.tar.gz\$" SHA256SUMS | shasum -a 256 -c
 gh attestation verify "site-preview-$TARGET.tar.gz" --repo pzmi/site-preview \
   --signer-workflow pzmi/site-preview/.github/workflows/release.yml \
   --source-ref refs/tags/v0.1.0
+# The release also carries the attestation itself: add
+# `--bundle site-preview.intoto.jsonl` (downloaded from $BASE) to check against that copy.
 
 mkdir -p ~/.local/bin
 tar xz --strip-components=1 -C ~/.local/bin -f "site-preview-$TARGET.tar.gz" "site-preview-$TARGET/site-preview"

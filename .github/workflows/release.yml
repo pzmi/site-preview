@@ -281,12 +281,25 @@ jobs:
           cat SHA256SUMS
 
       - name: Attest build provenance
+        id: attest
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: |
             dist/site-preview-*.tar.gz
             dist/site-preview-*.cdx.json
             dist/SHA256SUMS
+
+      # The attestation's Sigstore bundle as a release asset (ADR 0078, amendment 2026-10-15):
+      # a download can be verified offline (`gh attestation verify --bundle`), and SLSA tooling
+      # and Scorecard's Signed-Releases find the provenance next to the archives. One compact
+      # JSON line per bundle. It is not in SHA256SUMS, which it attests.
+      - name: Attach the provenance bundle
+        env:
+          BUNDLE: ${{ steps.attest.outputs.bundle-path }}
+        run: |
+          set -euo pipefail
+          jq -c . "$BUNDLE" > dist/site-preview.intoto.jsonl
+          test -s dist/site-preview.intoto.jsonl
 
       # The tag may have moved since `prepare` read it. The remote tag is peeled to its commit
       # (an annotated tag through its tag objects) and must still be the commit this run built
@@ -345,6 +358,8 @@ jobs:
             echo '```sh'
             echo 'sha256sum --ignore-missing -c SHA256SUMS   # macOS: shasum -a 256 --ignore-missing -c SHA256SUMS'
             echo "gh attestation verify site-preview-<target>.tar.gz --repo $GH_REPO --signer-workflow $GH_REPO/.github/workflows/release.yml --source-ref refs/tags/$TAG"
+            echo '# offline, with the provenance bundle of this release:'
+            echo "gh attestation verify site-preview-<target>.tar.gz --bundle site-preview.intoto.jsonl --repo $GH_REPO --signer-workflow $GH_REPO/.github/workflows/release.yml --source-ref refs/tags/$TAG"
             echo '```'
           } > "$notes"
           args=(--draft --verify-tag --title "$TITLE" --notes-file "$notes")
@@ -433,7 +448,7 @@ jobs:
             shasum -a 256 -c SHA256SUMS
           fi
           listed="$(awk '{ print $2 }' SHA256SUMS | LC_ALL=C sort)"
-          present="$(shopt -s nullglob; for f in *; do [ "$f" = SHA256SUMS ] || printf '%s\n' "$f"; done | LC_ALL=C sort)"
+          present="$(shopt -s nullglob; for f in *; do case "$f" in SHA256SUMS|site-preview.intoto.jsonl) ;; *) printf '%s\n' "$f" ;; esac; done | LC_ALL=C sort)"
           if [ "$listed" != "$present" ]; then
             echo "::error::SHA256SUMS does not list exactly the published files"
             exit 1
@@ -458,6 +473,14 @@ jobs:
               --source-digest "$GITHUB_SHA" \
               --deny-self-hosted-runners
           done
+          # The same check against the published bundle, as an offline user runs it.
+          gh attestation verify "$RUNNER_TEMP/published/site-preview-$TARGET.tar.gz" \
+            --bundle "$RUNNER_TEMP/published/site-preview.intoto.jsonl" \
+            --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
+            --source-ref "refs/tags/$TAG" \
+            --source-digest "$GITHUB_SHA" \
+            --deny-self-hosted-runners
 
       - name: Smoke the published archive
         env:

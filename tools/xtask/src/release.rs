@@ -2053,6 +2053,55 @@ clap v4.6.7 (*)
     }
 
     #[test]
+    fn should_attach_and_verify_the_provenance_bundle_when_release_yml_is_read() {
+        // given
+        let (_, doc) = release_workflow();
+        let steps = doc["jobs"]["publish"]["steps"].as_vec().expect("steps");
+
+        // when
+        let position = |found: &dyn Fn(&yaml_rust2::Yaml) -> bool| {
+            steps.iter().position(found).expect("the step")
+        };
+        let attest = position(&|s| {
+            s["uses"]
+                .as_str()
+                .is_some_and(|u| u.starts_with("actions/attest-build-provenance@"))
+        });
+        let attach = position(&|s| s["env"]["BUNDLE"].as_str().is_some());
+        let draft = position(&|s| {
+            s["run"]
+                .as_str()
+                .is_some_and(|r| r.contains("gh release create"))
+        });
+        let verify = run_scripts(&doc, "verify").join("\n");
+
+        // then
+        assert_eq!(steps[attest]["id"].as_str(), Some("attest"));
+        assert_eq!(
+            steps[attach]["env"]["BUNDLE"].as_str(),
+            Some("${{ steps.attest.outputs.bundle-path }}")
+        );
+        assert!(
+            steps[attach]["run"]
+                .as_str()
+                .is_some_and(|r| r.contains("> dist/site-preview.intoto.jsonl")),
+            "the bundle is written into dist/, which the draft uploads"
+        );
+        assert!(
+            attest < attach && attach < draft,
+            "{attest} {attach} {draft}"
+        );
+        assert!(
+            verify.contains("--bundle \"$RUNNER_TEMP/published/site-preview.intoto.jsonl\""),
+            "{verify}"
+        );
+        assert!(
+            verify.contains("SHA256SUMS|site-preview.intoto.jsonl)"),
+            "SHA256SUMS cannot list the bundle that attests it: {verify}"
+        );
+    }
+
+    #[test]
     fn should_run_cargo_about_from_cargo_when_the_tool_is_pinned() {
         // given
         let tools = crate::tools::manifest().unwrap();

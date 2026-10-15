@@ -15,10 +15,12 @@ A **draft** GitHub release, never a published one, holding:
 | `site-preview-<target>.tar.gz` (four) | `site-preview-<target>/` with the binary, `README.md`, both licences and `THIRD-PARTY-NOTICES`, built and smoked on its native runner by `cargo xtask release-check` ([ADR 0076](adr/0076-release-check-archive-and-notices.md)) |
 | `site-preview-<target>.cdx.json` (four) | the CycloneDX SBOM of that archive's crate graph (`cargo xtask sbom`) |
 | `SHA256SUMS` | the SHA-256 of the eight files above |
+| `site-preview.intoto.jsonl` | the Sigstore bundle of the build-provenance attestation of all nine files above, one JSON line; not in `SHA256SUMS`, which it attests |
 
 The targets are `aarch64-apple-darwin`, `x86_64-apple-darwin`, `aarch64-unknown-linux-musl` and
 `x86_64-unknown-linux-musl`. Each archive, each SBOM and `SHA256SUMS` also has a build-provenance
-attestation, stored by GitHub and in Sigstore's public log. Nothing is published to crates.io
+attestation, stored by GitHub and in Sigstore's public log, and attached to the release as
+`site-preview.intoto.jsonl` for offline checks and SLSA tooling. Nothing is published to crates.io
 (D24). The archives are reproducible from the commit: build paths are remapped out of the binary
 and the tarball has sorted entries, fixed modes, owner 0 and the commit time ([ADR
 0078](adr/0078-release-workflow.md)).
@@ -115,7 +117,8 @@ site-preview-x86_64-unknown-linux-musl/site-preview --version
 `--signer-workflow` requires the signature of `release.yml` and `--source-ref` the release's own
 tag, so only an artifact the release workflow built from that tag passes. The same check, plus
 `--source-digest` and `--deny-self-hosted-runners`, is what `verify` runs on `SHA256SUMS` and
-each archive.
+each archive, and once more on each archive with `--bundle site-preview.intoto.jsonl`, the
+release's own copy of the attestation (no lookup of GitHub's attestation store).
 
 The same smoke the workflow runs is available locally on a downloaded archive, from a checkout of
 the tag: `cargo xtask release-check --target <target> --archive <path>`.
