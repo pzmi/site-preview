@@ -20,7 +20,7 @@ A **draft** GitHub release, never a published one, holding:
 The targets are `aarch64-apple-darwin`, `x86_64-apple-darwin`, `aarch64-unknown-linux-musl` and
 `x86_64-unknown-linux-musl`. Each archive, each SBOM and `SHA256SUMS` also has a build-provenance
 attestation, stored by GitHub and in Sigstore's public log, and attached to the release as
-`site-preview.intoto.jsonl` for offline checks and SLSA tooling. Nothing is published to crates.io
+`site-preview.intoto.jsonl` for checks without GitHub's attestation store, and for SLSA tooling. Nothing is published to crates.io
 (D24). The archives are reproducible from the commit: build paths are remapped out of the binary
 and the tarball has sorted entries, fixed modes, owner 0 and the commit time ([ADR
 0078](adr/0078-release-workflow.md)).
@@ -118,7 +118,10 @@ site-preview-x86_64-unknown-linux-musl/site-preview --version
 tag, so only an artifact the release workflow built from that tag passes. The same check, plus
 `--source-digest` and `--deny-self-hosted-runners`, is what `verify` runs on `SHA256SUMS` and
 each archive, and once more on each archive with `--bundle site-preview.intoto.jsonl`, the
-release's own copy of the attestation (no lookup of GitHub's attestation store).
+release's own copy of the attestation (no lookup of GitHub's attestation store). That still
+fetches Sigstore's trusted root; to verify with no network at all, save it beforehand with
+`gh attestation trusted-root > trusted_root.jsonl` and add
+`--custom-trusted-root trusted_root.jsonl` to the `--bundle` command.
 
 The same smoke the workflow runs is available locally on a downloaded archive, from a checkout of
 the tag: `cargo xtask release-check --target <target> --archive <path>`.

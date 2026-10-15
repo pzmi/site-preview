@@ -290,7 +290,8 @@ jobs:
             dist/SHA256SUMS
 
       # The attestation's Sigstore bundle as a release asset (ADR 0078, amendment 2026-10-15):
-      # a download can be verified offline (`gh attestation verify --bundle`), and SLSA tooling
+      # a download can be verified against this copy (`gh attestation verify --bundle`), without
+      # GitHub's attestation store, and SLSA tooling
       # and Scorecard's Signed-Releases find the provenance next to the archives. One compact
       # JSON line per bundle. It is not in SHA256SUMS, which it attests.
       - name: Attach the provenance bundle
@@ -358,7 +359,7 @@ jobs:
             echo '```sh'
             echo 'sha256sum --ignore-missing -c SHA256SUMS   # macOS: shasum -a 256 --ignore-missing -c SHA256SUMS'
             echo "gh attestation verify site-preview-<target>.tar.gz --repo $GH_REPO --signer-workflow $GH_REPO/.github/workflows/release.yml --source-ref refs/tags/$TAG"
-            echo '# offline, with the provenance bundle of this release:'
+            echo '# against the provenance bundle of this release (fully offline: add --custom-trusted-root, see doc/release.md):'
             echo "gh attestation verify site-preview-<target>.tar.gz --bundle site-preview.intoto.jsonl --repo $GH_REPO --signer-workflow $GH_REPO/.github/workflows/release.yml --source-ref refs/tags/$TAG"
             echo '```'
           } > "$notes"
@@ -473,7 +474,7 @@ jobs:
               --source-digest "$GITHUB_SHA" \
               --deny-self-hosted-runners
           done
-          # The same check against the published bundle, as an offline user runs it.
+          # The same check against the published bundle, as a user with only the release runs it.
           gh attestation verify "$RUNNER_TEMP/published/site-preview-$TARGET.tar.gz" \
             --bundle "$RUNNER_TEMP/published/site-preview.intoto.jsonl" \
             --repo "$GITHUB_REPOSITORY" \
