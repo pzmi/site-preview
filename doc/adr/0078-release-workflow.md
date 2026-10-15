@@ -7,7 +7,8 @@ Date: 2026-10-13
 Accepted (owner, 2026-10-14). Implements D23 (ADR 0024) for releases;
 keeps D24 (ADR 0025, no crates.io) and ADR 0061 (no caches in the release workflow). Amended
 2026-10-14 (checkpoint OPS-06 review): the trust boundary of `publish`, pinned verification,
-pre-releases, the tag and CI re-checks, reproducible archives; see "Amendment".
+pre-releases, the tag and CI re-checks, reproducible archives; see "Amendment". Amended
+2026-10-15: the provenance bundle is a release asset; see "Amendment (2026-10-15)".
 
 ## Context
 
@@ -122,3 +123,27 @@ Consequences: a release needs a green `Required` on its commit before tagging, a
 pre-release tag no longer needs a manual "pre-release" tick. The owner adds the tag ruleset once
 (a human-only step). The OPS-06 acceptance still lacks a real dry run: agents never push tags or
 dispatch workflows, so the first dry run is the owner's.
+
+## Amendment (2026-10-15): the provenance bundle as a release asset
+
+The attestations were stored only by GitHub and Sigstore, so a release held no signature or
+provenance file. Scorecard's Signed-Releases check (ADR 0082) looks for one among the assets of
+each release and scores a release without one 0; a user could not verify a download without
+GitHub's attestation API either.
+
+- `publish` gives the attest step `id: attest` and writes its `bundle-path` output, the Sigstore
+  bundle of the one attestation over the archives, the SBOMs and `SHA256SUMS`, to
+  `dist/site-preview.intoto.jsonl` as compact JSON lines (`jq -c`), so the draft uploads it with
+  the rest. `.intoto.jsonl` is the SLSA provenance name Scorecard scores 10. It is not in
+  `SHA256SUMS`: it attests that file, so it is made after it.
+- `verify` leaves the bundle out of its "SHA256SUMS lists exactly the published files" check
+  and verifies each archive a second time with `--bundle` on the published copy, with the same
+  pins (`--signer-workflow`, `--source-ref`, `--source-digest`, `--deny-self-hosted-runners`).
+- The release notes, [`release.md`](../release.md) and the README show the `--bundle` form.
+  `should_attach_and_verify_the_provenance_bundle_when_release_yml_is_read` fails if the bundle
+  stops coming from the attest step, stops reaching `dist/` before the draft, or stops being
+  verified.
+
+Consequences: one more asset per release; `publish` gains no permission, action or build tool
+(`jq` is preinstalled on the runner).
+
