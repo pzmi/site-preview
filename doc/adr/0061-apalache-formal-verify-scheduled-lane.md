@@ -6,6 +6,7 @@ Date: 2026-10-13
 
 Accepted (owner, 2026-10-14). Amended 2026-10-13 (checkpoint FORMAL-10
 review): the Apalache release is verified by its SHA-256 before it runs; see "Amendment".
+Amended 2026-10-16: correct the minimum JVM to Java 21 and install it explicitly in CI.
 
 ## Context
 
@@ -38,7 +39,7 @@ the `adm-zip` advisories to this task. Running `quint verify` showed three thing
 - JVM runs get `-Xss64m -Xmx3g` appended to the caller's `JVM_ARGS`, at most two at a time,
   each on its own port, in `target/formal-verify/` (logs, Apalache run directories with a
   counterexample as ITF and TLA+, the ITF of a failing simulation).
-- A missing or too old (below 17) JVM, or an Apalache that cannot be downloaded, fails with
+- A missing or too old (below 21) JVM, or an Apalache that cannot be downloaded, fails with
   the fix. A failure is reported as a counterexample only when Quint says `[violation]`;
   anything else is a tooling failure and verifies nothing.
 - `formal.yml` gains the `formal-verify` job (schedule and manual dispatch, 120 minutes,
@@ -81,4 +82,14 @@ unverified JVM code in the lane. Quint itself offers no digest option.
 - `doctor` probes the binary at that location instead of `apalache-mc` on `PATH`.
 - The release workflow (OPS-06) must restore no caches at all, so that no cached tool or
   build output reaches a release artifact; the digest check here protects only this lane.
+
+## Amendment (2026-10-16): Java 21 for Apalache 0.62.1
+
+The formal lane failed in run 38871627000 because the hosted runner selected Java 17, while
+the pinned Apalache 0.62.1 contains Java 21 bytecode (class file version 65). The previous
+minimum of 17 let the preflight pass even though no bounded verification could start.
+
+`formal.yml` installs Temurin Java 21 with a SHA-pinned `actions/setup-java` before verification.
+The xtask requires Java 21 or newer and tests that the runner's Java 17 is rejected with an
+installation hint. The models, invariants, verification depths and simulation stages are unchanged.
 

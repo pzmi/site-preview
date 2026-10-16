@@ -96,8 +96,8 @@ pub const SIM_SAMPLES: u32 = 5_000;
 /// Steps per trace (`conformance` samples 25).
 pub const SIM_STEPS: u32 = 50;
 
-/// The oldest JVM Apalache runs on.
-pub const MIN_JAVA: u32 = 17;
+/// The oldest JVM the pinned Apalache 0.62.1 runs on (class file version 65).
+pub const MIN_JAVA: u32 = 21;
 
 /// JVM runs in parallel: each takes up to [`JVM_ARGS`]'s heap, so the cores are not the limit.
 const PARALLEL_JVMS: usize = 2;
@@ -856,10 +856,24 @@ mod tests {
         let unreadable = classify_java(Some((true, "no version here"))).unwrap_err();
 
         // then
-        assert!(missing.contains("cannot run java") && missing.contains("install a JDK 17"));
+        assert!(missing.contains("cannot run java") && missing.contains("install a JDK 21"));
         assert!(too_old.contains("java 11 is too old"));
         assert!(unreadable.contains("cannot read the version"));
-        assert!(classify_java(Some((true, "openjdk version \"17.0.1\"\n"))).is_ok());
+        assert!(classify_java(Some((true, "openjdk version \"21.0.1\"\n"))).is_ok());
+    }
+
+    #[test]
+    fn should_reject_java_17_when_the_pinned_apalache_requires_21() {
+        // given
+        let runner_java = "openjdk version \"17.0.20.1\" 2026-08-18\n";
+
+        // when
+        let error = classify_java(Some((true, runner_java))).unwrap_err();
+
+        // then
+        assert!(error.contains("java 17 is too old"), "{error}");
+        assert!(error.contains("need 21 or newer"), "{error}");
+        assert!(error.contains("install a JDK 21"), "{error}");
     }
 
     #[test]
