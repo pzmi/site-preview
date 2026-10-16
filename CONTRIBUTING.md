@@ -43,7 +43,7 @@ cargo xtask list-checks     # every check, machine-readable
 - **The pinned cargo tools** that `cargo xtask install-tools` installs: `cargo-nextest`,
   `cargo-llvm-cov`, `cargo-deny` and the others in `tools/versions.toml`.
 - **Gitleaks, actionlint and shellcheck** for the security stages (actionlint checks `run:`
-  scripts through shellcheck, so the `workflows` stage fails without it), and **Apalache** (with a JVM) for
+  scripts through shellcheck, so the `workflows` stage fails without it), and **Apalache** (with Java 21 or newer) for
   `formal-verify`: `install-tools` does not install these, it prints the release page of the
   pinned version. Install them by hand; `cargo xtask doctor` names what is missing.
 

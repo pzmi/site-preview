@@ -211,7 +211,7 @@ counterexample as ITF and TLA+, and the ITF of a failing simulation) when it fai
 | `formal-verify-bounded` | `quint verify` through Apalache 0.62.1 (the pin in `tools/versions.toml`) of every conjunct of `allInvariants`, per model and step relation, to the depth in `BOUNDED` |
 | `formal-verify-simulate` | `quint run` of the same invariants: 3 seeds derived from one printed base seed, 5000 traces of 50 steps per relation (the pull-request run samples 1000 of 25) |
 
-It needs Node and Quint as `conformance` does, a JVM of version 17 or newer and the Apalache
+It needs Node and Quint as `conformance` does, a JVM of version 21 or newer and the Apalache
 release, which `formal-verify` downloads, checks against the SHA-256 pinned in
 `tools/versions.toml` and unpacks into `~/.quint/apalache-dist-0.62.1` before Quint runs (ADR
 0061, amended), so Quint never downloads it unchecked. A missing JVM, a digest that differs
