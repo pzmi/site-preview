@@ -50,9 +50,7 @@ jobs:
 
   # `doctor` runs first and fails unless every tool a `check` stage needs is installed at its
   # pinned version, so this job installs the whole gate toolset: CI's toolset is asserted the
-  # same way as a laptop's (ADR 0080). `commits` checks the commit messages of a push to main
-  # (`github.event.before..HEAD`); on a pull request the base is the checked-out merge commit,
-  # so the range is empty and the stage passes with a note.
+  # same way as a laptop's (ADR 0080).
   static:
     name: Static quality
     runs-on: ubuntu-24.04
@@ -61,7 +59,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          fetch-depth: 0 # the commits stage reads the pushed range
 
       - name: Set up Rust
         id: rust
@@ -89,11 +86,7 @@ jobs:
         run: cargo xtask doctor
 
       - name: Static quality
-        env:
-          # The SHA reaches the xtask as an environment variable, never interpolated into a
-          # script; a pull request's base is its own merge commit (an empty range).
-          COMMITS_BASE: ${{ github.event_name == 'push' && github.event.before || github.sha }}
-        run: cargo xtask check --only fmt-check,fuzz-fmt,clippy,docs,commits
+        run: cargo xtask check --only fmt-check,fuzz-fmt,clippy,docs
 
       - name: Save caches (main only)
         uses: ./.github/actions/save-rust-cache

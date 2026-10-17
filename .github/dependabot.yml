@@ -1,10 +1,7 @@
 version: 2
 updates:
-  # Match the <ID>: summary rule (ADR 0080); Dependabot adds the colon and DCO sign-off.
   - package-ecosystem: "cargo"
     directory: "/"
-    commit-message:
-      prefix: "DEPS-00"
     schedule:
       interval: "weekly"
     groups:
@@ -16,8 +13,6 @@ updates:
     directories:
       - "/"
       - "/.github/actions/*"
-    commit-message:
-      prefix: "DEPS-00"
     schedule:
       interval: "weekly"
     groups:
@@ -27,8 +22,6 @@ updates:
           - "patch"
   - package-ecosystem: "npm"
     directory: "/formal"
-    commit-message:
-      prefix: "DEPS-00"
     schedule:
       interval: "weekly"
     groups:
@@ -38,8 +31,6 @@ updates:
           - "patch"
   - package-ecosystem: "npm"
     directory: "/tests/e2e/browser"
-    commit-message:
-      prefix: "DEPS-00"
     schedule:
       interval: "weekly"
     # Each @playwright/test release launches one Chromium build. The agent sandbox has only
