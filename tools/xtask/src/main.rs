@@ -10,7 +10,6 @@ mod catalog;
 mod changed_lines;
 mod check;
 mod cli;
-mod commits;
 mod conformance;
 mod coverage;
 mod docs;

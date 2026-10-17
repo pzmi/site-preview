@@ -2,13 +2,13 @@
 //!
 //! It composes the registered stages: the `quick` stages other than its fast tests (format
 //! checks of the workspace and the fuzz targets, architecture with fixtures, Clippy), `docs`,
-//! `commits` (the commit messages of the branch, ADR 0080), everything `test` runs, everything
+//! everything `test` runs, everything
 //! `conformance` runs (FORMAL-09, ADR 0060), then `coverage` (TEST-06, ADR 0062) and the
 //! `changed-lines` gate over its report (TEST-07, ADR 0064), then `security`. A stage that does not exist yet is absent, never skipped; one that
 //! cannot run shows `UNAVAILABLE`.
 
 use crate::process::{Stage, finish, run_report};
-use crate::{changed_lines, commits, conformance, coverage, docs, quick, security, test, tools};
+use crate::{changed_lines, conformance, coverage, docs, quick, security, test, tools};
 
 /// The stages `check` runs, in order. Their names are catalog ids with `in_check` set.
 pub fn stages() -> Vec<Stage> {
@@ -17,7 +17,6 @@ pub fn stages() -> Vec<Stage> {
         .filter(|s| !matches!(s.name, "unit-tests" | "doctests"))
         .collect();
     stages.push(docs::stage());
-    stages.push(commits::stage());
     stages.extend(test::stages());
     stages.extend(conformance::stages(false));
     stages.push(coverage::stage());
@@ -115,7 +114,6 @@ mod tests {
             "fuzz-fmt",
             "architecture",
             "clippy",
-            "commits",
             "unit-tests",
             "integration-tests",
             "doctests",

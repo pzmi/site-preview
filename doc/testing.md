@@ -204,7 +204,6 @@ cargo xtask doctor         # every tool a check stage needs: ok, missing or wron
 cargo xtask doctor --all   # also the tools only other lanes need (mutation, fuzz, formal-verify, release-check, sbom)
 cargo xtask doctor --json  # the same report as a JSON array: tool, version, status, found, hint, stages
 cargo xtask install-tools  # install the pinned tools that doctor reports missing
-cargo xtask check --only commits   # commit messages of $COMMITS_BASE..HEAD (default origin/main..HEAD)
 cargo xtask adr new "<title>" [--number N]   # a new ADR from doc/adr/template.md and its index row
 cargo xtask adr index [--fix]                # compare (or rewrite) the ADR index rows with the files
 cargo xtask land <ref>... --push origin main [--also <branch>]   # cherry-pick onto a clean, current main, check, push when green (or --no-push)
@@ -212,11 +211,8 @@ cargo xtask land <ref>... --push origin main [--also <branch>]   # cherry-pick o
 
 `doctor` reads the tools each `check` stage declares, so it covers what a full `check` will
 run, Quint in `formal/node_modules` and the Chromium build included; run it before trusting a
-local green ([ADR 0080](adr/0080-doctor-and-commit-message-stage.md)). The `commits` stage
-checks every non-merge commit of the range: the subject is `<ID>: summary` with a task id,
-under 72 characters, imperative; there is a `Signed-off-by` line; and the last paragraph holds
-only `Signed-off-by`, then `Co-Authored-By`, then `Claude-Session`. An empty range passes
-with a note.
+local green ([ADR 0080](adr/0080-doctor-and-commit-message-stage.md)). Commit messages are
+review guidance, not a gate ([ADR 0083](adr/0083-remove-commit-message-validation.md)).
 
 Quint models (needs Node 22 and `npm ci --prefix formal`; a missing one fails with that hint):
 
@@ -276,7 +272,7 @@ CycloneDX SBOM per release target with the pinned `cargo-cyclonedx`
 ## Checks the gate runs
 
 `cargo xtask list-checks` marks the stages `check` runs with `"in_check": true`. Today those are
-`fmt-check`, `fuzz-fmt`, `clippy`, `docs` (the documentation against the code, [ADR 0077](adr/0077-documentation-consistency-stage.md)), `commits` (the branch's commit messages, [ADR 0080](adr/0080-doctor-and-commit-message-stage.md)), `unit-tests`, `integration-tests`, `doctests`, `client-js`, `browser`, `architecture` (with its `ARCH-*` rules),
+`fmt-check`, `fuzz-fmt`, `clippy`, `docs` (the documentation against the code, [ADR 0077](adr/0077-documentation-consistency-stage.md)), `unit-tests`, `integration-tests`, `doctests`, `client-js`, `browser`, `architecture` (with its `ARCH-*` rules),
 the seven `conformance` stages (`formal-typecheck` to `conformance-controls`), `coverage`, `changed-lines`, `deny`, `deny-fuzz`, `secrets`, `workflows` and `action-pins`. (`security` is the umbrella command for the last five, not a stage of its own.) `check` runs each stage once; a stage that
 is in the catalog but not yet implemented is absent from the run, not skipped.
 
@@ -290,7 +286,7 @@ an unknown name exits 2 and lists the stage names). The same command reproduces 
 | Job | `check --only` stages | Tools it installs | Artifacts |
 |:--|:--|:--|:--|
 | `architecture` (Architecture and policy) | `architecture` | none | none |
-| `static` (Static quality) | `fmt-check,fuzz-fmt,clippy,docs,commits`, after `cargo xtask doctor` | the whole gate toolset, which `doctor` asserts: `cargo-nextest`, `cargo-llvm-cov`, `cargo-deny`, Gitleaks, actionlint, shellcheck, Node 22, Quint and Chromium | none |
+| `static` (Static quality) | `fmt-check,fuzz-fmt,clippy,docs`, after `cargo xtask doctor` | the whole gate toolset, which `doctor` asserts: `cargo-nextest`, `cargo-llvm-cov`, `cargo-deny`, Gitleaks, actionlint, shellcheck, Node 22, Quint and Chromium | none |
 | `fast-tests` (Fast tests) | `unit-tests,doctests,client-js` | `cargo-nextest`, Node 22 | JUnit on failure |
 | `integration` (Integration) | `integration-tests` | `cargo-nextest`, `cargo-deny`, Gitleaks, actionlint, shellcheck (the xtask security fixtures run them) | JUnit on failure |
 | `platform` (Platform, a matrix of four legs) | none: `cargo xtask test --only platform-tests` on Linux x86-64 and arm64 and macOS arm64 and x86-64 (ADR 0074) | `cargo-nextest` | JUnit on failure, per leg |
@@ -310,10 +306,9 @@ Caches are keyed by job, OS, CPU architecture, `rust-toolchain.toml`, `Cargo.loc
 job's tool list. Every run restores them; only a push to `main` saves one, so a pull request never
 displaces `main`'s entries. `coverage` and `changed-lines` need the full history
 (`fetch-depth: 0`); on a push the changed-line gate starts from `github.event.before`
-([ADR 0069](adr/0069-tooling-review-fixes-fuzz-lint-and-gate-bases.md)). `static` fetches the
-full history too, and on a push to `main` its `commits` stage checks
-`github.event.before..HEAD`; on a pull request its base is the merge commit, an empty range
-([ADR 0080](adr/0080-doctor-and-commit-message-stage.md)).
+([ADR 0069](adr/0069-tooling-review-fixes-fuzz-lint-and-gate-bases.md)). `static` needs only
+the default shallow checkout after commit-message validation was removed
+([ADR 0083](adr/0083-remove-commit-message-validation.md)).
 
 `formal.yml` (nightly conformance with a fresh seed, plus the Apalache lane) and `security.yml`
 (weekly) run on a schedule or by dispatch only; their blocking runs are the `conformance` and

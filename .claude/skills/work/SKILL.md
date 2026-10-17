@@ -60,7 +60,7 @@ Always:
 - Read `CLAUDE.md` first, and pass its rules to every subagent
 - Read `stations/{name}.md` before entering that station
 - Write `.work/<id>/<station>.json` after every station and update `.work/<id>/work-order.json` before the next (see `work-order.md`)
-- Commit with the subject `<ID>: <summary>` and a trailer block last, in the order `Signed-off-by`, `Co-Authored-By`, `Claude-Session` (the `commits` stage checks it). `git commit -s` appends `Signed-off-by` after an existing trailer block, so with the caller's trailers write every line by hand and drop `-s`
+- Commit with the subject `<ID>: <summary>` and a trailer block last, in the order `Signed-off-by`, `Co-Authored-By`, `Claude-Session`. `git commit -s` appends `Signed-off-by` after an existing trailer block, so with the caller's trailers write every line by hand and drop `-s`
 - Use the trailer block the caller's instructions give; add none of your own
 - Stage only files you changed (never `git add -A` or `git add .`)
 - Record an architectural decision as an ADR: a change that adds or reverses one adds a new record with `cargo xtask adr new "<title>"` (`--number N` when the caller reserved one; Nygard format: Status, Context, Decision, Consequences; `cargo xtask adr index --fix` updates `doc/adr/README.md`) or supersedes an existing one, in the same commit

@@ -6,6 +6,8 @@ Date: 2026-10-14
 
 Accepted (owner, 2026-10-14).
 
+Commit-message enforcement is superseded by [ADR 0083](0083-remove-commit-message-validation.md); the other decisions remain in force.
+
 ## Context
 
 Three gaps let a local run disagree with CI. shellcheck was missing on a laptop, so actionlint

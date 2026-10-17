@@ -93,7 +93,7 @@ skipped-but-green check. Run the gate in the foreground and commit only on green
 - DCO sign-off on every commit. Subject `<ID>: summary`, imperative, under 72 chars; the body
   says why. Use the trailer block your instructions give, exactly; add none of your own.
 - The trailer block is last, in this order: `Signed-off-by`, `Co-Authored-By`,
-  `Claude-Session` (the `commits` stage of `check` enforces it). `git commit -s` appends
+  `Claude-Session`. `git commit -s` appends
   `Signed-off-by` *after* an existing trailer block, so use `-s` only when the message has no
   other trailers; otherwise write all the lines by hand.
 - Integration onto `main` goes through `cargo xtask land` (ADR 0079).
