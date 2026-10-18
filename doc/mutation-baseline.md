@@ -92,4 +92,17 @@ guards that need a fault seam.
   merge-base of `<rev>` and `HEAD`, working tree included. A diff whose changed lines hold no
   mutant (only tests, docs or comments) is a clean run that tries nothing.
 - The report is `target/mutants/mutants.out/` and `target/mutants/summary.md`. The exit code
-  is 0 when the run completed, whatever it found; `mutation.yml` runs it weekly and uploads both.
+  is 0 when the run completed, whatever it found.
+- `cargo xtask mutation --shard 3/10` tries only the fourth of ten consecutive slices of
+  the selected mutants. The summary labels this subset; its score is not the full baseline.
+  Shards compose with `--package` and `--in-diff` (those filters apply first).
+- `mutation.yml` runs one of ten shards weekly, selected by the UTC epoch week modulo ten,
+  about 50 mutants at the current scope of about 500. Manual runs default to the same shard
+  (`auto`); choose `full` for the complete scope or enter `K/N` for a specific subset.
+  Retries and manual runs do not advance the weekly rotation. Ten scheduled runs cover the
+  full scope only if the mutant list is unchanged; this is not a fresh weekly full score.
+- Batches allow 20 minutes for mutation work and 30 minutes for the job including setup and
+  report upload. Manual `full` runs retain 330 minutes for mutation work and 350 for the job.
+  A time limit is a failed/incomplete run, not a successful partial score. The raw report is
+  uploaded after a step failure when the runner remains available. No mutant exclusions,
+  test timeouts or score rules change (ADR 0085).

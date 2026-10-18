@@ -60,7 +60,13 @@ fn main() -> ExitCode {
             in_diff,
             package,
             jobs,
-        } => mutation::run(in_diff.as_deref(), package.as_deref(), *jobs),
+            shard,
+        } => mutation::run(
+            in_diff.as_deref(),
+            package.as_deref(),
+            *jobs,
+            shard.as_deref(),
+        ),
         Command::ReleaseCheck { target, archive } => {
             release::run(target.as_deref(), archive.as_deref())
         }
