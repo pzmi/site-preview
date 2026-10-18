@@ -156,6 +156,11 @@ fn settings_base<'h>(memory_limit: usize) -> Settings<'h, 'static> {
     // Pinned explicitly rather than relying on defaults that a later release could change:
     // strict mode is what makes an ambiguous page fail instead of being mis-tokenized.
     Settings::new()
+        // Capture every start tag, including tags that match none of our selectors.
+        // lol_html 3.0.1's fast scanner can otherwise retain a start-tag attribute
+        // request across malformed noscript markup and apply it to an end tag,
+        // panicking (fuzz run 39107602968). This handler changes no markup.
+        .append_element_content_handler(element!("*", |_| Ok(())))
         .with_strict(true)
         .with_encoding(AsciiCompatibleEncoding::utf_8())
         .with_adjust_charset_on_meta_tag(false)
@@ -608,6 +613,33 @@ mod tests {
 
         // then
         assert_eq!(output, expected_before(html, "</body></html>"));
+    }
+
+    #[test]
+    fn should_return_failed_when_noscript_has_empty_unquoted_attribute() {
+        // given
+        // Minimized from fuzz run 39107602968. The verification parse used to panic
+        // while switching from scanning the noscript tag to lexing the injected tag.
+        let html = b"<noscript c=>";
+
+        // when
+        let outcome = rewrite(html, &tag());
+
+        // then
+        assert_eq!(outcome, Rewrite::Failed(RewriteFailure::NotAnElement));
+    }
+
+    #[test]
+    fn should_not_panic_when_noscript_contains_malformed_tags() {
+        // given
+        // Fuzz run 39107602968, crash-4c6e5fbc195b6c3cc93844a2e2b1aace3051c81c.
+        let html = b"<obdy<obdy><noscript/e2</body<body src=></\xffbodi>>/noscript>\xe9\xff";
+
+        // when
+        let outcome = rewrite(html, &tag());
+
+        // then
+        assert_eq!(outcome, Rewrite::Failed(RewriteFailure::NotAnElement));
     }
 
     #[test]

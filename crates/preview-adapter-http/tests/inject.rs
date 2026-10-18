@@ -404,6 +404,24 @@ async fn should_serve_original_and_warn_once_when_rewrite_fails() {
 }
 
 #[tokio::test]
+async fn should_serve_original_and_warn_when_noscript_has_empty_attribute() {
+    // given: the reduced input from fuzz run 39107602968
+    let page = b"<noscript c=>";
+    let server = Server::new(InMemorySite::new().with_file("broken.html", page));
+
+    // when
+    let response = server.send("GET", "/broken.html", Some("document")).await;
+
+    // then
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(body(response).await, page);
+    assert_eq!(server.source("/broken.html"), page);
+    let warnings = server.warnings.warnings();
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert_eq!(warnings[0].0, "html-rewrite-failed");
+}
+
+#[tokio::test]
 async fn should_preserve_meta_csp_bytes_when_injecting() {
     // given: a restrictive policy, with odd spacing and case that must survive untouched
     let meta = "<meta  HTTP-EQUIV='Content-Security-Policy' content=\"default-src 'none';  img-src 'self'\" >";
