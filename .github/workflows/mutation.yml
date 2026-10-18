@@ -1,13 +1,20 @@
 name: Mutation
 
 # Weekly cargo-mutants run over the scope of .cargo/mutants.toml (foundation.md sections 5.3
-# and 10, ADR 0068). It reports the score and the missed mutants; it gates nothing, and it is
-# not part of `cargo xtask check`. The baseline and its triage are in doc/mutation-baseline.md.
+# and 10, ADR 0068, ADR 0085). One of ten shards runs each week; full runs are manual.
+# It reports findings and gates nothing. It is not part of `cargo xtask check`.
+# The baseline and its triage are in doc/mutation-baseline.md.
 
 on:
   schedule:
     - cron: "43 4 * * 0"
   workflow_dispatch:
+    inputs:
+      shard:
+        description: 'auto (~50 mutants), full, or a zero-based shard such as 3/10'
+        required: false
+        default: auto
+        type: string
 
 permissions:
   contents: read
@@ -24,7 +31,7 @@ jobs:
   mutation:
     name: Mutation (cargo-mutants)
     runs-on: ubuntu-24.04
-    timeout-minutes: 350
+    timeout-minutes: ${{ github.event_name == 'workflow_dispatch' && inputs.shard == 'full' && 350 || 30 }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -49,7 +56,20 @@ jobs:
         run: cargo xtask install-tools cargo-nextest cargo-mutants
 
       - name: Mutation
-        run: cargo xtask mutation
+        timeout-minutes: ${{ github.event_name == 'workflow_dispatch' && inputs.shard == 'full' && 330 || 20 }}
+        env:
+          REQUESTED_SHARD: ${{ inputs.shard || 'auto' }}
+        run: |
+          set -euo pipefail
+          args=()
+          if [[ "$REQUESTED_SHARD" == auto ]]; then
+            # Epoch weeks rotate across ten shards; manual runs do not advance it.
+            shard="$(( $(date -u +%s) / 604800 % 10 ))/10"
+            args=(--shard "$shard")
+          elif [[ "$REQUESTED_SHARD" != full ]]; then
+            args=(--shard "$REQUESTED_SHARD")
+          fi
+          cargo xtask mutation "${args[@]}"
 
       - name: Publish the summary
         if: always()

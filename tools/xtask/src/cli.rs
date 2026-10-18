@@ -67,6 +67,9 @@ pub enum Command {
         /// Mutate one workspace package only.
         #[arg(long, value_name = "CRATE")]
         package: Option<String>,
+        /// Run shard K/N only (zero-based K); omit for the full selected scope.
+        #[arg(long, value_name = "K/N", value_parser = crate::mutation::parse_shard)]
+        shard: Option<String>,
         /// Mutants tried in parallel (default: half the cores).
         #[arg(long, value_name = "N", value_parser = clap::value_parser!(u32).range(1..))]
         jobs: Option<u32>,

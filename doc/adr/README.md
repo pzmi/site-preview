@@ -86,3 +86,4 @@ This directory holds the decisions behind site-preview, one file per decision, i
 | [0081](0081-adr-allocation-and-landing-command.md) | ADR allocation and landing command | Accepted |
 | [0082](0082-external-oss-services-scorecard-codecov-and-an-ai-pr-reviewer.md) | External OSS services: Scorecard, Codecov and an AI PR reviewer | Accepted |
 | [0084](0084-capture-every-html-start-tag-to-avoid-noscript-scanner-panics.md) | Capture every HTML start tag to avoid noscript scanner panics | Proposed |
+| [0085](0085-rotate-small-mutation-batches.md) | Rotate small scheduled mutation batches | Proposed |
