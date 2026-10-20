@@ -616,6 +616,18 @@ mod tests {
     }
 
     #[test]
+    fn should_append_client_when_iframe_with_empty_attribute_contains_noscript_text() {
+        // given: reduced from fuzz run 39389804492; <noscript> is iframe text.
+        let html = "<iframe/a=><noscript></iframe>";
+
+        // when
+        let output = injected(html);
+
+        // then: the client is outside the closed iframe, with all source bytes intact.
+        assert_eq!(output, format!("{html}{}", tag().as_str()));
+    }
+
+    #[test]
     fn should_return_failed_when_noscript_has_empty_unquoted_attribute() {
         // given
         // Minimized from fuzz run 39107602968. The verification parse used to panic
