@@ -88,6 +88,11 @@ fn assert_single_insertion(input: &[u8], output: &[u8], tag: &[u8]) {
 fn client_tags(html: &[u8]) -> Vec<(Option<String>, Option<String>)> {
     let found = RefCell::new(Vec::new());
     let settings = Settings::new()
+        // Match the production parser's full start-tag capture without sharing its
+        // verification code. Without this, lol_html 3.0.1's fast scanner can treat
+        // noscript text inside an iframe as markup and miss the real client tag
+        // after </iframe> (fuzz run 39389804492).
+        .append_element_content_handler(element!("*", |_| Ok(())))
         .with_strict(true)
         .with_encoding(AsciiCompatibleEncoding::utf_8())
         .with_adjust_charset_on_meta_tag(false)

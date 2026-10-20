@@ -368,6 +368,13 @@ in `fuzz.yml` (ADR 0069).
 
 ### Results
 
+Fuzz run `39389804492` exposed a mismatch in the `rewrite_html` oracle's parser setup.
+With `<iframe c=><noscript></iframe>`, `lol_html` 3.0.1's fast scanner missed the client
+script appended after the closed iframe. Production already forces full start-tag capture
+with a no-op `*` handler; the independent oracle now does too, without sharing production
+verification code or relaxing its assertions. Both the original crash input and the reduced
+UTF-8 input are committed as seeds, with a unit regression for the insertion location.
+
 Local runs of `cargo xtask fuzz <target> --time 60` (one core, `nightly-2026-10-01`, from the
 committed seeds and the local corpus). `cov` is libFuzzer's count of covered edges at the end
 of the run.
