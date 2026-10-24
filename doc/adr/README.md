@@ -63,7 +63,7 @@ This directory holds the decisions behind site-preview, one file per decision, i
 | [0058](0058-watcher-conformance-driver.md) | Watcher conformance driver: the coordinator in process, the environment from the trace | Accepted. Amended by 0070 |
 | [0059](0059-conformance-negative-controls.md) | Conformance negative controls: faults behind the drivers' seams, a publish seam in the reload driver | Accepted. Amended by 0060, 0070 |
 | [0060](0060-conformance-stage-and-trace-corpus.md) | The `conformance` stage in `check`, the trace corpus manifests and `formal.yml` | Accepted. Amended by 0069, 0072 |
-| [0061](0061-apalache-formal-verify-scheduled-lane.md) | Apalache in a scheduled `formal-verify` lane | Accepted. Amended 2026-10-13 |
+| [0061](0061-apalache-formal-verify-scheduled-lane.md) | Apalache in a scheduled `formal-verify` lane | Accepted. Amended 2026-10-13. Amended 2026-10-16 |
 | [0062](0062-coverage-stage-scope-and-floors.md) | The `coverage` stage: what is measured, and the floors | Accepted. Amended by 0066 |
 | [0063](0063-fuzz-crate-and-architecture-fuzz-only.md) | The fuzz crate: a separate workspace, a `fuzz_only` category and the `xtask fuzz` command | Accepted. Amended by 0065 |
 | [0064](0064-changed-line-gate-in-check.md) | The changed-line gate: base, report freshness, and its place in `check` | Accepted. Amended by 0069 |
@@ -80,9 +80,11 @@ This directory holds the decisions behind site-preview, one file per decision, i
 | [0075](0075-macos-single-recursive-stream.md) | macOS: one recursive FSEvents stream, ignored subtrees dropped in the bridge | Accepted |
 | [0076](0076-release-check-archive-and-notices.md) | `release-check`: one archive layout, notices from `cargo about`, a smoke of the extracted binary | Accepted. Amended 2026-10-14 |
 | [0077](0077-documentation-consistency-stage.md) | Documentation consistency stage: a warning-code registry and the `docs` checks | Accepted |
-| [0078](0078-release-workflow.md) | The release workflow: tag-run only, drafts only, write in one job, dry runs on `dry-run-*` tags | Accepted. Amended 2026-10-14 |
+| [0078](0078-release-workflow.md) | The release workflow: tag-run only, drafts only, write in one job, dry runs on `dry-run-*` tags | Accepted. Amended 2026-10-14. Amended 2026-10-15 |
 | [0079](0079-agent-process-rules.md) | Agent process rules from the P0 build | Accepted |
 | [0080](0080-doctor-and-commit-message-stage.md) | Doctor asserts the gate's toolset, a `commits` stage, and no `cfg!` platform branches | Accepted |
 | [0081](0081-adr-allocation-and-landing-command.md) | ADR allocation and landing command | Accepted |
 | [0082](0082-external-oss-services-scorecard-codecov-and-an-ai-pr-reviewer.md) | External OSS services: Scorecard, Codecov and an AI PR reviewer | Accepted |
 | [0083](0083-remove-commit-message-validation.md) | Remove commit-message validation | Accepted |
+| [0084](0084-capture-every-html-start-tag-to-avoid-noscript-scanner-panics.md) | Capture every HTML start tag to avoid noscript scanner panics | Proposed |
+| [0085](0085-rotate-small-mutation-batches.md) | Rotate small scheduled mutation batches | Proposed |

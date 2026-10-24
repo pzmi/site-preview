@@ -1,4 +1,4 @@
-//! `cargo xtask mutation [--in-diff <rev>] [--package <crate>] [--jobs N]`: a cargo-mutants
+//! `cargo xtask mutation [--in-diff <rev>] [--package <crate>] [--jobs N] [--shard K/N]`: a cargo-mutants
 //! run over the scope of `.cargo/mutants.toml`, with a summary (foundation.md section 5.3,
 //! ADR 0068).
 //!
@@ -60,8 +60,13 @@ impl Counts {
 }
 
 /// Runs the command and returns the exit code.
-pub fn run(in_diff: Option<&str>, package: Option<&str>, jobs: Option<u32>) -> i32 {
-    match execute(in_diff, package, jobs) {
+pub fn run(
+    in_diff: Option<&str>,
+    package: Option<&str>,
+    jobs: Option<u32>,
+    shard: Option<&str>,
+) -> i32 {
+    match execute(in_diff, package, jobs, shard) {
         Ok(code) => code,
         Err(err) => {
             eprintln!("xtask: mutation: {err}");
@@ -70,7 +75,12 @@ pub fn run(in_diff: Option<&str>, package: Option<&str>, jobs: Option<u32>) -> i
     }
 }
 
-fn execute(in_diff: Option<&str>, package: Option<&str>, jobs: Option<u32>) -> Result<i32, String> {
+fn execute(
+    in_diff: Option<&str>,
+    package: Option<&str>,
+    jobs: Option<u32>,
+    shard: Option<&str>,
+) -> Result<i32, String> {
     tools::require("cargo-mutants")?;
     tools::require("cargo-nextest")?;
     let root = repo::root();
@@ -85,11 +95,15 @@ fn execute(in_diff: Option<&str>, package: Option<&str>, jobs: Option<u32>) -> R
         Some(rev) => Some(write_diff(&root, rev, &out)?),
         None => None,
     };
+    if let Some(shard) = shard {
+        println!("xtask: mutation: shard {shard} of the selected scope (zero-based)");
+    }
     let args = mutants_args(
         &out,
         diff.as_deref(),
         package,
         jobs.unwrap_or_else(default_jobs),
+        shard,
     );
     let status = Command::new("cargo")
         .args(&args)
@@ -110,10 +124,32 @@ fn execute(in_diff: Option<&str>, package: Option<&str>, jobs: Option<u32>) -> R
     } else {
         summarize(&report)?
     };
+    let summary = scoped_summary(summary, shard);
     std::fs::write(out.join("summary.md"), &summary)
         .map_err(|e| format!("cannot write the summary: {e}"))?;
     print!("{summary}");
     Ok(0)
+}
+
+/// Validates cargo-mutants' zero-based `K/N` shard syntax before a run clears its report.
+pub fn parse_shard(value: &str) -> Result<String, String> {
+    let invalid = || "shard must be K/N with 0 <= K < N".to_owned();
+    let (k, n) = value.split_once('/').ok_or_else(invalid)?;
+    let k = k.parse::<u32>().map_err(|_| invalid())?;
+    let n = n.parse::<u32>().map_err(|_| invalid())?;
+    if k >= n {
+        return Err(invalid());
+    }
+    Ok(format!("{k}/{n}"))
+}
+
+fn scoped_summary(summary: String, shard: Option<&str>) -> String {
+    match shard {
+        Some(shard) => format!(
+            "Scope: shard `{shard}` (zero-based). Counts and score describe this shard only, not the full baseline.\n\n{summary}"
+        ),
+        None => summary,
+    }
 }
 
 /// Half the cores, at least one: every job also runs a parallel nextest.
@@ -123,7 +159,13 @@ fn default_jobs() -> u32 {
 }
 
 /// The arguments of `cargo`: `mutants --output <dir> ...`.
-fn mutants_args(out: &Path, diff: Option<&Path>, package: Option<&str>, jobs: u32) -> Vec<String> {
+fn mutants_args(
+    out: &Path,
+    diff: Option<&Path>,
+    package: Option<&str>,
+    jobs: u32,
+    shard: Option<&str>,
+) -> Vec<String> {
     let mut args = vec![
         "mutants".to_owned(),
         "--output".to_owned(),
@@ -131,6 +173,9 @@ fn mutants_args(out: &Path, diff: Option<&Path>, package: Option<&str>, jobs: u3
         "--jobs".to_owned(),
         jobs.to_string(),
     ];
+    if let Some(shard) = shard {
+        args.extend(["--shard".to_owned(), shard.to_owned()]);
+    }
     if let Some(package) = package {
         args.push("--package".to_owned());
         args.push(package.to_owned());
@@ -189,6 +234,18 @@ fn read_list(dir: &Path, name: &str) -> Result<Vec<String>, String> {
 /// The summary of the report in `dir` (cargo-mutants' `mutants.out`).
 fn summarize(dir: &Path) -> Result<String, String> {
     if !dir.join("outcomes.json").is_file() {
+        // cargo-mutants writes an empty mutant list but no outcomes for an empty shard.
+        let empty_selection = std::fs::read(dir.join("mutants.json"))
+            .ok()
+            .is_some_and(|bytes| {
+                bytes
+                    .into_iter()
+                    .filter(|byte| !matches!(byte, b' ' | b'\t' | b'\r' | b'\n'))
+                    .eq(b"[]".iter().copied())
+            });
+        if empty_selection {
+            return Ok(no_mutants_summary());
+        }
         return Err(format!(
             "{} has no outcomes.json: cargo mutants wrote no report",
             dir.display()
@@ -207,7 +264,7 @@ fn summarize(dir: &Path) -> Result<String, String> {
 
 /// The summary of a diff run that found no mutant to try.
 fn no_mutants_summary() -> String {
-    "# Mutation summary\n\nNo mutant on the changed lines: nothing was tried.\n".to_owned()
+    "# Mutation summary\n\nNo mutant in the selected scope: nothing was tried.\n".to_owned()
 }
 
 /// The summary text.
@@ -279,8 +336,8 @@ mod tests {
         let diff = Path::new("target/mutants/in-diff.patch");
 
         // when
-        let plain = mutants_args(out, None, None, 2);
-        let scoped = mutants_args(out, Some(diff), Some("preview-domain"), 3);
+        let plain = mutants_args(out, None, None, 2, None);
+        let scoped = mutants_args(out, Some(diff), Some("preview-domain"), 3, None);
 
         // then
         assert_eq!(
@@ -297,6 +354,38 @@ mod tests {
             ]
         );
         assert_eq!(scoped[4], "3");
+    }
+
+    #[test]
+    fn should_select_and_label_subset_when_shard_requested() {
+        // given
+        let shard = parse_shard("3/10").expect("valid shard");
+
+        // when
+        let args = mutants_args(Path::new("out"), None, None, 2, Some(&shard));
+        let summary = scoped_summary("# Mutation summary\n".to_owned(), Some(&shard));
+
+        // then
+        assert_eq!(&args[5..], ["--shard", "3/10"]);
+        assert!(summary.contains("shard `3/10`"));
+        assert!(summary.contains("not the full baseline"));
+        assert_eq!(scoped_summary("full".to_owned(), None), "full");
+    }
+
+    #[test]
+    fn should_reject_invalid_shards_when_arguments_are_parsed() {
+        // given
+        let invalid = ["", "1", "0/0", "10/10", "-1/10", "1/2/3", "x/10"];
+
+        // when
+        let results = invalid.map(parse_shard);
+        let valid = parse_shard("0/1");
+
+        // then
+        for (shard, result) in invalid.into_iter().zip(results) {
+            assert!(result.is_err(), "{shard}");
+        }
+        assert_eq!(valid, Ok("0/1".to_owned()));
     }
 
     #[test]
@@ -320,6 +409,20 @@ mod tests {
         assert!(summary.contains("## Missed"));
         assert!(summary.contains("- src/x.rs:1:2: replace f -> bool with true"));
         assert!(!summary.contains("## Timeout"));
+    }
+
+    #[test]
+    fn should_report_no_score_when_shard_selects_no_mutants() {
+        // given
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("mutants.json"), "[]").unwrap();
+
+        // when
+        let summary = summarize(dir.path()).unwrap();
+
+        // then
+        assert!(summary.contains("nothing was tried"));
+        assert!(!summary.contains("score"));
     }
 
     #[test]
