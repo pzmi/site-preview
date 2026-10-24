@@ -85,5 +85,6 @@ This directory holds the decisions behind site-preview, one file per decision, i
 | [0080](0080-doctor-and-commit-message-stage.md) | Doctor asserts the gate's toolset, a `commits` stage, and no `cfg!` platform branches | Accepted |
 | [0081](0081-adr-allocation-and-landing-command.md) | ADR allocation and landing command | Accepted |
 | [0082](0082-external-oss-services-scorecard-codecov-and-an-ai-pr-reviewer.md) | External OSS services: Scorecard, Codecov and an AI PR reviewer | Accepted |
+| [0083](0083-remove-commit-message-validation.md) | Remove commit-message validation | Accepted |
 | [0084](0084-capture-every-html-start-tag-to-avoid-noscript-scanner-panics.md) | Capture every HTML start tag to avoid noscript scanner panics | Proposed |
 | [0085](0085-rotate-small-mutation-batches.md) | Rotate small scheduled mutation batches | Proposed |

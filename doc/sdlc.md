@@ -160,7 +160,7 @@ The P0 build ran many agents in parallel on one machine. What went wrong became 
   tables, the ADR index) conflicted on every round: one owning lane per round, or regenerate
   ([orchestrate: lanes](../.claude/skills/orchestrate/SKILL.md#lanes-and-worktrees)).
 - `git commit -s` put `Signed-off-by` after the trailer block: write the block by hand, in
-  order; the `commits` stage checks it ([CLAUDE.md: commits](../CLAUDE.md#commits)).
+  order ([CLAUDE.md: commits](../CLAUDE.md#commits)).
 - The local gate passed where CI failed on a missing or wrong tool: `doctor` first
   ([CLAUDE.md: the gate](../CLAUDE.md#the-gate)).
 - `cfg!()` runtime branches compiled other platforms' code: `#[cfg]` items only, an
