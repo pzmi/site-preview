@@ -4,7 +4,7 @@ Date: 2026-10-14
 
 ## Status
 
-Accepted (owner, 2026-10-14).
+Accepted (owner, 2026-10-14). Amended by 0086.
 
 ## Context
 

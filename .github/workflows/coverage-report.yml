@@ -3,8 +3,9 @@ name: Coverage report
 # Publishes the LCOV report of a green CI run on `main` to Codecov for its history (ADR 0082).
 # The coverage gate stays the `coverage` job of ci.yml with coverage-floor.toml; Codecov never
 # gates. This runs after CI, not inside it, so `id-token: write` is never held by a job that
-# builds or tests the tree, and Codecov's availability is not part of `Required`. It checks
-# nothing out and runs no repository code: the downloaded report is its only input.
+# builds or tests the tree, and Codecov's availability is not part of `Required`. It runs no
+# repository code. It checks out the reported commit only so the Codecov CLI lists the
+# repository's files; without that list Codecov drops every path of the report (ADR 0086).
 
 on:
   workflow_run:
@@ -26,8 +27,14 @@ jobs:
     timeout-minutes: 10
     permissions:
       actions: read # the CI run's artifact
+      contents: read # the checkout
       id-token: write # Codecov OIDC, so no Codecov token is stored
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          persist-credentials: false
+
       - name: Download the LCOV report
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:

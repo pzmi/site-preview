@@ -284,7 +284,7 @@ user or browser (plan.md §7.1).
 | Dependabot weekly for `cargo`, `github-actions` and the two npm directories, minor and patch grouped | `.github/dependabot.yml` | review |
 | The `security` workflow runs the same `cargo xtask security` stage as local development | `.github/workflows/security.yml` | CI |
 | OpenSSF Scorecard on each push to `main` and weekly, results in code scanning and the README badge; `security-events: write` and `id-token: write` on that job only (ADR 0082) | `.github/workflows/scorecard.yml` | the pin check and `actionlint` |
-| The Codecov upload holds `id-token: write` in a `workflow_run` job that checks nothing out and runs no repository code; no Codecov token is stored (ADR 0082) | `.github/workflows/coverage-report.yml` | the pin check and `actionlint` |
+| The Codecov upload holds `id-token: write` in a `workflow_run` job that checks out the reported commit but runs no repository code; no Codecov token is stored (ADR 0082, ADR 0086) | `.github/workflows/coverage-report.yml` | the pin check and `actionlint` |
 
 `Cargo.lock` is committed and builds use `--locked`. A passing advisory scan is not a
 guarantee that dependencies are safe (foundation.md §8).
