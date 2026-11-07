@@ -107,7 +107,7 @@ contains = true
 # `cargo xtask conformance` runs Quint with `--backend typescript`, so its evaluator is the
 # locked package and nothing is downloaded at run time (ADR 0052).
 [tools.quint]
-version = "0.33.0"
+version = "0.33.1"
 method = "lockfile"
 lockfile = "formal/package-lock.json"
 
